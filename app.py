@@ -37,6 +37,67 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit.components.v1 as components
 
+# ------------------------------
+# CSV robust loader (para CSVs con separador desconocido)
+# ------------------------------
+def robust_read_csv(src, encodings=("utf-8-sig","utf-8","latin-1"), seps=(",", ";", "\t", "|")) -> pd.DataFrame:
+    """
+    Lee CSV desde ruta o stream (UploadedFile) intentando:
+      1) sep=None (Sniffer) con engine='python'
+      2) una lista de separadores comunes
+    También prueba encodings típicos (utf-8-sig/utf-8/latin-1).
+    """
+    # Obtener bytes si es stream (p.ej. st.file_uploader)
+    data_bytes = None
+    if hasattr(src, "getvalue"):
+        try:
+            data_bytes = src.getvalue()
+        except Exception:
+            data_bytes = None
+    if data_bytes is None and hasattr(src, "read") and not isinstance(src, (str, bytes, os.PathLike)):
+        try:
+            # Ojo: read() consume el stream; por eso guardamos bytes
+            data_bytes = src.read()
+        except Exception:
+            data_bytes = None
+
+    def _try_read(buf, enc, sep):
+        return pd.read_csv(buf, sep=sep, engine="python", encoding=enc)
+
+    # Caso path en disco
+    if isinstance(src, (str, os.PathLike)):
+        last_err = None
+        for enc in encodings:
+            try:
+                return pd.read_csv(src, sep=None, engine="python", encoding=enc)
+            except Exception as e:
+                last_err = e
+            for s in seps:
+                try:
+                    return pd.read_csv(src, sep=s, engine="python", encoding=enc)
+                except Exception as e:
+                    last_err = e
+        raise last_err if last_err else ValueError("No se pudo leer el CSV")
+
+    # Caso stream / bytes
+    if data_bytes is None:
+        raise ValueError("No se pudo leer el archivo (stream vacío).")
+
+    from io import BytesIO
+    last_err = None
+    for enc in encodings:
+        try:
+            return _try_read(BytesIO(data_bytes), enc, None)
+        except Exception as e:
+            last_err = e
+        for s in seps:
+            try:
+                return _try_read(BytesIO(data_bytes), enc, s)
+            except Exception as e:
+                last_err = e
+    raise last_err if last_err else ValueError("No se pudo leer el CSV")
+
+
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
@@ -443,7 +504,10 @@ def status_from_eff(eff: float) -> tuple[str, str, str]:
 @st.cache_data(show_spinner=False)
 def load_tnpi_catalog(csv_path: str) -> pd.DataFrame:
     if csv_path and os.path.exists(csv_path):
-        df = pd.read_csv(csv_path, encoding="utf-8", sep=None, engine="python")
+        try:
+            df = robust_read_csv(csv_path)
+        except Exception:
+            df = pd.DataFrame()
         det_col = None
         cat_col = None
         for c in df.columns:
@@ -1160,20 +1224,43 @@ with st.sidebar.container(border=True):
     up = st.sidebar.file_uploader("Cargar CSV", type=["csv"], accept_multiple_files=False)
 
     if up is not None:
-        df_tnpi_cat = pd.read_csv(up, sep=None, engine="python", encoding="utf-8")
-        det_col = None
-        cat_col = None
-        for c in df_tnpi_cat.columns:
-            if "detalle" in c.lower():
-                det_col = c
-            if "categoria" in c.lower():
-                cat_col = c
-        df_tnpi_cat = df_tnpi_cat[[cat_col, det_col]].copy()
-        df_tnpi_cat.columns = ["Categoria_TNPI", "Detalle_TNPI"]
-        df_tnpi_cat["Categoria_TNPI"] = df_tnpi_cat["Categoria_TNPI"].apply(smart_case)
-        df_tnpi_cat["Detalle_TNPI"] = df_tnpi_cat["Detalle_TNPI"].apply(smart_case)
-        df_tnpi_cat = df_tnpi_cat.dropna().drop_duplicates().reset_index(drop=True)
-        st.sidebar.success("CSV TNPI cargado")
+        try:
+            df_tnpi_cat = robust_read_csv(up)
+        except Exception as e:
+            df_tnpi_cat = None
+            st.sidebar.error(f"Error leyendo CSV TNPI: {e}")
+
+        if df_tnpi_cat is not None and not df_tnpi_cat.empty:
+            det_col = None
+            cat_col = None
+            for c in df_tnpi_cat.columns:
+                cl = str(c).lower()
+                if det_col is None and ("detalle" in cl or "causa" in cl):
+                    det_col = c
+                if cat_col is None and ("categoria" in cl or "categoría" in cl):
+                    cat_col = c
+
+            # Fallbacks comunes
+            if det_col is None:
+                for cand in ["Detalle de causa de TNPI", "Detalle", "Causa", "Detalle_TNPI"]:
+                    if cand in df_tnpi_cat.columns:
+                        det_col = cand
+                        break
+            if cat_col is None:
+                for cand in ["Categoria", "Categoría", "Categoria_TNPI"]:
+                    if cand in df_tnpi_cat.columns:
+                        cat_col = cand
+                        break
+
+            if det_col is None or cat_col is None:
+                st.sidebar.error("No pude identificar columnas de Categoria/Detalle en el CSV TNPI.")
+            else:
+                df_tnpi_cat = df_tnpi_cat[[cat_col, det_col]].copy()
+                df_tnpi_cat.columns = ["Categoria_TNPI", "Detalle_TNPI"]
+                df_tnpi_cat["Categoria_TNPI"] = df_tnpi_cat["Categoria_TNPI"].apply(smart_case)
+                df_tnpi_cat["Detalle_TNPI"] = df_tnpi_cat["Detalle_TNPI"].apply(smart_case)
+                df_tnpi_cat = df_tnpi_cat.dropna().drop_duplicates().reset_index(drop=True)
+                st.sidebar.success("CSV TNPI cargado")
     else:
         df_tnpi_cat = load_tnpi_catalog(csv_path_use)
         if not csv_path_use:
@@ -1187,12 +1274,10 @@ def load_tnp_catalog(path_csv: str) -> pd.DataFrame:
     """Carga catálogo TNP desde CSV. Soporta utf-8 / latin-1."""
     if not path_csv or not os.path.exists(path_csv):
         return pd.DataFrame({"Categoria_TNP": ["-"], "Detalle_TNP": ["-"]})
-    for enc in ("utf-8", "latin-1"):
-        try:
-            df0 = pd.read_csv(path_csv, sep=None, engine="python", encoding=enc)
-            break
-        except Exception:
-            df0 = None
+    try:
+        df0 = robust_read_csv(path_csv)
+    except Exception:
+        df0 = None
     if df0 is None or df0.empty:
         return pd.DataFrame({"Categoria_TNP": ["-"], "Detalle_TNP": ["-"]})
 
@@ -1237,29 +1322,44 @@ st.sidebar.subheader("Catálogo TNP (causas)")
 up_tnp = st.sidebar.file_uploader("Cargar CSV TNP", type=["csv"], accept_multiple_files=False, key="up_tnp_cat")
 
 if up_tnp is not None:
-    # DrillSpot exports a veces vienen en latin-1
     try:
-        df_tnp_cat = pd.read_csv(up_tnp, sep=None, engine="python", encoding="utf-8")
-    except Exception:
-        df_tnp_cat = pd.read_csv(up_tnp, sep=None, engine="python", encoding="latin-1")
-    det_col = None
-    cat_col = None
-    for c in df_tnp_cat.columns:
-        cl = str(c).lower()
-        if det_col is None and ("detalle" in cl or "causa" in cl):
-            det_col = c
-        if cat_col is None and ("categoria" in cl or "categoría" in cl):
-            cat_col = c
-    if cat_col is None and "Categoria" in df_tnp_cat.columns:
-        cat_col = "Categoria"
-    if det_col is None and "Detalle de causa de TNP" in df_tnp_cat.columns:
-        det_col = "Detalle de causa de TNP"
-    df_tnp_cat = df_tnp_cat[[cat_col, det_col]].copy()
-    df_tnp_cat.columns = ["Categoria_TNP", "Detalle_TNP"]
-    df_tnp_cat["Categoria_TNP"] = df_tnp_cat["Categoria_TNP"].astype(str).apply(smart_case)
-    df_tnp_cat["Detalle_TNP"] = df_tnp_cat["Detalle_TNP"].astype(str).apply(smart_case)
-    df_tnp_cat = df_tnp_cat.dropna().drop_duplicates().reset_index(drop=True)
-    st.sidebar.success("CSV TNP cargado")
+        # DrillSpot exports a veces vienen con delimitador/encoding irregular
+        df_tnp_cat = robust_read_csv(up_tnp)
+    except Exception as e:
+        df_tnp_cat = None
+        st.sidebar.error(f"Error leyendo CSV TNP: {e}")
+
+    if df_tnp_cat is not None and not df_tnp_cat.empty:
+        det_col = None
+        cat_col = None
+        for c in df_tnp_cat.columns:
+            cl = str(c).lower()
+            if det_col is None and ("detalle" in cl or "causa" in cl):
+                det_col = c
+            if cat_col is None and ("categoria" in cl or "categoría" in cl):
+                cat_col = c
+
+        # Fallbacks comunes
+        if cat_col is None:
+            for cand in ["Categoria", "Categoría", "Categoria_TNP"]:
+                if cand in df_tnp_cat.columns:
+                    cat_col = cand
+                    break
+        if det_col is None:
+            for cand in ["Detalle de causa de TNP", "Detalle", "Causa", "Detalle_TNP"]:
+                if cand in df_tnp_cat.columns:
+                    det_col = cand
+                    break
+
+        if det_col is None or cat_col is None:
+            st.sidebar.error("No pude identificar columnas de Categoria/Detalle en el CSV TNP.")
+        else:
+            df_tnp_cat = df_tnp_cat[[cat_col, det_col]].copy()
+            df_tnp_cat.columns = ["Categoria_TNP", "Detalle_TNP"]
+            df_tnp_cat["Categoria_TNP"] = df_tnp_cat["Categoria_TNP"].astype(str).apply(smart_case)
+            df_tnp_cat["Detalle_TNP"] = df_tnp_cat["Detalle_TNP"].astype(str).apply(smart_case)
+            df_tnp_cat = df_tnp_cat.dropna().drop_duplicates().reset_index(drop=True)
+            st.sidebar.success("CSV TNP cargado")
 else:
     df_tnp_cat = load_tnp_catalog(TNP_CSV_PATH)
     if not TNP_CSV_PATH:
