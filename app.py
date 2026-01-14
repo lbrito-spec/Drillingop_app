@@ -1007,6 +1007,9 @@ if "drill_day" not in st.session_state:
         }
     }
 
+if "custom_actividades" not in st.session_state:
+    st.session_state.custom_actividades = []
+
 # FUNCIÓN PARA OBTENER/ACTUALIZAR DATOS POR ETAPA (PONER JUSTO DESPUÉS)
 def get_etapa_data(etapa_nombre):
     """Obtiene o crea los datos de una etapa específica"""
@@ -1122,6 +1125,7 @@ def save_jornada_json(path_out: str) -> None:
         "df_conn": st.session_state.df_conn.to_dict(orient="records"),
         "df_bha": st.session_state.df_bha.to_dict(orient="records"),
         "drill_day": st.session_state.drill_day,
+        "custom_actividades": st.session_state.get("custom_actividades", []),
     }
     with open(path_out, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -1136,6 +1140,7 @@ def load_jornada_json(path_in: str) -> bool:
     st.session_state.df_conn = pd.DataFrame(payload.get("df_conn", []), columns=st.session_state.df_conn.columns)
     st.session_state.df_bha = pd.DataFrame(payload.get("df_bha", []), columns=st.session_state.df_bha.columns)
     st.session_state.drill_day = payload.get("drill_day", st.session_state.drill_day) or st.session_state.drill_day
+    st.session_state.custom_actividades = payload.get("custom_actividades", []) or []
     return True
 
 # =====================================================================
@@ -1431,7 +1436,15 @@ with st.sidebar.container(border=True):
         "Operación", ["Superficie", "TR", "Otra"], index=0
     )
 
-    actividad = st.sidebar.selectbox("Actividad", ACTIVIDADES)
+    # --- Actividad (catálogo + personalizadas + otra) ---
+    actividades_opts = ACTIVIDADES + sorted(st.session_state.get("custom_actividades", []))
+    actividad_sel = st.sidebar.selectbox("Actividad", actividades_opts + ["Otra (especificar)"])
+
+    actividad = actividad_sel
+    if actividad_sel == "Otra (especificar)":
+        actividad = st.sidebar.text_input("Especifica actividad", "", key="actividad_otro").strip()
+
+    # Tipo de tiempo (SIEMPRE visible)
     tipo = st.sidebar.radio("Tipo de tiempo", ["TP", "TNPI", "TNP"], horizontal=True, key="tipo_time_general")
 
     # -------------------------------------------------
@@ -1443,33 +1456,63 @@ with st.sidebar.container(border=True):
             v = float(VIAJE_CATALOG[actividad].get("vel_mh", 0.0) or 0.0)
             tc = float(VIAJE_CATALOG[actividad].get("tconn_min", 0.0) or 0.0)
 
-            st.caption(f"Objetivo: **{v:.0f} m/h** | Tiempo conexión: **{tc:.1f} min**")
-            dist_m = st.number_input("Distancia a viajar (m)", min_value=0.0, step=10.0, value=0.0, key="viaje_dist_m")
-            n_conn = st.number_input("# conexiones (lingadas / TxT)", min_value=0, step=1, value=0, key="viaje_n_conn")
+            etapa_viajes_sel = st.selectbox("Etapa base para viaje", options=st.session_state.depth_rows["Etapa"].tolist(), index=0)
+            _drow = st.session_state.depth_rows[st.session_state.depth_rows["Etapa"] == etapa_viajes_sel].iloc[0]
+            pt_prog_v = float(_drow["PT_programada_m"] or 0.0)
+            pt_act_v = float(_drow["PT_actual_m"] or 0.0)
 
-            horas_sug = (dist_m / v) if v > 0 and dist_m > 0 else 0.0
-            horas_sug += (float(n_conn) * tc / 60.0) if (n_conn and tc > 0) else 0.0
+            dist = st.number_input("Distancia (m)", min_value=0.0, value=max(pt_prog_v - pt_act_v, 0.0), step=10.0, key="dist_viaje")
+            conexiones_etapa = len(st.session_state.df_conn[st.session_state.df_conn["Etapa"] == etapa_viajes_sel]) if "df_conn" in st.session_state else 0
+            nconn = st.number_input("Conexiones (#)", min_value=0, value=int(conexiones_etapa), step=1, key="nconn_viaje")
 
-            st.metric("Horas estándar sugeridas (h)", f"{horas_sug:.2f}")
-            if st.button("Usar este estándar", use_container_width=True, key="viaje_use_std"):
-                st.session_state["hp_general"] = float(horas_sug)
-                st.success("Estándar cargado en 'Horas estándar / programadas'.")
+            if v > 0:
+                est = dist / v + (nconn * tc / 60.0)
+                st.caption(f"Estándar sugerido: {est:.2f} h (v={v:.0f} m/h, tconn={tc:.1f} min)")
+            else:
+                st.caption("Configura vel_mh > 0 en VIAJE_CATALOG para cálculo automático.")
 
+    # Detalles TNPI/TNP (SIEMPRE disponibles cuando aplique)
     categoria_tnpi = "-"
     detalle_tnpi = "-"
+
     if tipo == "TNPI":
-        categoria_tnpi = st.sidebar.selectbox("Categoría TNPI", options=cat_list, key="cat_general")
-        det_all = df_tnpi_cat[df_tnpi_cat["Categoria_TNPI"] == categoria_tnpi]["Detalle_TNPI"].tolist()
-        q = (st.sidebar.text_input("Buscar detalle TNPI", value="", placeholder="Ej: bombas, survey...", key="q_general") or "").strip().lower()
-        det_filtered = [d for d in det_all if q in d.lower()] if q else det_all
-        detalle_tnpi = st.sidebar.selectbox("Detalle TNPI", options=det_filtered if det_filtered else det_all, key="det_general")
+        # Usa el catálogo TNPI cargado (df_tnpi_cat) y su lista de categorías (cat_list)
+        categoria_tnpi = st.sidebar.selectbox(
+            "Categoría TNPI",
+            options=cat_list if "cat_list" in globals() else ["-"],
+            key="cat_tnpi_general",
+        )
+        det_all = (
+            df_tnpi_cat[df_tnpi_cat["Categoria_TNPI"] == categoria_tnpi]["Detalle_TNPI"].tolist()
+            if "df_tnpi_cat" in globals()
+            else ["-"]
+        )
+        q = (st.sidebar.text_input("Buscar detalle TNPI", "", key="q_tnpi_general") or "").strip().lower()
+        det_filtered = [d for d in det_all if q in str(d).lower()] if q else det_all
+        detalle_tnpi = st.sidebar.selectbox(
+            "Detalle TNPI",
+            options=det_filtered if det_filtered else det_all,
+            key="det_tnpi_general",
+        )
+
     elif tipo == "TNP":
-        # Catálogo TNP (Tiempo No Productivo)
-        categoria_tnpi = st.sidebar.selectbox("Categoría TNP", options=tnp_cat_list if 'tnp_cat_list' in globals() else ["-"], key="cat_tnp_general")
-        det_all_tnp = df_tnp_cat[df_tnp_cat["Categoria_TNP"] == categoria_tnpi]["Detalle_TNP"].tolist() if 'df_tnp_cat' in globals() else ["-"]
-        q2 = (st.sidebar.text_input("Buscar detalle TNP", value="", placeholder="Ej: atrapamiento, control de pozo...", key="q_tnp_general") or "").strip().lower()
-        det_filtered_tnp = [d for d in det_all_tnp if q2 in d.lower()] if q2 else det_all_tnp
-        detalle_tnpi = st.sidebar.selectbox("Detalle TNP", options=det_filtered_tnp if det_filtered_tnp else det_all_tnp, key="det_tnp_general")
+        categoria_tnpi = st.sidebar.selectbox(
+            "Categoría TNP",
+            options=tnp_cat_list if "tnp_cat_list" in globals() else ["-"],
+            key="cat_tnp_general",
+        )
+        det_all_tnp = (
+            df_tnp_cat[df_tnp_cat["Categoria_TNP"] == categoria_tnpi]["Detalle_TNP"].tolist()
+            if "df_tnp_cat" in globals()
+            else ["-"]
+        )
+        q2 = (st.sidebar.text_input("Buscar detalle TNP", "", key="q_tnp_general") or "").strip().lower()
+        det_filtered_tnp = [d for d in det_all_tnp if q2 in str(d).lower()] if q2 else det_all_tnp
+        detalle_tnpi = st.sidebar.selectbox(
+            "Detalle TNP",
+            options=det_filtered_tnp if det_filtered_tnp else det_all_tnp,
+            key="det_tnp_general",
+        )
 
     horas_prog = st.sidebar.number_input("Horas estándar / programadas (h)", 0.0, step=0.25, key="hp_general")
     horas_real = st.sidebar.number_input("Horas reales (h)", 0.0, step=0.25, key="hr_general")
@@ -1479,9 +1522,18 @@ with st.sidebar.container(border=True):
 
     comentario = st.sidebar.text_input("Comentario", "", key="com_general")
 
-    disable_general_add = actividad in ["Conexión perforando", "Arma/Desarma BHA"]
+    disable_general_add = (actividad in ["Conexión perforando", "Arma/Desarma BHA"]) or (actividad_sel == "Otra (especificar)" and not actividad)
 
     if st.sidebar.button("Agregar actividad", use_container_width=True, disabled=disable_general_add):
+        if actividad_sel == "Otra (especificar)" and not actividad:
+            st.warning("Especifica el nombre de la actividad antes de agregarla.")
+            st.stop()
+        # Memorizar actividad nueva en esta sesión (y se persiste si guardas la jornada)
+        if actividad_sel == "Otra (especificar)" and actividad:
+            base_lower = {a.strip().lower() for a in ACTIVIDADES}
+            custom_lower = {a.strip().lower() for a in st.session_state.get("custom_actividades", [])}
+            if actividad.lower() not in base_lower and actividad.lower() not in custom_lower:
+                st.session_state.custom_actividades.append(actividad)
         nueva = pd.DataFrame(
             [
                 {
@@ -3654,56 +3706,36 @@ with tab_estadisticas:
             with tab1:
                 # Metros perforados y ROP
                 if modo_reporte == "Perforación":
-                    mp_etapa = float(st.session_state.drill_day.get("metros_prog_total", 0.0) or 0.0)
-                    mr_etapa = float(st.session_state.drill_day.get("metros_real_dia", 0.0) or 0.0) + float(st.session_state.drill_day.get("metros_real_noche", 0.0) or 0.0)
-                    rp_etapa = float(st.session_state.drill_day.get("rop_prog_total", 0.0) or 0.0)
+                    # Usar datos por etapa (no globales) para que Programado/Real correspondan a la etapa seleccionada
+                    etapa_data = get_etapa_data(etapa_seleccionada)
+
+                    mp_etapa = float(etapa_data.get("metros_prog_total", 0.0) or 0.0)
+                    mr_etapa = float((etapa_data.get("metros_real_dia", 0.0) or 0.0) + (etapa_data.get("metros_real_noche", 0.0) or 0.0))
+
+                    rp_etapa = float(etapa_data.get("rop_prog_total", 0.0) or 0.0)
+
                     rr_etapa = 0.0
                     if mr_etapa > 0 and total_h_etapa > 0:
                         rr_etapa = mr_etapa / total_h_etapa
-                    
+
+                    eficiencia_metros = (mr_etapa / mp_etapa * 100) if mp_etapa > 0 else 0.0
+                    eficiencia_rop = (rr_etapa / rp_etapa * 100) if rp_etapa > 0 else 0.0
+
                     df_metros = pd.DataFrame({
                         "Concepto": ["Programado", "Real", "Eficiencia"],
-                        "Metros (m)": [mp_etapa, mr_etapa, (mr_etapa/mp_etapa*100 if mp_etapa>0 else 0)],
-                        "ROP (m/h)": [rp_etapa, rr_etapa, (rr_etapa/rp_etapa*100 if rp_etapa>0 else 0)]
+                        "Metros (m)": [mp_etapa, mr_etapa, eficiencia_metros],
+                        "ROP (m/h)": [rp_etapa, rr_etapa, eficiencia_rop],
                     })
-                    
-                    # Añadir semáforos
-                    eficiencia_metros = (mr_etapa/mp_etapa*100) if mp_etapa>0 else 0
-                    eficiencia_rop = (rr_etapa/rp_etapa*100) if rp_etapa>0 else 0
-                    
-                    df_metros["Semáforo Metros"] = df_metros["Metros (m)"].apply(
-                        lambda x: semaforo_dot(eficiencia_metros) if x == eficiencia_metros else ""
-                    )
-                    df_metros["Semáforo ROP"] = df_metros["ROP (m/h)"].apply(
-                        lambda x: semaforo_dot(eficiencia_rop) if x == eficiencia_rop else ""
-                    )
-                    
+
+                    # Semáforos SOLO en la fila de eficiencia
+                    df_metros["Semáforo Metros"] = ""
+                    df_metros["Semáforo ROP"] = ""
+                    df_metros.loc[df_metros["Concepto"] == "Eficiencia", "Semáforo Metros"] = semaforo_dot(eficiencia_metros)
+                    df_metros.loc[df_metros["Concepto"] == "Eficiencia", "Semáforo ROP"] = semaforo_dot(eficiencia_rop)
+
                     st.dataframe(df_metros, use_container_width=True, hide_index=True)
-                    
-                    # Gráfica de metros y ROP
-                    if mp_etapa > 0 or mr_etapa > 0:
-                        fig_comparativa = go.Figure()
-                        fig_comparativa.add_trace(go.Bar(
-                            name='Programado',
-                            x=['Metros (m)', 'ROP (m/h)'],
-                            y=[mp_etapa, rp_etapa],
-                            marker_color='#3498DB'
-                        ))
-                        fig_comparativa.add_trace(go.Bar(
-                            name='Real',
-                            x=['Metros (m)', 'ROP (m/h)'],
-                            y=[mr_etapa, rr_etapa],
-                            marker_color='#2ECC71'
-                        ))
-                        fig_comparativa.update_layout(
-                            title='Metros Perforados y ROP - Programado vs Real',
-                            barmode='group',
-                            height=400
-                        )
-                        st.plotly_chart(fig_comparativa, use_container_width=True)
                 else:
-                    st.info("Modo no es Perforación")
-            
+                    st.info("Esta sección aplica solo para el modo Perforación.")
             with tab2:
                 # BHA
                 if not df_bha_etapa.empty:
@@ -4343,3 +4375,5 @@ with tab_export:
 
     if not PLOTLY_IMG_OK:
         st.caption("Para exportar gráficas como imágenes instala: `pip install -U kaleido`.")
+
+# NOTE: Added corrected Captura actividad block (see above).
