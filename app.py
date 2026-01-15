@@ -1021,12 +1021,24 @@ def get_etapa_data(etapa_nombre):
         st.session_state.drill_day["por_etapa"][etapa_nombre] = {
             "pt_programada_m": 0.0,
             "prof_actual_m": 0.0,
+
+            # Metros / ROP diarios (último valor capturado)
             "metros_prog_total": 0.0,
             "metros_real_dia": 0.0,
             "metros_real_noche": 0.0,
             "rop_prog_total": 0.0,
             "rop_real_dia": 0.0,
             "rop_real_noche": 0.0,
+
+            # Metas por etapa
+            "rop_prog_etapa": 0.0,
+
+            # Históricos por fecha (para acumulados / promedios por etapa)
+            "metros_real_dia_by_date": {},
+            "metros_real_noche_by_date": {},
+            "rop_real_dia_by_date": {},
+            "rop_real_noche_by_date": {},
+
             "tnpi_metros_h": 0.0,
         }
 
@@ -1118,9 +1130,26 @@ def _default_jornada_path(equipo: str, pozo: str, fecha_str: str) -> str:
     return os.path.join(script_dir, f"jornada_{safe(equipo)}_{safe(pozo)}_{safe(fecha_str)}.json")
 
 def save_jornada_json(path_out: str) -> None:
+    # Meta/contexto del sidebar (para reconstrucción confiable al cargar)
+    meta = {
+        "equipo": st.session_state.get("equipo_val", ""),
+        "pozo": st.session_state.get("pozo_val", ""),
+        "fecha": str(st.session_state.get("fecha_val", "")),
+        "equipo_tipo": st.session_state.get("equipo_tipo_val", ""),
+        "etapa_manual": bool(st.session_state.get("etapa_manual_chk", False)),
+        "etapa": st.session_state.get("etapa_sel", ""),
+        "etapa_manual_val": st.session_state.get("etapa_manual_val", ""),
+        "modo_reporte": st.session_state.get("modo_reporte", ""),
+        "show_charts": bool(st.session_state.get("show_charts", True)),
+    }
+
+    # También guardamos el meta dentro de drill_day para que quede autocontenido
+    st.session_state.drill_day["meta"] = meta
+
     payload = {
-        "version": "1.0",
+        "version": "1.1",
         "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "meta": meta,
         "df": st.session_state.df.to_dict(orient="records"),
         "df_conn": st.session_state.df_conn.to_dict(orient="records"),
         "df_bha": st.session_state.df_bha.to_dict(orient="records"),
@@ -1136,49 +1165,49 @@ def load_jornada_json(path_in: str) -> bool:
     with open(path_in, "r", encoding="utf-8") as f:
         payload = json.load(f)
 
+    # Tablas
     st.session_state.df = pd.DataFrame(payload.get("df", []), columns=st.session_state.df.columns)
     st.session_state.df_conn = pd.DataFrame(payload.get("df_conn", []), columns=st.session_state.df_conn.columns)
     st.session_state.df_bha = pd.DataFrame(payload.get("df_bha", []), columns=st.session_state.df_bha.columns)
+
+    # drill_day + meta
     st.session_state.drill_day = payload.get("drill_day", st.session_state.drill_day) or st.session_state.drill_day
+    meta = payload.get("meta") or st.session_state.drill_day.get("meta") or {}
+
+    # Actividades personalizadas
     st.session_state.custom_actividades = payload.get("custom_actividades", []) or []
+
+    # Restaurar estado de widgets del sidebar (DEBE ser antes de que se rendericen)
+    if meta:
+        st.session_state["equipo_val"] = meta.get("equipo", "")
+        st.session_state["pozo_val"] = meta.get("pozo", "")
+        # fecha viene como string "YYYY-MM-DD" o "YYYY/MM/DD"
+        _fecha_raw = str(meta.get("fecha", ""))
+        _fecha = None
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+            try:
+                _fecha = datetime.strptime(_fecha_raw, fmt).date()
+                break
+            except Exception:
+                pass
+        if _fecha is not None:
+            st.session_state["fecha_val"] = _fecha
+
+            st.session_state["equipo_tipo_val"] = meta.get("equipo_tipo", "")
+            st.session_state["etapa_manual_chk"] = bool(meta.get("etapa_manual", False))
+            st.session_state["etapa_sel"] = meta.get("etapa", meta.get("etapa_manual_val", ""))
+            st.session_state["etapa_manual_val"] = meta.get("etapa_manual_val", meta.get("etapa", ""))
+
+        if "modo_reporte" in meta:
+            st.session_state["modo_reporte"] = meta.get("modo_reporte", st.session_state.get("modo_reporte", ""))
+
+        if "show_charts" in meta:
+            st.session_state["show_charts"] = bool(meta.get("show_charts", True))
+
+        # Mantener meta también dentro de drill_day
+        st.session_state.drill_day["meta"] = meta
+
     return True
-
-
-def jornada_payload() -> dict:
-    """Construye el payload de jornada desde session_state."""
-    return {
-        "version": "1.0",
-        "saved_at": datetime.now().isoformat(timespec="seconds"),
-        "df": st.session_state.df.to_dict(orient="records"),
-        "df_conn": st.session_state.df_conn.to_dict(orient="records"),
-        "df_bha": st.session_state.df_bha.to_dict(orient="records"),
-        "drill_day": st.session_state.drill_day,
-        "custom_actividades": st.session_state.get("custom_actividades", []),
-    }
-
-def jornada_bytes() -> bytes:
-    """Serializa la jornada a bytes (UTF-8) para descarga."""
-    payload = jornada_payload()
-    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-
-def load_jornada_payload(payload: dict) -> bool:
-    """Carga jornada desde un dict ya parseado (p.ej. desde file_uploader)."""
-    if not isinstance(payload, dict):
-        return False
-    st.session_state.df = pd.DataFrame(payload.get("df", []), columns=st.session_state.df.columns)
-    st.session_state.df_conn = pd.DataFrame(payload.get("df_conn", []), columns=st.session_state.df_conn.columns)
-    st.session_state.df_bha = pd.DataFrame(payload.get("df_bha", []), columns=st.session_state.df_bha.columns)
-    st.session_state.drill_day = payload.get("drill_day", st.session_state.drill_day) or st.session_state.drill_day
-    st.session_state.custom_actividades = payload.get("custom_actividades", []) or []
-    return True
-
-def load_jornada_bytes(raw: bytes) -> bool:
-    """Carga jornada desde bytes (JSON)."""
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except Exception:
-        return False
-    return load_jornada_payload(payload)
 
 # =====================================================================
 # SIDEBAR (con modo presentación)
@@ -1199,10 +1228,10 @@ if presentacion:
 
 with st.sidebar.container(border=True):
     st.sidebar.markdown("### Reporte")
-    equipo = st.sidebar.text_input("Equipo", "PM 2402")
-    pozo = st.sidebar.text_input("Pozo", "OME 1 EXP")
+    equipo = st.sidebar.text_input("Equipo", value=st.session_state.get("equipo_val","PM 2402"), key="equipo_val")
+    pozo = st.sidebar.text_input("Pozo", value=st.session_state.get("pozo_val","OME 1 EXP"), key="pozo_val")
     # Etapa (sección) - lista + opción manual (para casos especiales)
-    etapa_manual = st.sidebar.checkbox("Etapa manual", value=False, help="Actívalo si necesitas escribir una etapa que no esté en la lista.")
+    etapa_manual = st.sidebar.checkbox("Etapa manual", value=bool(st.session_state.get("etapa_manual_chk", False)), key="etapa_manual_chk", help="Actívalo si necesitas escribir una etapa que no esté en la lista.")
     if etapa_manual:
         etapa = st.sidebar.text_input("Etapa (manual)", value=st.session_state.get("etapa_manual_val", SECCIONES_DEFAULT[2]), key="etapa_manual_input")
         st.session_state["etapa_manual_val"] = etapa
@@ -1211,51 +1240,52 @@ with st.sidebar.container(border=True):
         _idx = SECCIONES_DEFAULT.index(_default_etapa) if _default_etapa in SECCIONES_DEFAULT else 2
         etapa = st.sidebar.selectbox("Etapa", SECCIONES_DEFAULT, index=_idx, key="etapa_select")
         st.session_state["etapa_sel"] = etapa
-    fecha = st.sidebar.date_input("Fecha")
-    equipo_tipo = st.sidebar.selectbox("Tipo de equipo", EQUIPO_TIPO, index=0)
+    fecha = st.sidebar.date_input("Fecha", value=st.session_state.get("fecha_val", datetime.today().date()), key="fecha_val")
+    
+# --- Sync contexto actual a drill_day/meta (para que el JSON siempre quede completo) ---
+_meta_now = {
+    "equipo": st.session_state.get("equipo_val", ""),
+    "pozo": st.session_state.get("pozo_val", ""),
+    "fecha": str(fecha),
+    "equipo_tipo": st.session_state.get("equipo_tipo_val", ""),
+    "etapa_manual": bool(etapa_manual),
+    "etapa": etapa,
+    "etapa_manual_val": st.session_state.get("etapa_manual_val", ""),
+    "modo_reporte": st.session_state.get("modo_reporte", ""),
+    "show_charts": bool(st.session_state.get("show_charts", True)),
+}
+st.session_state.drill_day["meta"] = _meta_now
 
 with st.sidebar.container(border=True):
     st.sidebar.markdown("### Jornada (guardar / cargar)")
-    # En Streamlit Cloud el FS del contenedor no es un storage por-usuario (y puede resetearse).
-    # Por eso, en deploy la forma más segura es: **descargar** el JSON y luego **subirlo** cuando se quiera cargar.
-    default_name = os.path.basename(_default_jornada_path(equipo, pozo, str(fecha)))
-    jornada_name = st.sidebar.text_input(
-        "Nombre de archivo jornada (.json)",
-        value=default_name,
-        help="Se descargará a tu PC. Para restaurar, súbelo con 'Cargar jornada'."
+    jornada_path = st.sidebar.text_input(
+        "Archivo jornada (.json)",
+        value=_default_jornada_path(equipo, pozo, str(fecha)),
+        help="Guarda/recupera df, conexiones, BHA y parámetros del día."
     )
-
-    st.sidebar.download_button(
-        "Descargar jornada (.json)",
-        data=jornada_bytes(),
-        file_name=jornada_name if jornada_name.lower().endswith(".json") else f"{jornada_name}.json",
-        mime="application/json",
-        use_container_width=True,
-    )
-
-    up_jornada = st.sidebar.file_uploader(
-        "Cargar jornada (.json)",
-        type=["json"],
-        accept_multiple_files=False,
-        key="up_jornada_json",
-        help="Sube un archivo .json previamente descargado desde esta app."
-    )
-    if st.sidebar.button("Aplicar jornada", use_container_width=True, disabled=(up_jornada is None)):
-        ok = False
-        try:
-            ok = load_jornada_bytes(up_jornada.getvalue()) if up_jornada is not None else False
-        except Exception as e:
-            st.sidebar.error(f"No se pudo cargar: {e}")
-
-        if ok:
-            st.sidebar.success("Jornada cargada ✅")
-            st.rerun()
-        else:
-            st.sidebar.warning("El archivo no parece ser una jornada válida.")
+    cjs1, cjs2 = st.sidebar.columns(2)
+    with cjs1:
+        if st.sidebar.button("Guardar jornada", use_container_width=True):
+            try:
+                save_jornada_json(jornada_path)
+                st.sidebar.success("Jornada guardada ✅")
+            except Exception as e:
+                st.sidebar.error(f"No se pudo guardar: {e}")
+    with cjs2:
+        if st.sidebar.button("Cargar jornada", use_container_width=True):
+            ok = False
+            try:
+                ok = load_jornada_json(jornada_path)
+            except Exception as e:
+                st.sidebar.error(f"No se pudo cargar: {e}")
+            if ok:
+                st.sidebar.success("Jornada cargada ✅"); st.rerun()
+                st.rerun()
+            else:
+                st.sidebar.warning("No se encontró el archivo de jornada.")
 
 with st.sidebar.container(border=True):
     st.sidebar.markdown("### Modo")
-
     modo_reporte = st.sidebar.radio(
         "Tipo",
         MODO_REPORTE_OPTS,
@@ -1437,6 +1467,12 @@ if modo_reporte == "Perforación":
             value=float(etapa_data["pt_programada_m"])
         )
         
+        etapa_data["rop_prog_etapa"] = st.sidebar.number_input(
+            f"ROP programada (m/h) - {etapa}",
+            0.0, step=0.1,
+            value=float(etapa_data.get("rop_prog_etapa", 0.0))
+        )
+
         etapa_data["prof_actual_m"] = st.sidebar.number_input(
             f"Profundidad actual (m) - {etapa}",
             0.0, step=1.0, 
@@ -1590,7 +1626,7 @@ with st.sidebar.container(border=True):
                     "Pozo": pozo,
                     "Etapa": ((etapa_viajes_sel or etapa) if "etapa_viajes_sel" in globals() else etapa),
                     "Fecha": str(fecha),
-                    "Equipo_Tipo": equipo_tipo,
+                    "Equipo_Tipo": st.session_state.get("equipo_tipo_val", ""),
                     "Modo_Reporte": modo_reporte,
                     "Seccion": etapa,
                     "Corrida": corrida,
@@ -1676,7 +1712,7 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
                         "Pozo": pozo,
                         "Etapa": etapa_conn,  # Usar la etapa específica para conexiones
                         "Fecha": str(fecha),
-                        "Equipo_Tipo": equipo_tipo,
+                        "Equipo_Tipo": st.session_state.get("equipo_tipo_val", ""),
                         "Seccion": etapa_conn,  # También en Seccion
                         "Corrida": corrida_c,
                         "Tipo_Agujero": tipo_agujero_c,
@@ -1708,7 +1744,7 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
                 Pozo=pozo,
                 Etapa=etapa_conn,  # Usar la etapa específica
                 Fecha=str(fecha),
-                Equipo_Tipo=equipo_tipo,
+                Equipo_Tipo=st.session_state.get("equipo_tipo_val", ""),
                 Modo_Reporte="Perforación",
                 Seccion=etapa_conn,  # También aquí
                 Corrida=corrida_c,
@@ -1810,7 +1846,7 @@ if actividad == "Arma/Desarma BHA":
                 Pozo=pozo,
                 Etapa=etapa,
                 Fecha=str(fecha),
-                Equipo_Tipo=equipo_tipo,
+                Equipo_Tipo=st.session_state.get("equipo_tipo_val", ""),
                 Modo_Reporte=modo_reporte,
                 Seccion=etapa,
                 Corrida=corrida,
@@ -2304,10 +2340,34 @@ with tab_resumen:
 # TAB: INDICADORES ACTIVIDADES
 # =====================================================================
 with tab_act:
+    # --- NUEVO: Vista de indicadores (diario vs acumulado) ---
+    vista_ind = st.radio(
+        "Vista de indicadores",
+        ["Día seleccionado", "Acumulado (toda la jornada)"],
+        index=0,
+        horizontal=True,
+        key="vista_indicadores",
+    )
+
+    # Base dataframe para indicadores
+    df_ind_base = st.session_state.get("df", pd.DataFrame()).copy()
+
+    # Filtrar por fecha seleccionada (puede incluir varias etapas)
+    if vista_ind == "Día seleccionado":
+        fecha_sel = st.session_state.get("fecha_val", None)
+        if fecha_sel is not None and "Fecha" in df_ind_base.columns:
+            df_ind_base["_Fecha_dt"] = pd.to_datetime(df_ind_base["Fecha"], errors="coerce")
+            try:
+                fecha_date = fecha_sel if hasattr(fecha_sel, "year") else pd.to_datetime(fecha_sel).date()
+            except Exception:
+                fecha_date = pd.to_datetime(fecha_sel, errors="coerce").date()
+            df_ind_base = df_ind_base[df_ind_base["_Fecha_dt"].dt.date == fecha_date].copy()
+            df_ind_base.drop(columns=["_Fecha_dt"], inplace=True, errors="ignore")
+
     st.subheader("Indicador de desempeño por actividades")
     rows_act = []
-    if not df.empty:
-        g = df.groupby(["Actividad", "Tipo"], as_index=False)["Horas_Reales"].sum()
+    if not df_ind_base.empty:
+        g = df_ind_base.groupby(["Actividad", "Tipo"], as_index=False)["Horas_Reales"].sum()
         piv = g.pivot_table(index="Actividad", columns="Tipo", values="Horas_Reales", aggfunc="sum", fill_value=0.0).reset_index()
         for col in ["TP", "TNPI", "TNP"]:
             if col not in piv.columns:
@@ -2460,6 +2520,22 @@ with tab_rop:
     if modo_reporte != "Perforación":
         st.info("Esta pestaña aplica para modo **Perforación**.")
     else:
+        # --- NUEVO: captura por fecha (evita que se "arrastre" al cambiar de día) ---
+        fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
+        def _get_by_date(etapa_data: dict, k: str, default: float = 0.0) -> float:
+            try:
+                return float((etapa_data.get(k, {}) or {}).get(fecha_key, default))
+            except Exception:
+                return float(default)
+
+
+
+        # --- NUEVO: aplicar reseteos pendientes ANTES de instanciar widgets (evita StreamlitAPIException) ---
+        if st.session_state.get("_pending_widget_resets"):
+            for _k, _v in list(st.session_state["_pending_widget_resets"].items()):
+                st.session_state[_k] = _v
+            st.session_state["_pending_widget_resets"].clear()
+
         # FIX: asegurar que etapa_data_rop exista antes de usarse
         etapa_data_rop = get_etapa_data(etapa)
         c1, c2, c3 = st.columns(3)
@@ -2476,26 +2552,37 @@ with tab_rop:
             st.session_state.drill_day["rop_prog_total"] = float(rop_prog_val)
             
         with c2:
-            rop_dia_val = float(etapa_data_rop.get("rop_real_dia", 0.0))
+            rop_dia_val = _get_by_date(etapa_data_rop, "rop_real_dia_by_date", 0.0)
             rop_dia_val = st.number_input(
                 f"ROP real Día - {etapa} (m/h)",
                 min_value=0.0, step=0.1,
-                value=rop_dia_val,
-                key=f"rop_real_dia_{etapa}",
+                value=float(rop_dia_val),
+                key=f"rop_real_dia_{etapa}_{fecha_key}",
             )
             etapa_data_rop["rop_real_dia"] = float(rop_dia_val)
             st.session_state.drill_day["rop_real_dia"] = float(rop_dia_val)
+
+            # Guardar histórico por fecha (1 valor por día)
+            _fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
+            etapa_data_rop.setdefault("rop_real_dia_by_date", {})
+            if float(rop_dia_val) > 0:
+                etapa_data_rop["rop_real_dia_by_date"][_fecha_key] = float(rop_dia_val)
             
         with c3:
-            rop_noche_val = float(etapa_data_rop.get("rop_real_noche", 0.0))
+            rop_noche_val = _get_by_date(etapa_data_rop, "rop_real_noche_by_date", 0.0)
             rop_noche_val = st.number_input(
                 f"ROP real Noche - {etapa} (m/h)",
                 min_value=0.0, step=0.1,
-                value=rop_noche_val,
-                key=f"rop_real_noche_{etapa}",
+                value=float(rop_noche_val),
+                key=f"rop_real_noche_{etapa}_{fecha_key}",
             )
             etapa_data_rop["rop_real_noche"] = float(rop_noche_val)
             st.session_state.drill_day["rop_real_noche"] = float(rop_noche_val)
+
+            _fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
+            etapa_data_rop.setdefault("rop_real_noche_by_date", {})
+            if float(rop_noche_val) > 0:
+                etapa_data_rop["rop_real_noche_by_date"][_fecha_key] = float(rop_noche_val)
 
         # Sincroniza (compatibilidad con otros bloques que lean claves sueltas)
         st.session_state["rop_prog_total"] = float(st.session_state.drill_day["rop_prog_total"])
@@ -2579,23 +2666,61 @@ with tab_rop:
             mr_d = st.number_input(
                 f"Metros reales Día - {etapa} (m)",
                 min_value=0.0,
-                value=float(etapa_data_rop.get("metros_real_dia", 0.0)),
+                value=float(_get_by_date(etapa_data_rop, "metros_real_dia_by_date", 0.0)),
                 step=1.0,
-                key=f"metros_real_dia_{etapa}",
+                key=f"metros_real_dia_{etapa}_{fecha_key}",
             )
             etapa_data_rop["metros_real_dia"] = float(mr_d)
         
         with colm3:
+
+            _fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
+            etapa_data_rop.setdefault("metros_real_dia_by_date", {})
+            if float(mr_d) > 0:
+                etapa_data_rop["metros_real_dia_by_date"][_fecha_key] = float(mr_d)
             mr_n = st.number_input(
                 f"Metros reales Noche - {etapa} (m)",
                 min_value=0.0,
-                value=float(etapa_data_rop.get("metros_real_noche", 0.0)),
+                value=float(_get_by_date(etapa_data_rop, "metros_real_noche_by_date", 0.0)),
                 step=1.0,
-                key=f"metros_real_noche_{etapa}",
+                key=f"metros_real_noche_{etapa}_{fecha_key}",
             )
             etapa_data_rop["metros_real_noche"] = float(mr_n)
 
+
+        # --- NUEVO: botón para registrar SOLO el día de la ETAPA ACTUAL ---
+        col_reg1, col_reg2 = st.columns([1.4, 2.6])
+        with col_reg1:
+            if st.button(f"Registrar día (etapa {etapa})", use_container_width=True, key=f"btn_registrar_dia_{etapa}_{fecha_key}"):
+                etapa_data_rop.setdefault("metros_real_dia_by_date", {})
+                etapa_data_rop.setdefault("metros_real_noche_by_date", {})
+                etapa_data_rop.setdefault("rop_real_dia_by_date", {})
+                etapa_data_rop.setdefault("rop_real_noche_by_date", {})
+
+                # Guardar valores del día seleccionado
+                etapa_data_rop["metros_real_dia_by_date"][fecha_key] = float(mr_d)
+                etapa_data_rop["metros_real_noche_by_date"][fecha_key] = float(mr_n)
+                etapa_data_rop["rop_real_dia_by_date"][fecha_key] = float(st.session_state.get(f"rop_real_dia_{etapa}_{fecha_key}", 0.0))
+                etapa_data_rop["rop_real_noche_by_date"][fecha_key] = float(st.session_state.get(f"rop_real_noche_{etapa}_{fecha_key}", 0.0))
+
+                # Limpia la captura visible de ese día (para que el siguiente día empiece limpio)
+                st.session_state.setdefault("_pending_widget_resets", {})
+                st.session_state["_pending_widget_resets"][f"metros_real_dia_{etapa}_{fecha_key}"] = 0.0
+                st.session_state["_pending_widget_resets"][f"metros_real_noche_{etapa}_{fecha_key}"] = 0.0
+                st.session_state["_pending_widget_resets"][f"rop_real_dia_{etapa}_{fecha_key}"] = 0.0
+                st.session_state["_pending_widget_resets"][f"rop_real_noche_{etapa}_{fecha_key}"] = 0.0
+
+                st.success("Día registrado ✅ (se guardó en el histórico por fecha de la etapa)")
+                st.rerun()
+        with col_reg2:
+            st.caption("Al cambiar la fecha, los inputs ahora son independientes por día. Este botón confirma el registro del día para la etapa actual y limpia la captura.")
+
         # Mantener compatibilidad (opcional)
+
+            _fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
+            etapa_data_rop.setdefault("metros_real_noche_by_date", {})
+            if float(mr_n) > 0:
+                etapa_data_rop["metros_real_noche_by_date"][_fecha_key] = float(mr_n)
         st.session_state["drill_day"]["metros_prog_total"] = float(mp)
         st.session_state["drill_day"]["metros_real_diurno"] = float(mr_d)
         st.session_state["drill_day"]["metros_real_nocturno"] = float(mr_n)
@@ -3463,7 +3588,7 @@ with tab_viajes:
                 "Pozo": pozo,
                 "Etapa": ((etapa_viajes_sel or etapa) if "etapa_viajes_sel" in globals() else etapa),
                 "Fecha": fecha,
-                "Equipo_Tipo": equipo_tipo,
+                "Equipo_Tipo": st.session_state.get("equipo_tipo_val", ""),
                 "Seccion": etapa,
                 "Corrida": corrida,
                 "Tipo_Agujero": tipo_agujero,
@@ -3758,14 +3883,32 @@ with tab_estadisticas:
                     # Usar datos por etapa (no globales) para que Programado/Real correspondan a la etapa seleccionada
                     etapa_data = get_etapa_data(etapa_seleccionada)
 
-                    mp_etapa = float(etapa_data.get("metros_prog_total", 0.0) or 0.0)
-                    mr_etapa = float((etapa_data.get("metros_real_dia", 0.0) or 0.0) + (etapa_data.get("metros_real_noche", 0.0) or 0.0))
+                    # Metros programados por etapa: usamos PT programada (m)
+                    mp_etapa = float(etapa_data.get("pt_programada_m", 0.0) or 0.0)
 
-                    rp_etapa = float(etapa_data.get("rop_prog_total", 0.0) or 0.0)
+                    # Metros reales por etapa: acumulado de metros diarios capturados (día + noche)
+                    _mr_d_map = etapa_data.get("metros_real_dia_by_date", {}) or {}
+                    _mr_n_map = etapa_data.get("metros_real_noche_by_date", {}) or {}
+                    mr_etapa = float(sum(_mr_d_map.values()) + sum(_mr_n_map.values()))
+                    if mr_etapa == 0.0:
+                        mr_etapa = float((etapa_data.get("metros_real_dia", 0.0) or 0.0) + (etapa_data.get("metros_real_noche", 0.0) or 0.0))
 
-                    rr_etapa = 0.0
-                    if mr_etapa > 0 and total_h_etapa > 0:
-                        rr_etapa = mr_etapa / total_h_etapa
+                    # ROP programada por etapa (meta)
+                    rp_etapa = float(etapa_data.get("rop_prog_etapa", 0.0) or 0.0)
+
+                    # ROP real promedio por etapa: promedio simple de los ROP diarios capturados (manual)
+                    _rop_d_map = etapa_data.get("rop_real_dia_by_date", {}) or {}
+                    _rop_n_map = etapa_data.get("rop_real_noche_by_date", {}) or {}
+                    _rop_vals = [float(v) for v in list(_rop_d_map.values()) + list(_rop_n_map.values()) if float(v) > 0]
+                    if _rop_vals:
+                        rr_etapa = float(sum(_rop_vals) / len(_rop_vals))
+                    else:
+                        _tmp = []
+                        if float(etapa_data.get("rop_real_dia", 0.0) or 0.0) > 0:
+                            _tmp.append(float(etapa_data.get("rop_real_dia", 0.0) or 0.0))
+                        if float(etapa_data.get("rop_real_noche", 0.0) or 0.0) > 0:
+                            _tmp.append(float(etapa_data.get("rop_real_noche", 0.0) or 0.0))
+                        rr_etapa = float(sum(_tmp) / len(_tmp)) if _tmp else 0.0
 
                     eficiencia_metros = (mr_etapa / mp_etapa * 100) if mp_etapa > 0 else 0.0
                     eficiencia_rop = (rr_etapa / rp_etapa * 100) if rp_etapa > 0 else 0.0
@@ -4338,7 +4481,7 @@ with tab_ejecutivo:
     fig_speed = st.session_state.get("fig_viaje_speed", None)
     fig_conn = st.session_state.get("fig_viaje_conn", None)
 
-    meta_pdf = {"equipo": equipo, "pozo": pozo, "etapa": etapa, "fecha": str(fecha)}
+    meta_pdf = {"equipo": st.session_state.get("equipo_val", ""), "pozo": st.session_state.get("pozo_val", ""), "etapa": etapa, "fecha": str(fecha)}
     kpis_pdf = {
         "Eficiencia global (%)": f"{_eff_prev:.0f}%",
         "TNPI Viajes (h)": f"{tnpi_total_h:.2f}",
@@ -4373,7 +4516,7 @@ with tab_ejecutivo:
 with tab_export:
     st.subheader("Exportar (PDF / PowerPoint)")
 
-    meta = {"equipo": equipo, "pozo": pozo, "etapa": etapa, "fecha": str(fecha)}
+    meta = {"equipo": st.session_state.get("equipo_val", ""), "pozo": st.session_state.get("pozo_val", ""), "etapa": etapa, "fecha": str(fecha)}
     kpis_export = {
         "Modo": modo_reporte,
         "TP (h)": f"{tp_h:.2f}",
