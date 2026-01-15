@@ -1176,42 +1176,54 @@ def load_jornada_json(path_in: str) -> bool:
 
     # Actividades personalizadas
     st.session_state.custom_actividades = payload.get("custom_actividades", []) or []
-
-    # Restaurar estado de widgets del sidebar (DEBE ser antes de que se rendericen)
+    # Restauración segura del sidebar: NO modificar keys de widgets después de instanciados.
+    # Guardamos valores para aplicarlos al inicio del script (antes de render del sidebar) y forzamos rerun.
     if meta:
-        st.session_state["equipo_val"] = meta.get("equipo", "")
-        st.session_state["pozo_val"] = meta.get("pozo", "")
-        # fecha viene como string "YYYY-MM-DD" o "YYYY/MM/DD"
-        _fecha_raw = str(meta.get("fecha", ""))
+        pending = {
+            'equipo_val': meta.get('equipo', ''),
+            'pozo_val': meta.get('pozo', ''),
+        }
+
+        # fecha viene como string \"YYYY-MM-DD\" o \"YYYY/MM/DD\"
+        _fecha_raw = str(meta.get('fecha', ''))
         _fecha = None
-        for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        for fmt in ('%Y-%m-%d', '%Y/%m/%d'):
             try:
                 _fecha = datetime.strptime(_fecha_raw, fmt).date()
                 break
             except Exception:
                 pass
         if _fecha is not None:
-            st.session_state["fecha_val"] = _fecha
+            pending['fecha_val'] = _fecha
 
-            st.session_state["equipo_tipo_val"] = meta.get("equipo_tipo", "")
-            st.session_state["etapa_manual_chk"] = bool(meta.get("etapa_manual", False))
-            st.session_state["etapa_sel"] = meta.get("etapa", meta.get("etapa_manual_val", ""))
-            st.session_state["etapa_manual_val"] = meta.get("etapa_manual_val", meta.get("etapa", ""))
+        pending['equipo_tipo_val'] = meta.get('equipo_tipo', '')
+        pending['etapa_manual_chk'] = bool(meta.get('etapa_manual', False))
+        pending['etapa_sel'] = meta.get('etapa', meta.get('etapa_manual_val', ''))
+        pending['etapa_manual_val'] = meta.get('etapa_manual_val', meta.get('etapa', ''))
 
-        if "modo_reporte" in meta:
-            st.session_state["modo_reporte"] = meta.get("modo_reporte", st.session_state.get("modo_reporte", ""))
+        if 'modo_reporte' in meta:
+            pending['modo_reporte'] = meta.get('modo_reporte', st.session_state.get('modo_reporte', ''))
+        if 'show_charts' in meta:
+            pending['show_charts'] = bool(meta.get('show_charts', True))
 
-        if "show_charts" in meta:
-            st.session_state["show_charts"] = bool(meta.get("show_charts", True))
-
+        st.session_state['_pending_sidebar_restore'] = pending
         # Mantener meta también dentro de drill_day
-        st.session_state.drill_day["meta"] = meta
+        st.session_state.drill_day['meta'] = meta
 
     return True
 
 # =====================================================================
 # SIDEBAR (con modo presentación)
 # =====================================================================
+# --- RESTORE SEGURO: aplicar valores cargados ANTES de instanciar widgets ---
+_pending = st.session_state.pop('_pending_sidebar_restore', None)
+if isinstance(_pending, dict) and _pending:
+    for _k, _v in _pending.items():
+        try:
+            st.session_state[_k] = _v
+        except Exception:
+            pass
+
 st.sidebar.title("Panel de Control")
 presentacion = st.sidebar.toggle("Modo presentación (ocultar sidebar)", value=False)
 
@@ -1258,31 +1270,118 @@ st.session_state.drill_day["meta"] = _meta_now
 
 with st.sidebar.container(border=True):
     st.sidebar.markdown("### Jornada (guardar / cargar)")
-    jornada_path = st.sidebar.text_input(
-        "Archivo jornada (.json)",
-        value=_default_jornada_path(equipo, pozo, str(fecha)),
-        help="Guarda/recupera df, conexiones, BHA y parámetros del día."
+
+    # Nombre sugerido del archivo (solo nombre, sin ruta)
+    _fname_full = _default_jornada_path(equipo, pozo, str(fecha))
+    _fname = os.path.basename(_fname_full)
+
+    # Construir payload completo (incluye meta, df, conexiones, BHA, drill_day, etc.)
+    def _build_jornada_payload() -> dict:
+        meta = {
+            "equipo": st.session_state.get("equipo_val", ""),
+            "pozo": st.session_state.get("pozo_val", ""),
+            "fecha": str(st.session_state.get("fecha_val", "")),
+            "equipo_tipo": st.session_state.get("equipo_tipo_val", ""),
+            "etapa_manual": bool(st.session_state.get("etapa_manual_chk", False)),
+            "etapa": st.session_state.get("etapa_sel", ""),
+            "etapa_manual_val": st.session_state.get("etapa_manual_val", ""),
+            "modo_reporte": st.session_state.get("modo_reporte", ""),
+            "show_charts": bool(st.session_state.get("show_charts", True)),
+        }
+        # Autocontenible
+        st.session_state.drill_day["meta"] = meta
+
+        return {
+            "version": "1.2",
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "meta": meta,
+            "df": st.session_state.df.to_dict(orient="records"),
+            "df_conn": st.session_state.df_conn.to_dict(orient="records"),
+            "df_bha": st.session_state.df_bha.to_dict(orient="records"),
+            "drill_day": st.session_state.drill_day,
+            "custom_actividades": st.session_state.get("custom_actividades", []),
+        }
+
+    _payload = _build_jornada_payload()
+    _payload_str = json.dumps(_payload, ensure_ascii=False, indent=2)
+
+    # --- Guardar jornada (DESCARGA) ---
+    st.sidebar.download_button(
+        label="Guardar jornada (.json)",
+        data=_payload_str,
+        file_name=_fname,
+        mime="application/json",
+        use_container_width=True,
     )
-    cjs1, cjs2 = st.sidebar.columns(2)
-    with cjs1:
-        if st.sidebar.button("Guardar jornada", use_container_width=True):
+
+    st.sidebar.divider()
+
+    # --- Cargar jornada (SUBIR ARCHIVO) ---
+    up_jornada = st.sidebar.file_uploader(
+        "Cargar jornada (.json)",
+        type=["json"],
+        accept_multiple_files=False,
+        key="jornada_uploader",
+        help="Carga un .json previamente guardado para continuar donde se dejó (incluye etapa, estadísticas, etc.).",
+    )
+
+    if st.sidebar.button("Aplicar jornada", use_container_width=True, disabled=(up_jornada is None)):
+        try:
+            payload = json.loads(up_jornada.getvalue().decode("utf-8"))
+        except Exception as e:
+            st.sidebar.error(f"No se pudo leer el JSON: {e}")
+            payload = None
+
+        if isinstance(payload, dict):
+            # Reusar loader existente, pero desde dict
+            # Guardamos temporalmente en memoria y aplicamos como si fuera load_jornada_json
             try:
-                save_jornada_json(jornada_path)
-                st.sidebar.success("Jornada guardada ✅")
-            except Exception as e:
-                st.sidebar.error(f"No se pudo guardar: {e}")
-    with cjs2:
-        if st.sidebar.button("Cargar jornada", use_container_width=True):
-            ok = False
-            try:
-                ok = load_jornada_json(jornada_path)
-            except Exception as e:
-                st.sidebar.error(f"No se pudo cargar: {e}")
-            if ok:
-                st.sidebar.success("Jornada cargada ✅"); st.rerun()
+                # Tablas
+                st.session_state.df = pd.DataFrame(payload.get("df", []), columns=st.session_state.df.columns)
+                st.session_state.df_conn = pd.DataFrame(payload.get("df_conn", []), columns=st.session_state.df_conn.columns)
+                st.session_state.df_bha = pd.DataFrame(payload.get("df_bha", []), columns=st.session_state.df_bha.columns)
+
+                # drill_day + meta
+                st.session_state.drill_day = payload.get("drill_day", st.session_state.drill_day) or st.session_state.drill_day
+                meta = payload.get("meta") or st.session_state.drill_day.get("meta") or {}
+
+                # Actividades personalizadas
+                st.session_state.custom_actividades = payload.get("custom_actividades", []) or []
+
+                # Restauración segura (aplicar al inicio del script)
+                if meta:
+                    pending = {
+                        "equipo_val": meta.get("equipo", ""),
+                        "pozo_val": meta.get("pozo", ""),
+                    }
+                    _fecha_raw = str(meta.get("fecha", ""))
+                    _fecha = None
+                    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+                        try:
+                            _fecha = datetime.strptime(_fecha_raw, fmt).date()
+                            break
+                        except Exception:
+                            pass
+                    if _fecha is not None:
+                        pending["fecha_val"] = _fecha
+
+                    pending["equipo_tipo_val"] = meta.get("equipo_tipo", "")
+                    pending["etapa_manual_chk"] = bool(meta.get("etapa_manual", False))
+                    pending["etapa_sel"] = meta.get("etapa", meta.get("etapa_manual_val", ""))
+                    pending["etapa_manual_val"] = meta.get("etapa_manual_val", meta.get("etapa", ""))
+
+                    if "modo_reporte" in meta:
+                        pending["modo_reporte"] = meta.get("modo_reporte", st.session_state.get("modo_reporte", ""))
+                    if "show_charts" in meta:
+                        pending["show_charts"] = bool(meta.get("show_charts", True))
+
+                    st.session_state["_pending_sidebar_restore"] = pending
+                    st.session_state.drill_day["meta"] = meta
+
+                st.sidebar.success("Jornada cargada ✅")
                 st.rerun()
-            else:
-                st.sidebar.warning("No se encontró el archivo de jornada.")
+            except Exception as e:
+                st.sidebar.error(f"No se pudo aplicar la jornada: {e}")
 
 with st.sidebar.container(border=True):
     st.sidebar.markdown("### Modo")
