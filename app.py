@@ -954,6 +954,12 @@ def indicators_table_html(title: str, rows: list[dict], kind: str = "actividad")
 # =====================================================================
 # SESSION STATE INIT (ANTES del header preview!)
 # =====================================================================
+# --- FIX: inicializar depth_rows para Viajes ---
+if "depth_rows" not in st.session_state:
+    st.session_state.depth_rows = pd.DataFrame(
+        columns=["Etapa", "PT_programada_m", "PT_actual_m"]
+    )
+
 if "df" not in st.session_state:
     st.session_state.df = pd.DataFrame(
         columns=[
@@ -4668,3 +4674,13 @@ with tab_export:
         st.caption("Para exportar gráficas como imágenes instala: `pip install -U kaleido`.")
 
 # NOTE: Added corrected Captura actividad block (see above).
+
+# --- FIX: sincronizar depth_rows desde drill_day (por etapa) ---
+rows = []
+for _etapa_k, _data in st.session_state.drill_day.get("por_etapa", {}).items():
+    rows.append({
+        "Etapa": _etapa_k,
+        "PT_programada_m": _data.get("pt_programada_m", 0.0),
+        "PT_actual_m": _data.get("prof_actual_m", 0.0),
+    })
+st.session_state.depth_rows = pd.DataFrame(rows)
