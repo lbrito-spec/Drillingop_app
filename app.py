@@ -604,47 +604,49 @@ def status_from_eff(eff: float) -> tuple[str, str, str]:
 # ------------------------------
 @st.cache_data(show_spinner=False)
 def load_tnpi_catalog(csv_path: str) -> pd.DataFrame:
+    """Carga catálogo de causas.
+    Soporta CSVs con:
+      - 2 columnas (Categoria_TNPI, Detalle_TNPI)
+      - 4 columnas (Categoria_TNPI, Detalle_TNPI, Categoria_TNP, Detalle_TNP)
+    Si no vienen columnas de TNP, las crea vacías (o replica TNPI como fallback).
+    """
+    cols_4 = ["Categoria_TNPI", "Detalle_TNPI", "Categoria_TNP", "Detalle_TNP"]
+    cols_2 = ["Categoria_TNPI", "Detalle_TNPI"]
+
     if csv_path and os.path.exists(csv_path):
         try:
             df = robust_read_csv(csv_path)
         except Exception:
-            df = pd.DataFrame()
-        det_col = None
-        cat_col = None
-        for c in df.columns:
-            if "detalle" in c.lower():
-                det_col = c
-            if "categoria" in c.lower():
-                cat_col = c
-        if det_col is None or cat_col is None:
-            det_col = "Detalle de causa de TNPI" if "Detalle de causa de TNPI" in df.columns else det_col
-            cat_col = "Categoria" if "Categoria" in df.columns else cat_col
-        df = df[[cat_col, det_col]].copy()
-        df.columns = ["Categoria_TNPI", "Detalle_TNPI"]
-        # Si el catálogo no trae TNP, lo derivamos del TNPI para reutilizar (editable luego)
-        df["Categoria_TNP"] = df["Categoria_TNPI"]
-        df["Detalle_TNP"] = df["Detalle_TNPI"]
-        df["Categoria_TNPI"] = df["Categoria_TNPI"].apply(smart_case)
-        df["Detalle_TNPI"] = df["Detalle_TNPI"].apply(smart_case)
-        df = df.dropna().drop_duplicates().reset_index(drop=True)
+            df = pd.read_csv(csv_path, encoding="utf-8", errors="ignore")
+
+        # Normaliza número de columnas
+        if df.shape[1] >= 4:
+            df = df.iloc[:, :4].copy()
+            df.columns = cols_4
+        elif df.shape[1] == 2:
+            df = df.iloc[:, :2].copy()
+            df.columns = cols_2
+            # crea columnas TNP (fallback a TNPI para no romper UI)
+            df["Categoria_TNP"] = df["Categoria_TNPI"]
+            df["Detalle_TNP"] = df["Detalle_TNPI"]
+        elif df.shape[1] == 3:
+            df = df.iloc[:, :3].copy()
+            df.columns = ["Categoria_TNPI", "Detalle_TNPI", "Categoria_TNP"]
+            df["Detalle_TNP"] = ""
+        else:
+            # vacío / inesperado
+            df = pd.DataFrame(columns=cols_4)
+
+        for c in cols_4:
+            if c not in df.columns:
+                df[c] = ""
+            df[c] = df[c].fillna("").astype(str).str.strip()
+
         return df
 
-    df = pd.DataFrame(
-        [
-            ["Proceso", "Circulación extendida | Descompensación de columnas", "Proceso", "Circulación extendida | Descompensación de columnas"],
-            ["Equipo | Herramientas", "Rendimiento de bombas", "Equipo | Herramientas", "Rendimiento de bombas"],
-            ["Equipo | Tecnologías", "Sin WITS por CÍA generadora", "Equipo | Tecnologías", "Sin WITS por CÍA generadora"],
-            ["Terceras compañías", "Demora en toma de survey / comando", "Terceras compañías", "Demora en toma de survey / comando"],
-        ],
-        columns=["Categoria_TNPI", "Detalle_TNPI", "Categoria_TNP", "Detalle_TNP"]
-    )
-    df["Categoria_TNPI"] = df["Categoria_TNPI"].apply(smart_case)
-    df["Detalle_TNPI"] = df["Detalle_TNPI"].apply(smart_case)
-    return df
+    # fallback mínimo
+    return pd.DataFrame(columns=cols_4)
 
-# ------------------------------
-# Export helpers
-# ------------------------------
 def style_for_export(fig):
     if not PLOTLY_IMG_OK:
         return fig
@@ -1861,33 +1863,92 @@ with st.sidebar.container(border=True):
         st.sidebar.markdown(f"**TNPI por exceso detectado:** {tnpi_exceso_h:.2f} h")
         st.sidebar.caption(f"(Real {float(horas_real):.2f} h − Estándar {float(horas_prog):.2f} h)")
 
+        # --- Exceso (Real > Estándar) ---
+        st.sidebar.markdown("**Asignación del exceso (Real > Estándar)**")
+
+        exceso_tipo = st.sidebar.radio(
+            "¿Cómo registrar el exceso?",
+            options=["TNPI", "TNP"],
+            horizontal=True,
+            key="exceso_tipo_general_choice",
+        )
+        st.session_state["exceso_tipo_general"] = exceso_tipo
+
+        # Helpers de catálogo
+        _has_cat = "df_tnpi_cat" in globals() and isinstance(df_tnpi_cat, pd.DataFrame)
+
         # --- Asignación simple (una sola causa) ---
-        st.sidebar.markdown("**Asignación simple (una sola causa)**")
-        act_cat_simple = st.sidebar.selectbox(
-            "Categoría TNPI (exceso)",
-            options=cat_list if "cat_list" in globals() else ["-"],
-            index=0,
-            key="act_cat_simple",
-        )
-
-        if "df_tnpi_cat" in globals() and "Categoria_TNPI" in df_tnpi_cat.columns and "Detalle_TNPI" in df_tnpi_cat.columns:
-            _det_opts_act = (
-                df_tnpi_cat[df_tnpi_cat["Categoria_TNPI"] == act_cat_simple]["Detalle_TNPI"]
-                .dropna()
-                .unique()
-                .tolist()
+        if exceso_tipo == "TNPI":
+            st.sidebar.markdown("**Asignación simple (TNPI)**")
+            act_cat_simple = st.sidebar.selectbox(
+                "Categoría TNPI (exceso)",
+                options=cat_list if "cat_list" in globals() else ["-"],
+                index=0,
+                key="act_cat_simple",
             )
+
+            if _has_cat and "Categoria_TNPI" in df_tnpi_cat.columns and "Detalle_TNPI" in df_tnpi_cat.columns:
+                _det_opts_act = (
+                    df_tnpi_cat[df_tnpi_cat["Categoria_TNPI"] == act_cat_simple]["Detalle_TNPI"]
+                    .dropna()
+                    .unique()
+                    .tolist()
+                )
+            else:
+                _det_opts_act = ["-"]
+
+            act_det_simple = st.sidebar.selectbox(
+                "Detalle TNPI (exceso)",
+                options=_det_opts_act if len(_det_opts_act) else ["-"],
+                index=0,
+                key="act_det_simple",
+            )
+
+            # placeholders para no romper lógica abajo
+            act_cat_simple_tnp = "-"
+            act_det_simple_tnp = "-"
+
         else:
-            _det_opts_act = ["-"]
+            st.sidebar.markdown("**Asignación simple (TNP)**")
 
-        act_det_simple = st.sidebar.selectbox(
-            "Detalle TNPI (exceso)",
-            options=_det_opts_act if len(_det_opts_act) else ["-"],
-            index=0,
-            key="act_det_simple",
-        )
+            # Lista categorías TNP (fallback: TNPI si no existe catálogo TNP)
+            if _has_cat and "Categoria_TNP" in df_tnpi_cat.columns:
+                _cat_tnp = df_tnpi_cat["Categoria_TNP"].dropna().unique().tolist()
+                _cat_tnp = [c for c in _cat_tnp if str(c).strip() not in ("", "-", "nan", "None")]
+            else:
+                _cat_tnp = []
 
-        # --- Desglose opcional (múltiples causas) ---
+            if not _cat_tnp and "cat_list" in globals():
+                _cat_tnp = cat_list
+
+            act_cat_simple_tnp = st.sidebar.selectbox(
+                "Categoría TNP (exceso)",
+                options=_cat_tnp if _cat_tnp else ["-"],
+                index=0,
+                key="act_cat_simple_tnp",
+            )
+
+            if _has_cat and "Categoria_TNP" in df_tnpi_cat.columns and "Detalle_TNP" in df_tnpi_cat.columns:
+                _det_opts_tnp = (
+                    df_tnpi_cat[df_tnpi_cat["Categoria_TNP"] == act_cat_simple_tnp]["Detalle_TNP"]
+                    .dropna()
+                    .unique()
+                    .tolist()
+                )
+            else:
+                _det_opts_tnp = ["-"]
+
+            act_det_simple_tnp = st.sidebar.selectbox(
+                "Detalle TNP (exceso)",
+                options=_det_opts_tnp if len(_det_opts_tnp) else ["-"],
+                index=0,
+                key="act_det_simple_tnp",
+            )
+
+            # placeholders para no romper lógica TNPI abajo
+            act_cat_simple = "-"
+            act_det_simple = "-"
+# --- Desglose opcional (múltiples causas) ---
         with st.sidebar.expander("Detalle TNPI (opcional) — desglose por múltiples causas", expanded=False):
             st.caption("Agrega varias causas y presiona **Guardar**. La suma debe ser igual al TNPI por exceso detectado.")
 
@@ -2036,70 +2097,84 @@ with st.sidebar.container(border=True):
 
             # TP (hasta el estándar)
             add_rows.append({
-                **base,
-                "Tipo": "TP",
-                "Categoria_TNPI": "-",
-                "Detalle_TNPI": "-",
-                "Horas_Prog": float(horas_prog),
-                "Horas_Reales": float(horas_prog),
-            })
+                        **base,
+                        "Tipo": "TP",
+                        "Categoria_TNPI": "-",
+                        "Detalle_TNPI": "-",
+                        "Categoria_TNP": "-",
+                        "Detalle_TNP": "-",
+                        "Horas_Prog": float(horas_prog),
+                        "Horas_Reales": float(horas_prog),
+                    })
 
-            # TNPI por exceso: desglose guardado o asignación simple
+                        # TNPI/TNP por exceso: desglose guardado o asignación simple
             exceso_tipo = st.session_state.get("exceso_tipo_general", "TNPI")
+            exceso_tipo = "TNP" if str(exceso_tipo).upper() == "TNP" else "TNPI"
+
+            bd_saved = pd.DataFrame()
             if exceso_tipo == "TNP":
+                # Registrar exceso como TNP (usa los selectores de Categoría/Detalle TNP)
                 add_rows.append({
                     **base,
                     "Tipo": "TNP",
                     "Categoria_TNPI": "-",
                     "Detalle_TNPI": "-",
-                    "Categoria_TNP": categoria_tnp if tipo_exceso == "TNP" else "-",
-                    "Detalle_TNP": detalle_tnp if tipo_exceso == "TNP" else "-",
+                    "Categoria_TNP": (act_cat_simple_tnp if "act_cat_simple_tnp" in locals() else categoria_tnp),
+                    "Detalle_TNP": (act_det_simple_tnp if "act_det_simple_tnp" in locals() else detalle_tnp),
                     "Horas_Prog": 0.0,
-                    "Horas_Reales": float(max(0.0, float(horas_real) - float(horas_prog))),
+                    "Horas_Reales": float(tnpi_exceso_h),
+                    "Comentario": f"Exceso (Real {horas_real:.2f}h > Estándar {horas_prog:.2f}h) registrado como TNP.",
+                    "Origen": "EXCESO",
                 })
             else:
-                            bd_saved = pd.DataFrame(
-                                st.session_state.get("act_tnpi_breakdown", []),
-                                columns=["Categoria_TNPI", "Detalle_TNPI", "Categoria_TNP", "Detalle_TNP", "Horas_TNPI_h", "Comentario"],
-                            )
-
-                            if (not bd_saved.empty) and bool(st.session_state.get("act_tnpi_breakdown_saved", False)):
-                                bd_saved["Horas_TNPI_h"] = pd.to_numeric(bd_saved["Horas_TNPI_h"], errors="coerce").fillna(0.0)
-                                bd_saved = bd_saved[bd_saved["Horas_TNPI_h"] > 0].copy()
-
-                                sum_bd = float(bd_saved["Horas_TNPI_h"].sum())
-                                if abs(sum_bd - float(tnpi_exceso_h)) > 1e-6:
-                                    st.error(
-                                        f"La suma del desglose TNPI guardado ({sum_bd:.2f} h) debe ser igual al TNPI por exceso ({float(tnpi_exceso_h):.2f} h)."
-                                    )
-                                    st.stop()
-
-                                for _, r in bd_saved.iterrows():
-                                    add_rows.append({
-                                        **base,
-                                        "Tipo": exceso_tipo,
-                                        "Categoria_TNPI": str(r.get("Categoria_TNPI", "-") or "-"),
-                                        "Detalle_TNPI": str(r.get("Detalle_TNPI", "-") or "-"),
-                                        "Horas_Prog": 0.0,
-                                        "Horas_Reales": float(r.get("Horas_TNPI_h", 0.0) or 0.0),
-                                        "Comentario": (str(comentario or "") + (f" | {r.get('Comentario')}" if r.get("Comentario") else "")).strip(" |"),
-                                    })
-                            else:
-                                # Asignación simple: usa lo capturado en la pestaña "Resumen actividad"
-                                # (si no se abrió, caerá en '-' / '-')
-                                add_rows.append({
-                                    **base,
-                                    "Tipo": "TNPI",
-                                    "Categoria_TNPI": act_cat_simple if "act_cat_simple" in locals() else "-",
-                                    "Detalle_TNPI": act_det_simple if "act_det_simple" in locals() else "-",
-                                    "Horas_Prog": 0.0,
-                                    "Horas_Reales": float(tnpi_exceso_h),
-                                })
-
-                            # Limpieza para la siguiente captura
-                            st.session_state.act_tnpi_breakdown = []
-            st.session_state.act_tnpi_breakdown_draft = []
-            st.session_state.act_tnpi_breakdown_saved = False
+                # Registrar exceso como TNPI. Si hay desglose guardado, lo aplicamos.
+                act_tnpi_breakdown = st.session_state.get("act_tnpi_breakdown", None)
+                if act_tnpi_breakdown is not None and len(act_tnpi_breakdown) > 0:
+                    try:
+                        bd_saved = pd.DataFrame(act_tnpi_breakdown)
+                        # Normaliza columnas esperadas
+                        if "Categoria_TNPI" not in bd_saved.columns and "Categoria" in bd_saved.columns:
+                            bd_saved["Categoria_TNPI"] = bd_saved["Categoria"]
+                        if "Detalle_TNPI" not in bd_saved.columns and "Detalle" in bd_saved.columns:
+                            bd_saved["Detalle_TNPI"] = bd_saved["Detalle"]
+                        if "Horas_Reales" not in bd_saved.columns and "Horas" in bd_saved.columns:
+                            bd_saved["Horas_Reales"] = bd_saved["Horas"]
+                        bd_saved = bd_saved[["Categoria_TNPI", "Detalle_TNPI", "Horas_Reales"]].copy()
+                        bd_saved["Horas_Reales"] = pd.to_numeric(bd_saved["Horas_Reales"], errors="coerce").fillna(0.0)
+                    except Exception:
+                        bd_saved = pd.DataFrame()
+            
+                if bd_saved.empty:
+                    add_rows.append({
+                        **base,
+                        "Tipo": "TNPI",
+                        "Categoria_TNPI": categoria_tnpi,
+                        "Detalle_TNPI": detalle_tnpi,
+                        "Categoria_TNP": "-",
+                        "Detalle_TNP": "-",
+                        "Horas_Prog": 0.0,
+                        "Horas_Reales": float(tnpi_exceso_h),
+                        "Comentario": f"Exceso (Real {horas_real:.2f}h > Estándar {horas_prog:.2f}h) registrado como TNPI.",
+                        "Origen": "EXCESO",
+                    })
+            # Si existe desglose TNPI guardado, lo aplicamos como múltiples filas TNPI
+            if (not bd_saved.empty) and (exceso_tipo == "TNPI"):
+                sum_bd = float(bd_saved["Horas_Reales"].sum()) if "Horas_Reales" in bd_saved.columns else 0.0
+                if sum_bd > 0 and abs(sum_bd - float(tnpi_exceso_h)) > 1e-6:
+                    bd_saved["Horas_Reales"] = bd_saved["Horas_Reales"] * (float(tnpi_exceso_h) / sum_bd)
+                for _, r in bd_saved.iterrows():
+                    add_rows.append({
+                        **base,
+                        "Tipo": "TNPI",
+                        "Categoria_TNPI": str(r.get("Categoria_TNPI", "-")),
+                        "Detalle_TNPI": str(r.get("Detalle_TNPI", "-")),
+                        "Categoria_TNP": "-",
+                        "Detalle_TNP": "-",
+                        "Horas_Prog": 0.0,
+                        "Horas_Reales": float(r.get("Horas_Reales", 0.0)),
+                        "Comentario": f"Exceso (Real {horas_real:.2f}h > Estándar {horas_prog:.2f}h) registrado como TNPI (desglose).",
+                        "Origen": "EXCESO",
+                    })
 
         else:
             # Sin split: respeta el tipo seleccionado (TP/TNPI/TNP)
@@ -3278,14 +3353,19 @@ with tab_act:
             if col not in piv.columns:
                 piv[col] = 0.0
         piv["Real"] = piv["TP"] + piv["TNPI"] + piv["TNP"]
-        piv["Eficiencia"] = piv.apply(lambda r: clamp_0_100(safe_pct(r["TP"], r["Real"])) if r["Real"] > 0 else 0.0, axis=1)
+        def _safe_pct(n, d):
+            return (float(n) / float(d) * 100.0) if float(d) > 0 else 0.0
+        piv["Eficiencia"] = piv.apply(lambda r: max(0.0, min(100.0, _safe_pct(r["TP"], r["Real"]))), axis=1)
         piv = piv.sort_values("Real", ascending=False)
-
         for _, r in piv.iterrows():
-            rows_act.append(
-                {"name": r["Actividad"], "real": f"{float(r['Real']):.2f}", "tnpi": f"{float(r['TNPI']):.2f}", "eff": float(r["Eficiencia"])}
-            )
-
+            rows_act.append({
+                "name": str(r["Actividad"]),
+                "real": f"{float(r['Real']):.2f}",
+                "tnpi": f"{float(r['TNPI']):.2f}",
+                "tnp": f"{float(r['TNP']):.2f}",
+                "eff": float(r["Eficiencia"]),
+                "semaforo": _semaforo_text(float(r["Eficiencia"]))
+            })
     if rows_act:
         components.html(indicators_table_html("Indicador de desempeño por actividades", rows_act, kind="actividad"), height=520, scrolling=True)
     else:
@@ -3400,9 +3480,10 @@ with tab_conn:
             per = df_conn_view.groupby(["Conn_No", "Profundidad_m"], as_index=False).agg(
                 real_min=("Minutos_Reales", "sum"),
                 tnpi_min=("Minutos_TNPI", "sum"),
+                tnp_min=("Minutos_TNP", "sum") if "Minutos_TNP" in df_conn_view.columns else ("Minutos_TNPI", "sum"),
             )
             per["eff"] = per.apply(
-                lambda r: clamp_0_100(safe_pct(r["real_min"] - r["tnpi_min"], r["real_min"])) if r["real_min"] > 0 else 0.0,
+                lambda r: clamp_0_100(safe_pct(r["real_min"] - r["tnpi_min"] - r.get("tnp_min", 0.0), r["real_min"])) if r["real_min"] > 0 else 0.0,
                 axis=1,
             )
             per = per.sort_values("Conn_No", ascending=True)
@@ -3410,7 +3491,13 @@ with tab_conn:
             for _, r in per.iterrows():
                 name = f"#{int(r['Conn_No'])}  (Prof {float(r['Profundidad_m']):.0f} m)"
                 rows_conn.append(
-                    {"name": name, "real": f"{float(r['real_min']):.0f}", "tnpi": f"{float(r['tnpi_min']):.0f}", "eff": float(r["eff"])}
+                    {
+                        "name": name,
+                        "real": f"{float(r['real_min']):.0f}",
+                        "tnpi": f"{float(r['tnpi_min']):.0f}",
+                        "tnp": f"{float(r.get('tnp_min', 0.0)):.0f}",
+                        "eff": float(r["eff"]),
+                    }
                 )
 
         if rows_conn:
