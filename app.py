@@ -2534,11 +2534,7 @@ if actividad == "Arma/Desarma BHA":
             
 
             # Actualizar variable para uso posterior
-
-            st.session_state["bha_exceso_tipo"] = bha_exceso_tipo
-
-            
-
+        # session_state already managed by widget key
             # Mostrar configuración según el tipo seleccionado
 
             if bha_exceso_tipo == "TNPI":
@@ -2553,7 +2549,7 @@ if actividad == "Arma/Desarma BHA":
 
                     index=0,
 
-                    key="bha_cat_simple",
+                    key="bha_cat_simple_1",
 
                 )
 
@@ -2587,7 +2583,7 @@ if actividad == "Arma/Desarma BHA":
 
                     index=0,
 
-                    key="bha_det_simple",
+                    key="bha_det_simple_1",
 
                 )
 
@@ -2605,7 +2601,7 @@ if actividad == "Arma/Desarma BHA":
 
                     index=0,
 
-                    key="bha_cat_simple",
+                    key="bha_cat_simple_2",
 
                 )
 
@@ -2639,7 +2635,7 @@ if actividad == "Arma/Desarma BHA":
 
                     index=0,
 
-                    key="bha_det_simple",
+                    key="bha_det_simple_2",
 
                 )
 
@@ -2657,7 +2653,7 @@ if actividad == "Arma/Desarma BHA":
                 "Detalle TNPI (BHA)",
                 options=_det_opts if len(_det_opts) else ["-"],
                 index=0,
-                key="bha_det_simple",
+                key="bha_det_simple_3",
             )
 
             # --- Desglose opcional (múltiples causas) ---
@@ -3313,8 +3309,74 @@ with tab_resumen:
                 fig_act_pie = px.pie(df_act.head(8), names="Actividad", values="Horas_Reales", 
                                      hole=0.35, title=f"Top Actividades - {etapa_resumen}")
                 st.plotly_chart(fig_act_pie, use_container_width=True)
+
+    # -----------------------------------------------------------------
+    # RESUMEN DIARIO (mismas gráficas pero por Fecha)
+    # -----------------------------------------------------------------
+    with st.expander("Resumen diario (por fecha)", expanded=False):
+        if not df_resumen_filtrado.empty and "Fecha" in df_resumen_filtrado.columns:
+            fechas_disp = (
+                sorted(df_resumen_filtrado["Fecha"].astype(str).dropna().unique().tolist())
+                if not df_resumen_filtrado["Fecha"].isna().all()
+                else []
+            )
         else:
-            st.info(f"No hay datos para la etapa {etapa_resumen}")
+            fechas_disp = []
+        if len(fechas_disp) == 0:
+            st.info("No hay fechas disponibles para generar el resumen diario.")
+        else:
+            fecha_resumen = st.selectbox(
+                "Fecha para resumen diario",
+                options=fechas_disp,
+                index=len(fechas_disp) - 1,
+                key="fecha_resumen_diario"
+            )
+
+            df_diario = df_resumen_filtrado[df_resumen_filtrado["Fecha"].astype(str) == str(fecha_resumen)].copy()
+
+            if df_diario.empty:
+                st.info(f"No hay datos para la fecha {fecha_resumen} (etapa {etapa_resumen}).")
+            else:
+                # KPIs diarios
+                total_real_d = float(df_diario["Horas_Reales"].sum()) if "Horas_Reales" in df_diario.columns else 0.0
+                tp_h_d = float(df_diario[df_diario["Tipo"] == "TP"]["Horas_Reales"].sum()) if "Tipo" in df_diario.columns else 0.0
+                tnpi_h_d = float(df_diario[df_diario["Tipo"] == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in df_diario.columns else 0.0
+                tnp_h_d = float(df_diario[df_diario["Tipo"] == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_diario.columns else 0.0
+                eff_d = clamp_0_100(safe_pct(tp_h_d, total_real_d)) if total_real_d > 0 else 0.0
+
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("Horas (Real)", f"{total_real_d:.2f}")
+                c2.metric("TP (h)", f"{tp_h_d:.2f}")
+                c3.metric("TNPI (h)", f"{tnpi_h_d:.2f}")
+                c4.metric("TNP (h)", f"{tnp_h_d:.2f}")
+                c5.metric("Eficiencia", f"{eff_d:.1f}%")
+
+                # Gráfica KPI diaria
+                df_tiempos_d = df_diario.groupby("Tipo")["Horas_Reales"].sum().reset_index()
+                if not df_tiempos_d.empty:
+                    fig_tiempos_d = px.pie(
+                        df_tiempos_d, names="Tipo", values="Horas_Reales",
+                        hole=0.55, title=f"TP vs TNPI vs TNP (Diario) - {fecha_resumen} / {etapa_resumen}"
+                    )
+                    st.plotly_chart(fig_tiempos_d, use_container_width=True)
+
+                # Actividades diarias
+                df_act_d = (
+                    df_diario.groupby("Actividad", as_index=False)["Horas_Reales"]
+                    .sum()
+                    .sort_values("Horas_Reales", ascending=False)
+                )
+                if not df_act_d.empty:
+                    fig_act_pie_d = px.pie(
+                        df_act_d.head(10), names="Actividad", values="Horas_Reales",
+                        hole=0.35, title=f"Top Actividades (Diario) - {fecha_resumen} / {etapa_resumen}"
+                    )
+                    st.plotly_chart(fig_act_pie_d, use_container_width=True)
+
+                # Tabla resumen diario
+                with st.expander("Ver tabla diaria (etapa + fecha)", expanded=False):
+                    cols_show = [c for c in ["Fecha","Etapa","Actividad","Tipo","Horas_Prog","Horas_Reales","Categoria_TNPI","Detalle_TNPI","Categoria_TNP","Detalle_TNP","Comentario"] if c in df_diario.columns]
+                    st.dataframe(df_diario[cols_show], use_container_width=True, height=260)
 
 # =====================================================================
 # TAB: INDICADORES ACTIVIDADES
