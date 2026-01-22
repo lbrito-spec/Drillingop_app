@@ -27,7 +27,7 @@ import re
 import base64
 import json
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, date
 import uuid
 
 import streamlit as st
@@ -211,6 +211,235 @@ def semaforo_dot(eff):
     """Compat: devuelve bolita semáforo según eficiencia (%)."""
     return _semaforo_from_eff(eff)
 
+# =====================================================================
+# FUNCIÓN AUXILIAR PARA RENDERIZAR HTML
+# =====================================================================
+def render_html(html_content: str, height: int = None):
+    """
+    Renderiza contenido HTML en Streamlit de manera robusta.
+    Intenta usar st.html() primero, luego components.html(), y finalmente st.markdown().
+    """
+    # Intentar con st.html() (Streamlit 1.23.0+)
+    if hasattr(st, 'html'):
+        try:
+            # Intentar con height si está disponible
+            if height:
+                st.html(html_content, height=height)
+            else:
+                st.html(html_content)
+        except TypeError:
+            # Si height no es soportado, usar sin parámetros
+            st.html(html_content)
+    # Fallback a components.html()
+    elif hasattr(components, 'html'):
+        components.html(html_content, height=height or 400, scrolling=True)
+    # Último recurso: st.markdown con unsafe_allow_html
+    else:
+        st.markdown(html_content, unsafe_allow_html=True)
+
+# =====================================================================
+# MISSION CONTROL DASHBOARD (NASA Style)
+# =====================================================================
+def mission_control_dashboard(etapa, eficiencia, tp_h, tnpi_h, tnp_h, total_real):
+    """
+    Panel de control tipo NASA con KPIs críticos
+    """
+    # Determinar color del status basado en eficiencia
+    if eficiencia >= 85:
+        status_color = "#00ff88"
+        status_text = "ÓPTIMO"
+    elif eficiencia >= 75:
+        status_color = "#ffaa00"
+        status_text = "ATENCIÓN"
+    else:
+        status_color = "#ff4444"
+        status_text = "CRÍTICO"
+    
+    # Calcular porcentajes
+    tp_percent = (tp_h / total_real * 100) if total_real > 0 else 0
+    tnpi_percent = (tnpi_h / total_real * 100) if total_real > 0 else 0
+    tnp_percent = (tnp_h / total_real * 100) if total_real > 0 else 0
+    
+    return f"""
+    <style>
+    .mission-panel {{
+        background: linear-gradient(180deg, #0f1620 0%, #0a0e14 100%);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 16px;
+        padding: 20px;
+        margin: 10px 0 20px 0;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        position: relative;
+        overflow: hidden;
+    }}
+    .mission-panel::before {{
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: linear-gradient(90deg, #00ff88 0%, #0088ff 100%);
+    }}
+    .kpi-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 16px;
+        margin-top: 20px;
+    }}
+    .kpi-card {{
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 12px;
+        padding: 16px;
+        text-align: center;
+        transition: all 0.3s ease;
+    }}
+    .kpi-card:hover {{
+        background: rgba(255,255,255,0.1);
+        border-color: rgba(0, 136, 255, 0.3);
+        transform: translateY(-2px);
+    }}
+    .kpi-value {{
+        font-size: 28px;
+        font-weight: 800;
+        margin: 8px 0;
+        color: #fff;
+        font-family: 'Courier New', monospace;
+    }}
+    .kpi-label {{
+        font-size: 12px;
+        color: rgba(255,255,255,0.7);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }}
+    .status-indicator {{
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-right: 8px;
+        animation: pulse 2s infinite;
+    }}
+    @keyframes pulse {{
+        0% {{ opacity: 1; }}
+        50% {{ opacity: 0.3; }}
+        100% {{ opacity: 1; }}
+    }}
+    .mission-header {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 15px;
+    }}
+    .mission-title {{
+        font-size: 12px;
+        color: rgba(255,255,255,0.7);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }}
+    .mission-stage {{
+        font-size: 20px;
+        font-weight: 800;
+        margin-top: 4px;
+        background: linear-gradient(90deg, #00ff88, #0088ff);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }}
+    .efficiency-badge {{
+        background: rgba(255,255,255,0.05);
+        border: 1px solid {status_color};
+        border-radius: 20px;
+        padding: 8px 16px;
+        text-align: center;
+        min-width: 120px;
+    }}
+    .efficiency-value {{
+        font-size: 32px;
+        font-weight: 800;
+        color: {status_color};
+        line-height: 1;
+    }}
+    .efficiency-label {{
+        font-size: 12px;
+        color: rgba(255,255,255,0.7);
+        margin-top: 2px;
+    }}
+    .progress-bar {{
+        height: 6px;
+        background: rgba(255,255,255,0.1);
+        border-radius: 3px;
+        margin-top: 8px;
+        overflow: hidden;
+    }}
+    .progress-fill {{
+        height: 100%;
+        border-radius: 3px;
+    }}
+    </style>
+    
+    <div class="mission-panel">
+        <div class="mission-header">
+            <div>
+                <div class="mission-title">
+                    <span class="status-indicator" style="background: {status_color};"></span>
+                    MISSION CONTROL • DRILLSPOT
+                </div>
+                <div class="mission-stage">{etapa}</div>
+            </div>
+            <div class="efficiency-badge">
+                <div class="efficiency-value">{eficiencia:.1f}%</div>
+                <div class="efficiency-label">{status_text}</div>
+            </div>
+        </div>
+        
+        <div class="kpi-grid">
+            <div class="kpi-card">
+                <div class="kpi-label">TP Productivo</div>
+                <div class="kpi-value" style="color: #00ff88;">{tp_h:.1f}h</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {tp_percent:.1f}%; background: #00ff88;"></div>
+                </div>
+                <div style="font-size: 11px; color: rgba(255,255,255,0.6);">{tp_percent:.1f}% del tiempo</div>
+            </div>
+            
+            <div class="kpi-card">
+                <div class="kpi-label">TNPI</div>
+                <div class="kpi-value" style="color: #ffaa00;">{tnpi_h:.1f}h</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {tnpi_percent:.1f}%; background: #ffaa00;"></div>
+                </div>
+                <div style="font-size: 11px; color: rgba(255,255,255,0.6);">{tnpi_percent:.1f}% del tiempo</div>
+            </div>
+            
+            <div class="kpi-card">
+                <div class="kpi-label">TNP</div>
+                <div class="kpi-value" style="color: #ff4444;">{tnp_h:.1f}h</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {tnp_percent:.1f}%; background: #ff4444;"></div>
+                </div>
+                <div style="font-size: 11px; color: rgba(255,255,255,0.6);">{tnp_percent:.1f}% del tiempo</div>
+            </div>
+            
+            <div class="kpi-card">
+                <div class="kpi-label">Tiempo Total</div>
+                <div class="kpi-value" style="color: #0088ff;">{total_real:.1f}h</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: 100%; background: linear-gradient(90deg, #00ff88, #0088ff);"></div>
+                </div>
+                <div style="font-size: 11px; color: rgba(255,255,255,0.6);">Operación actual</div>
+            </div>
+        </div>
+        
+        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.08);">
+            <div style="display: flex; justify-content: space-between; font-size: 11px; color: rgba(255,255,255,0.6);">
+                <div>📊 <b>Estado:</b> {status_text}</div>
+                <div>⏱️ <b>Actualizado:</b> {datetime.now().strftime('%H:%M:%S')}</div>
+                <div>📍 <b>Etapa:</b> {etapa}</div>
+            </div>
+        </div>
+    </div>
+    """
 
 # --- Helpers: coalesce duplicate columns (avoid losing data when columns are repeated) ---
 def _coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -599,6 +828,31 @@ def status_from_eff(eff: float) -> tuple[str, str, str]:
         return ("warn", "ATENCIÓN", "#F1C40F")
     return ("crit", "CRÍTICO", "#E74C3C")
 
+
+# =====================================================================
+# HELPERS: FECHAS (histórico diario / comparativo)
+# =====================================================================
+def _df_fecha_to_date(s: pd.Series) -> pd.Series:
+    """Coerce Fecha to datetime.date (accepts date/datetime/str)."""
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s.dt.date
+    return pd.to_datetime(s, errors="coerce").dt.date
+
+def _available_days(df: pd.DataFrame) -> list[date]:
+    if df is None or df.empty or "Fecha" not in df.columns:
+        return []
+    d = _df_fecha_to_date(df["Fecha"])
+    return sorted([x for x in d.dropna().unique().tolist()])
+
+def split_day(df: pd.DataFrame, day: date, date_col: str = "Fecha") -> pd.DataFrame:
+    """Return rows of df that match the given date."""
+    if df is None or df.empty or date_col not in df.columns:
+        return pd.DataFrame(columns=df.columns if df is not None else [])
+    tmp = df.copy()
+    tmp["_Fecha_dt"] = pd.to_datetime(tmp[date_col], errors="coerce")
+    return tmp[tmp["_Fecha_dt"].dt.date == day].drop(columns=["_Fecha_dt"], errors="ignore").copy()
+
+
 # ------------------------------
 # TNPI catálogo
 # ------------------------------
@@ -646,6 +900,111 @@ def load_tnpi_catalog(csv_path: str) -> pd.DataFrame:
 
     # fallback mínimo
     return pd.DataFrame(columns=cols_4)
+
+def render_export_diario_calendario():
+    # -----------------------------------------------------------------
+    # EXPORT AUTOMÁTICO DIARIO (por calendario) - PDF / PPTX / CSV
+    # -----------------------------------------------------------------
+    with st.expander("Export automático diario (calendario)", expanded=False):
+        df_base = st.session_state.get("df", pd.DataFrame()).copy()
+        days_all = _available_days(df_base)
+        if len(days_all) == 0:
+            st.info("Aún no hay datos con Fecha para exportar reportes diarios.")
+        else:
+            dia_exp = st.date_input("Día a exportar", value=days_all[-1], min_value=days_all[0], max_value=days_all[-1], key="exp_day_pick")
+            # Alcance del reporte diario
+            scope_rep = st.radio(
+                "Alcance del reporte",
+                ["Por pozo (todas las etapas del día)", "Por etapa (solo etapa seleccionada)"],
+                index=0,
+                horizontal=True,
+                key="exp_scope_pick",
+            )
+            df_day = split_day(df_base, dia_exp, date_col="Fecha")
+            if (not df_day.empty) and (scope_rep.startswith("Por etapa")):
+                etapas_dia = [e for e in df_day.get("Etapa", pd.Series(dtype=str)).fillna("").astype(str).unique().tolist() if e != ""]
+                etapa_default = st.session_state.get("etapa_val", "")
+                if etapa_default in etapas_dia:
+                    idx_def = etapas_dia.index(etapa_default)
+                else:
+                    idx_def = 0
+                etapa_pick = st.selectbox("Etapa a exportar", options=etapas_dia if etapas_dia else [""], index=idx_def if etapas_dia else 0, key="exp_etapa_pick")
+                if etapa_pick:
+                    df_day = df_day[df_day["Etapa"].astype(str) == str(etapa_pick)].copy()
+
+            if df_day.empty:
+                st.warning("No hay registros para ese día.")
+            else:
+                # Meta (toma la primera fila que encuentre)
+                r0 = df_day.iloc[0]
+                meta_d = {
+                    "equipo": str(r0.get("Equipo", st.session_state.get("equipo_val", "")) or ""),
+                    "pozo": str(r0.get("Pozo", st.session_state.get("pozo_val", "")) or ""),
+                    "etapa": str(r0.get("Etapa", "") or ""),
+                    "fecha": dia_exp.isoformat(),
+                }
+
+                total = float(df_day.get("Horas_Reales", pd.Series(dtype=float)).fillna(0).sum())
+                tp = float(df_day[df_day.get("Tipo", "") == "TP"]["Horas_Reales"].sum()) if "Tipo" in df_day.columns else total
+                tnpi = float(df_day[df_day.get("Tipo", "") == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in df_day.columns else 0.0
+                tnp = float(df_day[df_day.get("Tipo", "") == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_day.columns else 0.0
+                eff = clamp_0_100(safe_pct(tp, total)) if total > 0 else 0.0
+
+                kpis_d = {
+                    "TP (h)": f"{tp:.2f}",
+                    "TNPI (h)": f"{tnpi:.2f}",
+                    "TNP (h)": f"{tnp:.2f}",
+                    "Horas total (h)": f"{total:.2f}",
+                    "Eficiencia del día": f"{eff:.0f}%",
+                }
+
+                charts_d = {}
+                # Pie tiempos
+                if "Tipo" in df_day.columns and "Horas_Reales" in df_day.columns:
+                    df_t = df_day.groupby("Tipo", as_index=False)["Horas_Reales"].sum()
+                    if not df_t.empty:
+                        charts_d["TP vs TNPI vs TNP (Diario)"] = px.pie(df_t, names="Tipo", values="Horas_Reales", hole=0.55, title=f"TP vs TNPI vs TNP — {dia_exp.isoformat()}")
+                # Pie actividades
+                if "Actividad" in df_day.columns and "Horas_Reales" in df_day.columns:
+                    df_a = df_day.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(10)
+                    if not df_a.empty:
+                        charts_d["Top actividades (Diario)"] = px.pie(df_a, names="Actividad", values="Horas_Reales", hole=0.35, title=f"Top actividades — {dia_exp.isoformat()}")
+
+                colx1, colx2, colx3 = st.columns(3)
+                with colx1:
+                    pdf_b = build_pdf(meta_d, kpis_d, charts=charts_d)
+                    st.download_button(
+                        "Descargar PDF (Día)",
+                        data=pdf_b,
+                        file_name=f"Reporte_Diario_{meta_d['pozo']}_{dia_exp.isoformat()}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="dl_pdf_day",
+                    )
+                with colx2:
+                    ppt_b = build_pptx(meta_d, kpis_d, charts_d)
+                    st.download_button(
+                        "Descargar PPTX (Día)",
+                        data=ppt_b,
+                        file_name=f"Reporte_Diario_{meta_d['pozo']}_{dia_exp.isoformat()}.pptx",
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        use_container_width=True,
+                        key="dl_ppt_day",
+                    )
+                with colx3:
+                    csv_bytes = df_day.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "Descargar CSV (Día)",
+                        data=csv_bytes,
+                        file_name=f"Datos_Diarios_{meta_d['pozo']}_{dia_exp.isoformat()}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        key="dl_csv_day",
+                    )
+
+                with st.expander("Vista previa (tabla del día)", expanded=False):
+                    st.dataframe(df_day, use_container_width=True, height=260)
+
 
 def style_for_export(fig):
     if not PLOTLY_IMG_OK:
@@ -3171,14 +3530,37 @@ tab_resumen, tab_act, tab_conn, tab_viajes, tab_bha, tab_rop, tab_detalle, tab_c
 # TAB: RESUMEN (MODIFICADO CON FILTRO DE ETAPA)
 # =====================================================================
 with tab_resumen:
-    st.subheader("Indicador de desempeño (principal)")
-    
+
+    # --- MISSION CONTROL DASHBOARD ---
+    st.markdown("### 🧭 Centro de Control de Misión")
+
+    # Calcular KPIs generales (todas las etapas)
+    total_prog = float(df["Horas_Prog"].sum()) if not df.empty else 0.0
+    total_real = float(df["Horas_Reales"].sum()) if not df.empty else 0.0
+    tp_h = float(df[df["Tipo"] == "TP"]["Horas_Reales"].sum()) if not df.empty else 0.0
+    tnpi_h = float(df[df["Tipo"] == "TNPI"]["Horas_Reales"].sum()) if not df.empty else 0.0
+    tnp_h = float(df[df["Tipo"] == "TNP"]["Horas_Reales"].sum()) if not df.empty else 0.0
+    eficiencia_dia = clamp_0_100(safe_pct(tp_h, total_real)) if total_real > 0 else 0.0
+
+    # Mostrar el dashboard NASA (vista general)
+    dashboard_html = mission_control_dashboard(
+        etapa="VISIÓN GENERAL",
+        eficiencia=eficiencia_dia,
+        tp_h=tp_h,
+        tnpi_h=tnpi_h,
+        tnp_h=tnp_h,
+        total_real=total_real
+    )
+
+    render_html(dashboard_html, height=450)
+
     # --- FILTRO DE ETAPA EN EL RESUMEN ---
     col_filtro1, col_filtro2 = st.columns([1, 3])
+
     with col_filtro1:
         # Obtener todas las etapas disponibles
         etapas_disponibles = sorted(df["Etapa"].unique().tolist()) if not df.empty else ["Sin datos"]
-        
+
         # Selector de etapa para el resumen
         etapa_resumen = st.selectbox(
             "Etapa para resumen",
@@ -3186,7 +3568,7 @@ with tab_resumen:
             index=etapas_disponibles.index(etapa) if etapa in etapas_disponibles else 0,
             key="etapa_resumen"
         )
-    
+
     # Filtrar datos por la etapa seleccionada
     if etapa_resumen != "Sin datos":
         df_resumen_filtrado = df[df["Etapa"] == etapa_resumen].copy()
@@ -3194,7 +3576,7 @@ with tab_resumen:
     else:
         df_resumen_filtrado = pd.DataFrame()
         df_conn_filtrado = pd.DataFrame()
-    
+
     # Recalcular KPIs con datos filtrados
     total_prog_filtrado = float(df_resumen_filtrado["Horas_Prog"].sum()) if not df_resumen_filtrado.empty else 0.0
     total_real_filtrado = float(df_resumen_filtrado["Horas_Reales"].sum()) if not df_resumen_filtrado.empty else 0.0
@@ -3202,14 +3584,14 @@ with tab_resumen:
     tnpi_h_filtrado = float(df_resumen_filtrado[df_resumen_filtrado["Tipo"] == "TNPI"]["Horas_Reales"].sum()) if not df_resumen_filtrado.empty else 0.0
     tnp_h_filtrado = float(df_resumen_filtrado[df_resumen_filtrado["Tipo"] == "TNP"]["Horas_Reales"].sum()) if not df_resumen_filtrado.empty else 0.0
     eficiencia_dia_filtrado = clamp_0_100(safe_pct(tp_h_filtrado, total_real_filtrado)) if total_real_filtrado > 0 else 0.0
-    
+
     # Recalcular KPIs de conexiones filtradas
     conn_real_min_filtrado = 0.0
     conn_std_min_filtrado = 0.0
     conn_tnpi_min_filtrado = 0.0
     conn_tnp_min_filtrado = 0.0
     eff_conn_filtrado = 0.0
-    
+
     if not df_conn_filtrado.empty:
         conn_real_min_filtrado = float(df_conn_filtrado.groupby(["Conn_No"])["Minutos_Reales"].sum().sum())
         per_conn2_filtrado = df_conn_filtrado.groupby("Conn_No", as_index=False).first()[["Conn_No", "Conn_Tipo", "Angulo_Bucket"]]
@@ -3218,18 +3600,37 @@ with tab_resumen:
             axis=1
         )
         conn_std_min_filtrado = float(per_conn2_filtrado["Std_Total"].sum())
-        
+
         conn_tp_min_filtrado = min(conn_real_min_filtrado, conn_std_min_filtrado) if conn_std_min_filtrado > 0 else conn_real_min_filtrado
         conn_tnpi_min_filtrado = max(0.0, conn_real_min_filtrado - conn_std_min_filtrado) if conn_std_min_filtrado > 0 else 0.0
         eff_conn_filtrado = clamp_0_100(safe_pct(conn_tp_min_filtrado, conn_real_min_filtrado)) if conn_real_min_filtrado > 0 else 0.0
-    
+
+    # --- MISSION CONTROL PARA ETAPA ESPECÍFICA ---
+    if etapa_resumen != "Sin datos" and not df_resumen_filtrado.empty:
+        st.markdown(f"### 📊 Control de Misión - {etapa_resumen}")
+
+        etapa_dashboard_html = mission_control_dashboard(
+            etapa=etapa_resumen,
+            eficiencia=eficiencia_dia_filtrado,
+            tp_h=tp_h_filtrado,
+            tnpi_h=tnpi_h_filtrado,
+            tnp_h=tnp_h_filtrado,
+            total_real=total_real_filtrado
+        )
+
+        render_html(etapa_dashboard_html, height=450)
+
+    st.subheader("Indicador de desempeño (principal)")
+
     # Gauge con eficiencia filtrada
     fig_g = build_gauge(f"Eficiencia - {etapa_resumen}", eficiencia_dia_filtrado) if PLOTLY_IMG_OK else None
     col_g, col_t = st.columns([1.05, 2.0])
 
     with col_g:
         if fig_g is not None:
-            st.plotly_chart(fig_g, use_container_width=True)
+            # Usar etapa_resumen para hacer la clave única
+            etapa_key = etapa_resumen.replace(" ", "_").replace("/", "_").replace('"', "") if etapa_resumen != "Sin datos" else "general"
+            st.plotly_chart(fig_g, use_container_width=True, key=f"gauge_resumen_{etapa_key}")
         else:
             st.info("Para gauge instala kaleido: pip install -U kaleido")
 
@@ -3239,21 +3640,22 @@ with tab_resumen:
             {"kpi": "Horas Totales", "real": f"{total_real_filtrado:.1f} h", "tnpi": f"{tnpi_h_filtrado:.1f} h", "eff": eficiencia_dia_filtrado},
             {"kpi": "Conexión perforando", "real": f"{(conn_real_min_filtrado/60.0):.2f} h", "tnpi": f"{(conn_tnpi_min_filtrado/60.0):.2f} h", "eff": eff_conn_filtrado},
         ]
-        
+
         # Agregar metros y ROP si tenemos datos por etapa
         if modo_reporte == "Perforación" and etapa_resumen != "Sin datos":
             # Obtener datos específicos de esta etapa
             etapa_data_resumen = get_etapa_data(etapa_resumen)
-            
+
             mr_total = float(etapa_data_resumen.get("metros_real_dia", 0.0)) + float(etapa_data_resumen.get("metros_real_noche", 0.0))
             tnpi_m_h = float(etapa_data_resumen.get("tnpi_metros_h", 0.0))
             mp_total = float(etapa_data_resumen.get("metros_prog_total", 0.0))
-            
+
             eff_m = clamp_0_100(safe_pct(mr_total, mp_total)) if mp_total > 0 else 0.0
-            
+
             kpi_rows.insert(0, {"kpi": "Metros perforados", "real": f"{mr_total:.0f} m", "tnpi": f"{tnpi_m_h:.2f} h", "eff": eff_m})
-        
+
         components.html(kpi_table_html(kpi_rows), height=300, scrolling=False)
+
     
     # Mostrar indicador claro de qué etapa estamos viendo
     with col_filtro2:
@@ -3301,14 +3703,14 @@ with tab_resumen:
             if not df_tiempos.empty:
                 fig_tiempos = px.pie(df_tiempos, names="Tipo", values="Horas_Reales", 
                                      hole=0.55, title=f"TP vs TNPI vs TNP - {etapa_resumen}")
-                st.plotly_chart(fig_tiempos, use_container_width=True)
+                st.plotly_chart(fig_tiempos, use_container_width=True, key="pie_tiempos_resumen")
             
             # Actividades
             df_act = df_resumen_filtrado.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False)
             if not df_act.empty:
                 fig_act_pie = px.pie(df_act.head(8), names="Actividad", values="Horas_Reales", 
                                      hole=0.35, title=f"Top Actividades - {etapa_resumen}")
-                st.plotly_chart(fig_act_pie, use_container_width=True)
+                st.plotly_chart(fig_act_pie, use_container_width=True, key="pie_actividades_resumen")
 
     # -----------------------------------------------------------------
     # RESUMEN DIARIO (mismas gráficas pero por Fecha)
@@ -3482,7 +3884,7 @@ with tab_conn:
                         color="Componente",
                         color_discrete_map=CONN_COLOR_MAP,
                     )
-                    st.plotly_chart(fig_conn_pie, use_container_width=True)
+                    st.plotly_chart(fig_conn_pie, use_container_width=True, key="pie_conexiones")
 
                 # Stacked por conexión/profundidad
                 df_stack = df_conn_view.copy()
@@ -3534,7 +3936,7 @@ with tab_conn:
                     fig_conn_stack.add_annotation(x=x, y=y, text=f"<b>{y:.0f}</b>", showarrow=False, yshift=10)
 
                 fig_conn_stack.update_layout(legend_title_text="", xaxis_tickangle=0)
-                st.plotly_chart(fig_conn_stack, use_container_width=True)
+                st.plotly_chart(fig_conn_stack, use_container_width=True, key="stack_conexiones")
 
         st.subheader("Indicador de desempeño por conexiones")
         rows_conn = []
@@ -3680,7 +4082,7 @@ with tab_rop:
         ])
         fig_rop = px.bar(df_rop, x="Turno", y=["Programado (m/h)", "Real (m/h)"], barmode="group", text_auto=True)
         fig_rop.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=340, legend_title_text="Serie")
-        st.plotly_chart(fig_rop, use_container_width=True)
+        st.plotly_chart(fig_rop, use_container_width=True, key="bar_rop")
 
         # Detalle + semáforo por turno
         def _eff_turno(real_v: float, prog_v: float) -> float:
@@ -3877,7 +4279,52 @@ with tab_rop:
 # =====================================================================
 # NUEVA TAB: COMPARATIVA DE ETAPAS
 # =====================================================================
+
 with tab_comp:
+    # -----------------------------------------------------------------
+    # COMPARATIVO POR DÍAS (2 fechas) - KPIs y actividades
+    # -----------------------------------------------------------------
+    with st.expander("Comparativo por días (calendario)", expanded=False):
+        df_base = st.session_state.get("df", pd.DataFrame()).copy()
+        days_all = _available_days(df_base)
+        if len(days_all) < 2:
+            st.info("Se requieren al menos 2 días con datos para comparar.")
+        else:
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                d1 = st.date_input("Día A", value=days_all[-2], min_value=days_all[0], max_value=days_all[-1], key="cmp_day_a")
+            with col_d2:
+                d2 = st.date_input("Día B", value=days_all[-1], min_value=days_all[0], max_value=days_all[-1], key="cmp_day_b")
+
+            df_a = split_day(df_base, d1, date_col="Fecha")
+            df_b = split_day(df_base, d2, date_col="Fecha")
+
+            def _kpi_row(df_: pd.DataFrame, label: str) -> dict:
+                total = float(df_.get("Horas_Reales", pd.Series(dtype=float)).fillna(0).sum())
+                tp = float(df_[df_.get("Tipo", "") == "TP"]["Horas_Reales"].sum()) if "Tipo" in df_.columns else total
+                tnpi = float(df_[df_.get("Tipo", "") == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in df_.columns else 0.0
+                tnp = float(df_[df_.get("Tipo", "") == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_.columns else 0.0
+                eff = clamp_0_100(safe_pct(tp, total)) if total > 0 else 0.0
+                return {"Día": label, "TP": tp, "TNPI": tnpi, "TNP": tnp, "Total": total, "Eficiencia": eff}
+
+            df_cmp = pd.DataFrame([_kpi_row(df_a, d1.isoformat()), _kpi_row(df_b, d2.isoformat())])
+            st.dataframe(df_cmp, use_container_width=True, height=120)
+
+            df_bar = df_cmp.melt(id_vars=["Día"], value_vars=["TP", "TNPI", "TNP"], var_name="Tipo", value_name="Horas")
+            fig_bar = px.bar(df_bar, x="Tipo", y="Horas", color="Día", barmode="group", title="Comparativo de KPIs (horas)")
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+            if "Actividad" in df_base.columns and "Horas_Reales" in df_base.columns:
+                col_ta, col_tb = st.columns(2)
+                with col_ta:
+                    st.caption(f"Top actividades - {d1.isoformat()}")
+                    df_act_a = df_a.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(12) if not df_a.empty else pd.DataFrame(columns=["Actividad","Horas_Reales"])
+                    st.dataframe(df_act_a, use_container_width=True, height=260)
+                with col_tb:
+                    st.caption(f"Top actividades - {d2.isoformat()}")
+                    df_act_b = df_b.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(12) if not df_b.empty else pd.DataFrame(columns=["Actividad","Horas_Reales"])
+                    st.dataframe(df_act_b, use_container_width=True, height=260)
+
     st.subheader("📊 Comparativa de Etapas")
 
     # Estiliza select/multiselect para que no se vea con borde rojo (tema oscuro)
@@ -3958,7 +4405,7 @@ with tab_comp:
                 )
                 fig_comp.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
                 fig_comp.update_layout(height=420, coloraxis_showscale=False)
-                st.plotly_chart(fig_comp, use_container_width=True)
+                st.plotly_chart(fig_comp, use_container_width=True, key="bar_comparativa_etapas")
 
                 # Radar (se mantiene) + alternativa “más pro”: Heatmap normalizado
                 categorias = ["Horas Totales", "TP (h)", "TNPI (h)", "TNP (h)", "Eficiencia %", "Conexiones"]
@@ -3990,7 +4437,7 @@ with tab_comp:
                         height=520,
                         legend_title_text="Etapa",
                     )
-                    st.plotly_chart(fig_radar, use_container_width=True)
+                    st.plotly_chart(fig_radar, use_container_width=True, key="radar_etapas")
                 else:
                     st.info("Radar oculto: seleccionaste más de 5 etapas.")
 
@@ -4018,7 +4465,7 @@ with tab_comp:
                     height=420 + (18 * len(df_hm.index)),
                     margin=dict(l=20, r=20, t=60, b=20),
                 )
-                st.plotly_chart(fig_hm, use_container_width=True)
+                st.plotly_chart(fig_hm, use_container_width=True, key="heatmap_etapas")
 
                 # --- Análisis TNP (Comparativo por etapas) ---
                 st.markdown("### 🔵 Análisis de TNP (comparativo)")
@@ -4052,7 +4499,7 @@ with tab_comp:
                         orientation="h",
                         title="TNP por categoría y etapa (h)",
                     )
-                    st.plotly_chart(fig_tnp_cat, use_container_width=True)
+                    st.plotly_chart(fig_tnp_cat, use_container_width=True, key="bar_tnp_cat")
 
                     df_tnp_det = (
                         df_tnp_cmp.groupby(["Detalle_TNP"], as_index=False)["Horas_Reales"]
@@ -4067,7 +4514,7 @@ with tab_comp:
                         orientation="h",
                         title="Top 10 - Detalles TNP (h)",
                     )
-                    st.plotly_chart(fig_tnp_det, use_container_width=True)
+                    st.plotly_chart(fig_tnp_det, use_container_width=True, key="bar_tnp_det")
 
 
             # Tabla resumen
@@ -4395,7 +4842,7 @@ with tab_viajes:
             annotation_position="top left",
         )
     fig_v.update_layout(showlegend=True, legend_title_text='', xaxis=dict(dtick=1))
-    st.plotly_chart(fig_v, use_container_width=True)
+    st.plotly_chart(fig_v, use_container_width=True, key="bar_viajes_velocidad")
 
     if considerar_conexion:
         fig_c = px.bar(
@@ -4427,7 +4874,7 @@ with tab_viajes:
             )
 
         fig_c.update_layout(showlegend=True, legend_title_text='', xaxis=dict(dtick=1))
-        st.plotly_chart(fig_c, use_container_width=True)
+        st.plotly_chart(fig_c, use_container_width=True, key="bar_viajes_conexiones")
 
     # ------------------------------
     # RESUMEN (TABLA)
@@ -4684,6 +5131,16 @@ with tab_viajes:
             except Exception:
                 _real_conn_min = 0.0
 
+            # Asegura valor por defecto si no existe en el scope local
+            if "turno_registro" not in locals():
+                turno_registro = turno
+            if "actividad_registro" not in locals():
+                actividad_registro = "Viaje"
+            if "detalle_registro" not in locals():
+                detalle_registro = ""
+            if "categoria_tnpi_registro" not in locals():
+                categoria_tnpi_registro = ""
+
             # Base común del registro (mismo esquema que el registro general)
             #
             # IMPORTANTE:
@@ -4858,7 +5315,7 @@ with tab_bha:
         )
         fig_bha.update_layout(xaxis_title="Etiqueta", yaxis_title="Horas", legend_title="Serie")
         fig_bha.update_traces(texttemplate="%{y:.0f}", textposition="inside")
-        st.plotly_chart(fig_bha, use_container_width=True)
+        st.plotly_chart(fig_bha, use_container_width=True, key="bar_bha")
 
         st.dataframe(df_bha_last, use_container_width=True, hide_index=True)
 
@@ -6371,6 +6828,7 @@ with tab_ejecutivo:
 # =====================================================================
 with tab_export:
     st.subheader("Exportar (PDF / PowerPoint)")
+    render_export_diario_calendario()
 
     meta = {"equipo": st.session_state.get("equipo_val", ""), "pozo": st.session_state.get("pozo_val", ""), "etapa": etapa, "fecha": str(fecha)}
     kpis_export = {
