@@ -26,11 +26,17 @@ import os
 import re
 import base64
 import json
+import textwrap
 from io import BytesIO
 from datetime import datetime, date
 import uuid
 
 import streamlit as st
+
+# Legacy safety default
+legacy_calc_value = 0.0
+
+mr_etapa_legacy = 0.0  # legacy var (kept to avoid NameError)
 import pandas as pd
 
 def _calc_eff(prog: float, real: float) -> float:
@@ -77,6 +83,11 @@ def _normalize_time_cause_columns(df_in: pd.DataFrame) -> pd.DataFrame:
     ]:
         if col not in df.columns:
             df[col] = "-"
+
+    # Asegura columnas de hora (opcional)
+    for col in ["Hora_Inicio", "Hora_Fin"]:
+        if col not in df.columns:
+            df[col] = ""
 
     # Clean null-like values
     for col in ["Categoria_TNPI", "Detalle_TNPI", "Categoria_TNP", "Detalle_TNP"]:
@@ -192,7 +203,7 @@ def _semaforo_from_eff(eff):
     try:
         if eff is None:
             return "⚪"
-        if isinstance(eff, str) and eff.strip()=="":
+        if isinstance(eff, str) and eff.strip()== "":
             return "⚪"
         val = float(eff)
     except Exception:
@@ -211,9 +222,9 @@ def semaforo_dot(eff):
     """Compat: devuelve bolita semáforo según eficiencia (%)."""
     return _semaforo_from_eff(eff)
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # FUNCIÓN AUXILIAR PARA RENDERIZAR HTML
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 def render_html(html_content: str, height: int = None):
     """
     Renderiza contenido HTML en Streamlit de manera robusta.
@@ -237,9 +248,109 @@ def render_html(html_content: str, height: int = None):
     else:
         st.markdown(html_content, unsafe_allow_html=True)
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+# CHIPS UI (pro badges)
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+def render_chip_row(items: list[dict], use_iframe: bool = False, height: int = 120) -> None:
+    """
+    Renderiza chips elegantes en una fila.
+    items: [{"label": "...", "value": "...", "tone": "blue|green|amber|red|violet|gray"}]
+    """
+    tones = {
+        "blue": ("#38bdf8", "rgba(56, 189, 248, 0.28)", "rgba(56, 189, 248, 0.35)"),
+        "green": ("#22c55e", "rgba(34, 197, 94, 0.28)", "rgba(34, 197, 94, 0.35)"),
+        "amber": ("#f59e0b", "rgba(245, 158, 11, 0.28)", "rgba(245, 158, 11, 0.35)"),
+        "red": ("#ef4444", "rgba(239, 68, 68, 0.28)", "rgba(239, 68, 68, 0.35)"),
+        "violet": ("#8b5cf6", "rgba(139, 92, 246, 0.28)", "rgba(139, 92, 246, 0.35)"),
+        "gray": ("#e2e8f0", "rgba(148, 163, 184, 0.20)", "rgba(148, 163, 184, 0.22)"),
+    }
+    chips_html = []
+    for it in items:
+        label = str(it.get("label", "")).strip()
+        value = str(it.get("value", "")).strip()
+        tone = it.get("tone", "gray")
+        fg, bg, glow = tones.get(tone, tones["gray"])
+        chips_html.append(
+            f"""
+            <div class="ds-chip" style="--chip-fg:{fg}; --chip-bg:{bg}; --chip-glow:{glow};">
+              <span class="ds-chip-label">{label}</span>
+              <span class="ds-chip-value">{value}</span>
+            </div>
+            """
+        )
+
+    html = textwrap.dedent(
+        f"""
+        <style>
+          .ds-chip-row {{
+            display:flex; flex-wrap:wrap; gap:8px;
+            padding: 2px 0 6px 0;
+          }}
+          .ds-chip {{
+            display:inline-flex; align-items:center; gap:8px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.16);
+            background: linear-gradient(180deg, var(--chip-bg), rgba(255,255,255,0.02));
+            box-shadow:
+              inset 0 0 0 1px rgba(255,255,255,0.04),
+              0 8px 20px rgba(0,0,0,0.28),
+              0 0 16px var(--chip-glow);
+            backdrop-filter: blur(6px);
+            color: var(--chip-fg);
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0.2px;
+          }}
+          .ds-chip-label {{
+            color: rgba(255,255,255,0.70);
+            font-weight: 700;
+          }}
+          .ds-chip-value {{
+            color: var(--chip-fg);
+          }}
+        </style>
+        <div class="ds-chip-row">
+          {''.join(chips_html)}
+        </div>
+        """
+    ).strip()
+    if use_iframe and hasattr(components, "html"):
+        components.html(html, height=height, scrolling=False)
+    else:
+        st.markdown(html, unsafe_allow_html=True)
+
+def build_delta_chip_item(
+    label: str,
+    real: float,
+    prog: float,
+    unit: str = "",
+    higher_is_better: bool = True,
+    precision: int = 2,
+) -> dict:
+    """Devuelve un chip Δ vs prog con flecha y color."""
+    try:
+        real_v = float(real)
+        prog_v = float(prog)
+    except Exception:
+        real_v = 0.0
+        prog_v = 0.0
+    delta = real_v - prog_v
+    arrow = "↑" if delta >= 0 else "↓"
+    good = (delta >= 0 and higher_is_better) or (delta <= 0 and not higher_is_better)
+    tone = "green" if good else "red"
+    fmt = f"{{delta:+.{precision}f}}"
+    val = fmt.format(delta=delta)
+    unit_txt = f" {unit}" if unit else ""
+    return {
+        "label": label,
+        "value": f"{arrow} {val}{unit_txt} vs prog",
+        "tone": tone,
+    }
+
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # MISSION CONTROL DASHBOARD (NASA Style)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 def mission_control_dashboard(etapa, eficiencia, tp_h, tnpi_h, tnp_h, total_real):
     """
     Panel de control tipo NASA con KPIs críticos
@@ -485,6 +596,207 @@ def add_semaforo_column(df, eff_col="Eficiencia_pct"):
 
 st.set_page_config(page_title="Dashboard Operativo DrillSpot", layout="wide")
 
+# == == == == == == == == == == == == =
+# Auth (Opción B: usuarios definidos por config)
+# - Producción (Streamlit Cloud): usa st.secrets["users"]
+# - Local: usa users.json en el mismo folder del app.py
+# Formato esperado:
+#   users:
+#     "lenin":
+#       "name": "Lenin Brito"
+#       "password_sha256": "<sha256_hex>"
+#       "photo_url": "https://..."
+#       "role": "admin"
+# == == == == == == == == == == == == =
+import hashlib
+from pathlib import Path
+try:
+    import bcrypt  # type: ignore
+except Exception:
+    bcrypt = None
+
+def _sha256_hex(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+def _looks_like_sha256(value: str) -> bool:
+    v = (value or "").strip().lower()
+    return len(v) == 64 and all(c in "0123456789abcdef" for c in v)
+
+def _looks_like_bcrypt(value: str) -> bool:
+    v = (value or "").strip()
+    return v.startswith("$2a$") or v.startswith("$2b$") or v.startswith("$2y$")
+
+def _load_users_config() -> dict:
+    # 1) Streamlit secrets (ideal en deploy)
+    try:
+        if hasattr(st, "secrets") and "users" in st.secrets:
+            # st.secrets puede ser ConfigObj-like
+            users = dict(st.secrets["users"])
+            # Asegurar dict interno
+            out = {}
+            for u, meta in users.items():
+                out[str(u)] = dict(meta)
+            return out
+    except Exception:
+        pass
+
+    # 2) Fallback local file
+    try:
+        p = Path(__file__).with_name("users.json")
+        if p.exists():
+            import json
+            with p.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            users = data.get("users", {})
+            # Soporta users como dict {"user": {...}} o como lista [{"username": "...", ...}]
+            if isinstance(users, list):
+                out = {}
+                for item in users:
+                    if not isinstance(item, dict):
+                        continue
+                    uname = str(item.get("username", "")).strip()
+                    if not uname:
+                        continue
+                    meta = dict(item)
+                    # Normaliza alias comunes
+                    if "photo_url" not in meta and "photo" in meta:
+                        meta["photo_url"] = meta.get("photo", "")
+                    out[uname] = meta
+                return out
+            if isinstance(users, dict):
+                out = {}
+                for u, meta in users.items():
+                    m = dict(meta) if isinstance(meta, dict) else {}
+                    if "photo_url" not in m and "photo" in m:
+                        m["photo_url"] = m.get("photo", "")
+                    out[str(u)] = m
+                return out
+    except Exception:
+        pass
+
+    return {}
+
+def _auth_user(username: str, password: str) -> dict | None:
+    users = _load_users_config()
+    u = (username or "").strip()
+    if not u or u not in users:
+        return None
+    meta = users[u]
+    stored_sha = str(meta.get("password_sha256", "")).strip()
+    stored_pw = str(meta.get("password", "")).strip()
+    stored_hash = str(meta.get("password_hash", "")).strip()
+    stored = stored_sha or stored_hash or stored_pw
+    if not stored:
+        return None
+
+    # 1) SHA256
+    if stored_sha or _looks_like_sha256(stored):
+        if _sha256_hex(password or "") != stored:
+            return None
+    # 2) bcrypt
+    elif _looks_like_bcrypt(stored):
+        if bcrypt is None:
+            st.error("Falta la librería bcrypt. Instala con: pip install bcrypt")
+            return None
+        try:
+            if not bcrypt.checkpw((password or "").encode("utf-8"), stored.encode("utf-8")):
+                return None
+        except Exception:
+            return None
+    # 3) Fallback (texto plano)
+    else:
+        if (password or "") != stored:
+            return None
+    # normalizar campos
+    meta2 = dict(meta)
+    meta2.setdefault("name", u)
+    meta2.setdefault("photo_url", "")
+    meta2.setdefault("role", "user")
+    meta2["username"] = u
+    return meta2
+
+def _render_user_badge(user_meta: dict) -> str:
+    name = (user_meta.get("name") or user_meta.get("username") or "").strip()
+    photo = (user_meta.get("photo_url") or "").strip()
+    # Badge fijo arriba derecha (no depende del header)
+    img_html = f'<img src="{photo}" style="width:32px;height:32px;border-radius:999px;object-fit:cover;border:1px solid rgba(255,255,255,.25);" />' if photo else ''
+    return f"""
+    <style>
+      .user-badge {{
+        position: fixed;
+        top: 12px;
+        right: 18px;
+        z-index: 999999;
+        display:flex;
+        align-items:center;
+        gap:10px;
+        padding:6px 10px;
+        border-radius:999px;
+        background: rgba(15, 17, 22, 0.55);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255,255,255,.08);
+        color: rgba(255,255,255,.92);
+        font-size: 13px;
+        line-height: 1;
+      }}
+      .user-badge .name {{
+        max-width: 180px;
+        overflow:hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }}
+    </style>
+    <div class="user-badge">
+      {img_html}
+      <div class="name">{name}</div>
+    </div>
+    """
+
+def _login_sidebar():
+    # Estado base
+    if "auth_ok" not in st.session_state:
+        st.session_state["auth_ok"] = False
+    if "auth_user" not in st.session_state:
+        st.session_state["auth_user"] = None
+
+    with st.sidebar.expander("🔐 Acceso", expanded=not st.session_state["auth_ok"]):
+        if st.session_state["auth_ok"] and st.session_state["auth_user"]:
+            u = st.session_state["auth_user"]
+            st.success(f"Sesión activa: {u.get('name', u.get('username',''))}")
+            if st.button("Cerrar sesión", key="logout_btn"):
+                st.session_state["auth_ok"] = False
+                st.session_state["auth_user"] = None
+                st.rerun()
+        else:
+            st.caption("Ingresa tus credenciales para operar la app.")
+            username = st.text_input("Usuario", key="login_user")
+            password = st.text_input("Contraseña", type="password", key="login_pass")
+            if st.button("Entrar", key="login_btn"):
+                meta = _auth_user(username, password)
+                if meta:
+                    st.session_state["auth_ok"] = True
+                    st.session_state["auth_user"] = meta
+                    st.success("Acceso concedido.")
+                    st.rerun()
+                else:
+                    st.error("Usuario o contraseña inválidos.")
+
+
+# ---------- Gate de acceso ----------
+_login_sidebar()
+if not st.session_state.get("auth_ok"):
+    st.title("Dashboard Diario Operativo – DrillSpot / ROGII")
+    st.info("Inicia sesión en el panel lateral para continuar.")
+    st.stop()
+
+# Badge usuario (foto + nombre)
+try:
+    if st.session_state.get("auth_user"):
+        st.markdown(_render_user_badge(st.session_state["auth_user"]), unsafe_allow_html=True)
+except Exception:
+    pass
+
+
 # --- Modo visual (forzar claro/oscuro independiente del theme de Streamlit) ---
 # Esto controla los "cards" (HTML/iframes) y algunos estilos pro. No afecta cálculos.
 if "ui_mode" not in st.session_state:
@@ -690,6 +1002,43 @@ ACTIVIDADES = [
     "Viaje metiendo / levantando TP de 3 1/2\" - 2 7/8\" TxT",
 ]
 
+
+# ----------------------------------------------------------------------
+# Catálogo de actividades para "Cambio de etapa" (CE)
+# - Si existe el archivo 'actividades CE.csv' junto al script, se carga de ahí.
+# - Si no existe, se usa un fallback mínimo.
+# ----------------------------------------------------------------------
+def _load_actividades_ce():
+    fallback = [
+        "Circular", "Bombear Bache", "Sacar sarta", "Eliminar BHA",
+        "Instalar equipos para Introduccion TR /LN", "Bajar TR /LN",
+        "Desmantelar equipo para introducción de TR", "Instalacion de equipo de cementacion",
+        "Cementar", "Esperar fraguado", "WOC / Fraguado", "Prueba de presión", "NPT / Espera"
+    ]
+    try:
+        _csv_candidates = [
+            os.path.join(os.path.dirname(__file__), "actividades CE.csv"),
+            os.path.join(os.getcwd(), "actividades CE.csv"),
+        ]
+        for _p in _csv_candidates:
+            if os.path.exists(_p):
+                _df = pd.read_csv(_p, encoding="latin-1")
+                col = _df.columns[0]
+                vals = [str(x).strip() for x in _df[col].tolist() if str(x).strip() and str(x).strip().lower() != "nan"]
+                # quitar duplicados preservando orden
+                seen = set()
+                out = []
+                for v in vals:
+                    k = v.lower()
+                    if k not in seen:
+                        seen.add(k)
+                        out.append(v)
+                return out if out else fallback
+    except Exception:
+        pass
+    return fallback
+
+ACTIVIDADES_CE = _load_actividades_ce()
 # Catálogo de objetivos para Viajes (m/h y min por conexión)
 # Nota: estos valores vienen de la tabla de objetivos (velocidad y tiempo de conexión)
 VIAJE_CATALOG = {
@@ -829,9 +1178,9 @@ def status_from_eff(eff: float) -> tuple[str, str, str]:
     return ("crit", "CRÍTICO", "#E74C3C")
 
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # HELPERS: FECHAS (histórico diario / comparativo)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 def _df_fecha_to_date(s: pd.Series) -> pd.Series:
     """Coerce Fecha to datetime.date (accepts date/datetime/str)."""
     if pd.api.types.is_datetime64_any_dtype(s):
@@ -963,12 +1312,12 @@ def render_export_diario_calendario():
                 if "Tipo" in df_day.columns and "Horas_Reales" in df_day.columns:
                     df_t = df_day.groupby("Tipo", as_index=False)["Horas_Reales"].sum()
                     if not df_t.empty:
-                        charts_d["TP vs TNPI vs TNP (Diario)"] = px.pie(df_t, names="Tipo", values="Horas_Reales", hole=0.55, title=f"TP vs TNPI vs TNP — {dia_exp.isoformat()}")
+                        charts_d["TP vs TNPI vs TNP (Diario)"] = px.pie(df_t, names="Tipo", values="Horas_Reales", hole=0.55, title=f"TP vs TNPI vs TNP - {dia_exp.isoformat()}")
                 # Pie actividades
                 if "Actividad" in df_day.columns and "Horas_Reales" in df_day.columns:
                     df_a = df_day.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(10)
                     if not df_a.empty:
-                        charts_d["Top actividades (Diario)"] = px.pie(df_a, names="Actividad", values="Horas_Reales", hole=0.35, title=f"Top actividades — {dia_exp.isoformat()}")
+                        charts_d["Top actividades (Diario)"] = px.pie(df_a, names="Actividad", values="Horas_Reales", hole=0.35, title=f"Top actividades - {dia_exp.isoformat()}")
 
                 colx1, colx2, colx3 = st.columns(3)
                 with colx1:
@@ -1150,20 +1499,47 @@ def build_gauge(title: str, value_0_100: float):
     if not PLOTLY_IMG_OK:
         return None
     v = clamp_0_100(value_0_100)
+    # Color dinámico por rango (pro look)
+    if v >= 85:
+        bar_color = "#22c55e"
+        delta_color = "#22c55e"
+    elif v >= 75:
+        bar_color = "#f59e0b"
+        delta_color = "#f59e0b"
+    else:
+        bar_color = "#ef4444"
+        delta_color = "#ef4444"
+    _sk, status_label, status_color = status_from_eff(v)
     fig = go.Figure(
         go.Indicator(
-            mode="gauge+number",
+            mode="gauge+number+delta",
             value=v,
-            number={"suffix": "%", "font": {"size": 70}},
-            title={"text": title, "font": {"size": 26}},
+            number={"suffix": "%", "font": {"size": 58, "family": "Arial Black", "color": "white"}},
+            delta={
+                "reference": 85,
+                "increasing": {"color": delta_color},
+                "decreasing": {"color": delta_color},
+                "position": "bottom",
+                "valueformat": ".0f",
+                "prefix": "Δ ",
+                "suffix": " vs 85%",
+            },
+            title={"text": title.upper(), "font": {"size": 20, "family": "Arial Black"}},
             gauge={
-                "axis": {"range": [0, 100], "tickwidth": 1},
-                "bar": {"thickness": 0.3},
+                "axis": {
+                    "range": [0, 100],
+                    "tickwidth": 1,
+                    "tickcolor": "rgba(255,255,255,0.35)",
+                    "tickvals": [0, 50, 100],
+                    "ticktext": ["0", "50", "100"],
+                },
+                "bar": {"thickness": 0.34, "color": bar_color},
                 "steps": [
-                    {"range": [0, 75], "color": "#E74C3C"},
-                    {"range": [75, 85], "color": "#F1C40F"},
-                    {"range": [85, 100], "color": "#2ECC71"},
+                    {"range": [0, 75], "color": "rgba(239,68,68,0.28)"},
+                    {"range": [75, 85], "color": "rgba(245,158,11,0.28)"},
+                    {"range": [85, 100], "color": "rgba(34,197,94,0.28)"},
                 ],
+                "threshold": {"line": {"color": "#8b5cf6", "width": 4}, "thickness": 0.78, "value": 85},
             },
         )
     )
@@ -1172,6 +1548,15 @@ def build_gauge(title: str, value_0_100: float):
         margin=dict(l=20, r=20, t=60, b=10),
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="white"),
+    )
+    fig.add_annotation(
+        text=f"<b>{status_label}</b>",
+        x=0.5,
+        y=0.05,
+        xref="paper",
+        yref="paper",
+        showarrow=False,
+        font=dict(size=16, color=status_color, family="Arial Black"),
     )
     return fig
 
@@ -1183,7 +1568,7 @@ def _is_light_theme() -> bool:
     """Determina si debemos renderizar en modo claro.
 
     Prioridad:
-    1) st.session_state['ui_mode'] (Diurno/Nocturno) — controla el look de los cards pro.
+    1) st.session_state['ui_mode'] (Diurno/Nocturno) - controla el look de los cards pro.
     2) theme.base de Streamlit.
     """
     try:
@@ -1429,9 +1814,9 @@ def indicators_table_html(title: str, rows: list[dict], kind: str = "actividad")
     </div>
     """
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # SESSION STATE INIT (ANTES del header preview!)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # --- FIX: inicializar depth_rows para Viajes ---
 if "depth_rows" not in st.session_state:
     st.session_state.depth_rows = pd.DataFrame(
@@ -1444,6 +1829,7 @@ if "df" not in st.session_state:
         "Equipo", "Pozo", "Etapa", "Fecha", "Equipo_Tipo", "Modo_Reporte",
             "Seccion", "Corrida", "Tipo_Agujero", "Operacion", "Actividad", "Turno",
             "Tipo", "Categoria_TNPI", "Detalle_TNPI", "Categoria_TNP", "Detalle_TNP",
+            "Hora_Inicio", "Hora_Fin",
             "Horas_Prog", "Horas_Reales",
             "ROP_Prog_mh", "ROP_Real_mh",
             "Comentario", "Origen",
@@ -1541,14 +1927,19 @@ def get_etapa_data(etapa_nombre):
             "rop_real_dia_by_date": {},
             "rop_real_noche_by_date": {},
 
+            # ROP programada por corrida (maestro) y por fecha (registro diario)
+            "rop_prog_by_corrida": {},
+            "rop_prog_by_corrida_meta": {},
+            "rop_prog_by_date": {},
+
             "tnpi_metros_h": 0.0,
         }
 
     return st.session_state.drill_day["por_etapa"][etapa_nombre]
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # HEADER PRO (preview eficiencia para glow/estado)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 _df_prev = st.session_state.df
 _total_prev = float(_df_prev["Horas_Reales"].sum()) if not _df_prev.empty else 0.0
 _tp_prev = float(_df_prev[_df_prev["Tipo"] == "TP"]["Horas_Reales"].sum()) if not _df_prev.empty else 0.0
@@ -1623,9 +2014,9 @@ st.divider()
 modo_reporte = st.session_state.get("modo_reporte", MODO_REPORTE_OPTS[0])
 
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # GUARDAR / CARGAR JORNADA (JSON local)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 def _default_jornada_path(equipo: str, pozo: str, fecha_str: str) -> str:
     safe = lambda s: re.sub(r"[^A-Za-z0-9_-]+", "_", str(s)).strip("_")
     script_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
@@ -1714,9 +2105,9 @@ def load_jornada_json(path_in: str) -> bool:
 
     return True
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # SIDEBAR (con modo presentación)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # --- RESTORE SEGURO: aplicar valores cargados ANTES de instanciar widgets ---
 _pending = st.session_state.pop('_pending_sidebar_restore', None)
 if isinstance(_pending, dict) and _pending:
@@ -1942,9 +2333,12 @@ with st.sidebar.container(border=True):
                 st.sidebar.error("No pude identificar columnas de Categoria/Detalle en el CSV TNPI.")
             else:
                 df_tnpi_cat = df_tnpi_cat[[cat_col, det_col]].copy()
-                df_tnpi_cat.columns = ["Categoria_TNPI", "Detalle_TNPI", "Categoria_TNP", "Detalle_TNP"]
+                df_tnpi_cat.columns = ["Categoria_TNPI", "Detalle_TNPI"]
                 df_tnpi_cat["Categoria_TNPI"] = df_tnpi_cat["Categoria_TNPI"].apply(smart_case)
                 df_tnpi_cat["Detalle_TNPI"] = df_tnpi_cat["Detalle_TNPI"].apply(smart_case)
+                # Mantener columnas TNP para compatibilidad con el resto de la app
+                df_tnpi_cat["Categoria_TNP"] = df_tnpi_cat["Categoria_TNPI"]
+                df_tnpi_cat["Detalle_TNP"] = df_tnpi_cat["Detalle_TNPI"]
                 df_tnpi_cat = df_tnpi_cat.dropna().drop_duplicates().reset_index(drop=True)
                 st.sidebar.success("CSV TNPI cargado")
     else:
@@ -2115,7 +2509,13 @@ with st.sidebar.container(border=True):
         """, unsafe_allow_html=True)
 
     st.sidebar.markdown("### Captura actividad (general)")
-    corrida = st.sidebar.text_input("Corrida (Run)", "Run 1")
+    # Corrida activa (Run): se usa como contexto global y para ROP programada por corrida
+    _corrida_prev = st.session_state.get("corrida_activa", None)
+    if _corrida_prev is None and "Corrida (Run)" in st.session_state:
+        # compatibilidad con versiones previas (cuando no había key explícita)
+        _corrida_prev = st.session_state.get("Corrida (Run)")
+    corrida = st.sidebar.text_input("Corrida (Run)", _corrida_prev or "Run 1", key="corrida_activa")
+    st.session_state.drill_day["corrida_activa"] = corrida
     tipo_agujero = st.sidebar.radio("Tipo de agujero", TIPO_AGUJERO, horizontal=True)
     turno = st.sidebar.radio("Turno", TURNOS, horizontal=True)
 
@@ -2124,8 +2524,19 @@ with st.sidebar.container(border=True):
     )
 
     # --- Actividad (catálogo + personalizadas + otra) ---
-    actividades_opts = ACTIVIDADES + sorted(st.session_state.get("custom_actividades", []))
-    actividad_sel = st.sidebar.selectbox("Actividad", actividades_opts + ["Otra (especificar)"])
+    if modo_reporte == "Cambio de etapa":
+        actividades_base = ACTIVIDADES_CE
+        actividades_opts = actividades_base
+    else:
+        actividades_base = ACTIVIDADES
+        actividades_opts = actividades_base + sorted(st.session_state.get("custom_actividades", []))
+
+    actividad_sel = st.sidebar.selectbox(
+        "Actividad",
+        actividades_opts + ["Otra (especificar)"],
+        key="actividad_select_sidebar",
+        help="Catálogo según el modo de reporte (Perforación / Cambio de etapa)."
+    )
 
     actividad = actividad_sel
     if actividad_sel == "Otra (especificar)":
@@ -2133,6 +2544,39 @@ with st.sidebar.container(border=True):
 
     # Tipo de tiempo (SIEMPRE visible)
     tipo = st.sidebar.radio("Tipo de tiempo", ["TP", "TNPI", "TNP"], horizontal=True, key="tipo_time_general")
+
+    # Hora (opcional) para discretizar por horas
+    registrar_hora = st.sidebar.checkbox("Registrar hora", value=False, key="act_use_time")
+    hora_ini = None
+    hora_fin = None
+    bitacora_enabled = False
+    bitacora_entries = st.session_state.get("act_bitacora_entries", [])
+    bitacora_total_h = float(st.session_state.get("act_bitacora_total_h", 0.0) or 0.0)
+    if registrar_hora:
+        hora_ini = st.sidebar.time_input(
+            "Hora inicio",
+            value=st.session_state.get("act_hora_ini", datetime.now().time()),
+            key="act_hora_ini",
+        )
+        hora_fin = st.sidebar.time_input(
+            "Hora fin",
+            value=st.session_state.get("act_hora_fin", datetime.now().time()),
+            key="act_hora_fin",
+        )
+        bitacora_enabled = st.sidebar.toggle("Bitácora por horas", value=False, key="act_use_bitacora")
+    hora_ini_txt = hora_ini.strftime("%H:%M") if (registrar_hora and hora_ini) else ""
+    hora_fin_txt = hora_fin.strftime("%H:%M") if (registrar_hora and hora_fin) else ""
+    if registrar_hora and bitacora_enabled:
+        st.sidebar.caption("Completa la bitácora en la pestaña **Bitácora por horas**.")
+
+    render_chip_row([
+        {"label": "Modo", "value": modo_reporte, "tone": "blue"},
+        {"label": "Turno", "value": turno, "tone": "violet"},
+        {"label": "Tipo", "value": tipo, "tone": "amber" if tipo == "TNPI" else ("red" if tipo == "TNP" else "green")},
+        {"label": "Operación", "value": operacion, "tone": "gray"},
+        {"label": "Actividad", "value": actividad or "-", "tone": "blue"},
+        {"label": "Corrida", "value": corrida, "tone": "gray"},
+    ], use_iframe=True, height=120)
 
     # -------------------------------------------------
     # Helper: Viajes (calcular estándar sugerido)
@@ -2204,7 +2648,21 @@ with st.sidebar.container(border=True):
         )
 
     horas_prog = st.sidebar.number_input("Horas estándar / programadas (h)", 0.0, step=0.25, key="hp_general")
-    horas_real = st.sidebar.number_input("Horas reales (h)", 0.0, step=0.25, key="hr_general")
+    if registrar_hora and bitacora_enabled:
+        horas_real = float(bitacora_total_h or 0.0)
+        if horas_real > 0:
+            st.sidebar.caption(f"Horas reales (bitácora): {horas_real:.2f} h")
+        else:
+            st.sidebar.caption("Horas reales (bitácora): 0.00 h")
+    elif registrar_hora and hora_ini and hora_fin:
+        _dt_ini = datetime.combine(datetime.today().date(), hora_ini)
+        _dt_fin = datetime.combine(datetime.today().date(), hora_fin)
+        horas_real = (_dt_fin - _dt_ini).total_seconds() / 3600.0
+        if horas_real < 0:
+            horas_real += 24.0
+        st.sidebar.caption(f"Horas reales calculadas: {horas_real:.2f} h")
+    else:
+        horas_real = st.sidebar.number_input("Horas reales (h)", 0.0, step=0.25, key="hr_general")
     rop_prog = 0.0
     rop_real = 0.0
     # ROP por actividad (opcional) se centraliza en la pestaña "ROP" para evitar confusión.
@@ -2308,7 +2766,7 @@ with st.sidebar.container(border=True):
             act_cat_simple = "-"
             act_det_simple = "-"
 # --- Desglose opcional (múltiples causas) ---
-        with st.sidebar.expander("Detalle TNPI (opcional) — desglose por múltiples causas", expanded=False):
+        with st.sidebar.expander("Detalle TNPI (opcional) - desglose por múltiples causas", expanded=False):
             st.caption("Agrega varias causas y presiona **Guardar**. La suma debe ser igual al TNPI por exceso detectado.")
 
             if (not st.session_state.get("act_tnpi_breakdown_draft")) and (not st.session_state.get("act_tnpi_breakdown")):
@@ -2430,8 +2888,132 @@ with st.sidebar.container(border=True):
 
         add_rows = []
 
+        # Caso: bitácora por horas -> múltiples filas por tramo
+        if registrar_hora and bitacora_enabled and len(bitacora_entries) > 0:
+            total_bit = float(sum(r["Horas_Reales"] for r in bitacora_entries))
+            exceso_total_h = 0.0
+            if tipo == "TP" and float(horas_prog) > 0 and total_bit > float(horas_prog):
+                exceso_total_h = float(total_bit) - float(horas_prog)
+            for r in bitacora_entries:
+                _factor = float(r["Horas_Reales"]) / total_bit if total_bit > 0 else 0.0
+                _prog = 0.0
+                if float(horas_prog) > 0 and total_bit > 0:
+                    _prog = float(horas_prog) * _factor
+                base_row = {
+                    "Equipo": equipo,
+                    "Pozo": pozo,
+                    "Etapa": etapa_use,
+                    "Fecha": str(fecha),
+                    "Equipo_Tipo": st.session_state.get("equipo_tipo_val", ""),
+                    "Modo_Reporte": modo_reporte,
+                    "Seccion": etapa,
+                    "Corrida": corrida,
+                    "Tipo_Agujero": tipo_agujero,
+                    "Operacion": operacion,
+                    "Actividad": actividad,
+                    "Turno": turno,
+                    "Hora_Inicio": str(r.get("Hora_Inicio", "")),
+                    "Hora_Fin": str(r.get("Hora_Fin", "")),
+                    "ROP_Prog_mh": float(rop_prog),
+                    "ROP_Real_mh": float(rop_real),
+                    "Comentario": str(r.get("Comentario", "") or comentario),
+                    "Origen": "Manual",
+                }
+
+                if tipo == "TP" and exceso_total_h > 0:
+                    # TP hasta el estándar proporcional + exceso como TNPI/TNP
+                    tp_h = float(_prog)
+                    exceso_h = float(r.get("Horas_Reales", 0.0)) - tp_h
+                    add_rows.append({
+                        **base_row,
+                        "Tipo": "TP",
+                        "Categoria_TNPI": "-",
+                        "Detalle_TNPI": "-",
+                        "Categoria_TNP": "-",
+                        "Detalle_TNP": "-",
+                        "Horas_Prog": float(_prog),
+                        "Horas_Reales": float(tp_h),
+                    })
+
+                    exceso_tipo = st.session_state.get("exceso_tipo_general", "TNPI")
+                    exceso_tipo = "TNP" if str(exceso_tipo).upper() == "TNP" else "TNPI"
+                    if exceso_h > 0:
+                        if exceso_tipo == "TNP":
+                            add_rows.append({
+                                **base_row,
+                                "Tipo": "TNP",
+                                "Categoria_TNPI": "-",
+                                "Detalle_TNPI": "-",
+                                "Categoria_TNP": (act_cat_simple_tnp if "act_cat_simple_tnp" in locals() else categoria_tnp),
+                                "Detalle_TNP": (act_det_simple_tnp if "act_det_simple_tnp" in locals() else detalle_tnp),
+                                "Horas_Prog": 0.0,
+                                "Horas_Reales": float(exceso_h),
+                                "Comentario": f"Exceso (Real {total_bit:.2f}h > Estándar {horas_prog:.2f}h) registrado como TNP.",
+                                "Origen": "EXCESO",
+                            })
+                        else:
+                            # TNPI: si hay desglose guardado, distribuir proporcionalmente por tramo
+                            act_tnpi_breakdown = st.session_state.get("act_tnpi_breakdown", None)
+                            bd_saved = pd.DataFrame()
+                            if act_tnpi_breakdown is not None and len(act_tnpi_breakdown) > 0 and bool(st.session_state.get("act_tnpi_breakdown_saved", False)):
+                                try:
+                                    bd_saved = pd.DataFrame(act_tnpi_breakdown)
+                                    if "Categoria_TNPI" not in bd_saved.columns and "Categoria" in bd_saved.columns:
+                                        bd_saved["Categoria_TNPI"] = bd_saved["Categoria"]
+                                    if "Detalle_TNPI" not in bd_saved.columns and "Detalle" in bd_saved.columns:
+                                        bd_saved["Detalle_TNPI"] = bd_saved["Detalle"]
+                                    if "Horas_Reales" not in bd_saved.columns and "Horas" in bd_saved.columns:
+                                        bd_saved["Horas_Reales"] = bd_saved["Horas"]
+                                    bd_saved = bd_saved[["Categoria_TNPI", "Detalle_TNPI", "Horas_Reales"]].copy()
+                                    bd_saved["Horas_Reales"] = pd.to_numeric(bd_saved["Horas_Reales"], errors="coerce").fillna(0.0)
+                                except Exception:
+                                    bd_saved = pd.DataFrame()
+
+                            if not bd_saved.empty:
+                                share = float(exceso_h) / float(exceso_total_h) if exceso_total_h > 0 else 0.0
+                                for _, br in bd_saved.iterrows():
+                                    _h = float(br.get("Horas_Reales", 0.0) or 0.0) * share
+                                    if _h <= 0:
+                                        continue
+                                    add_rows.append({
+                                        **base_row,
+                                        "Tipo": "TNPI",
+                                        "Categoria_TNPI": str(br.get("Categoria_TNPI", "-") or "-"),
+                                        "Detalle_TNPI": str(br.get("Detalle_TNPI", "-") or "-"),
+                                        "Categoria_TNP": "-",
+                                        "Detalle_TNP": "-",
+                                        "Horas_Prog": 0.0,
+                                        "Horas_Reales": float(_h),
+                                        "Comentario": f"Exceso (Real {total_bit:.2f}h > Estándar {horas_prog:.2f}h) registrado como TNPI.",
+                                        "Origen": "EXCESO",
+                                    })
+                            else:
+                                add_rows.append({
+                                    **base_row,
+                                    "Tipo": "TNPI",
+                                    "Categoria_TNPI": categoria_tnpi,
+                                    "Detalle_TNPI": detalle_tnpi,
+                                    "Categoria_TNP": "-",
+                                    "Detalle_TNP": "-",
+                                    "Horas_Prog": 0.0,
+                                    "Horas_Reales": float(exceso_h),
+                                    "Comentario": f"Exceso (Real {total_bit:.2f}h > Estándar {horas_prog:.2f}h) registrado como TNPI.",
+                                    "Origen": "EXCESO",
+                                })
+                else:
+                    add_rows.append({
+                        **base_row,
+                        "Tipo": tipo,
+                        "Categoria_TNPI": categoria_tnpi if tipo == "TNPI" else "-",
+                        "Detalle_TNPI": detalle_tnpi if tipo == "TNPI" else "-",
+                        "Categoria_TNP": categoria_tnp if tipo == "TNP" else "-",
+                        "Detalle_TNP": detalle_tnp if tipo == "TNP" else "-",
+                        "Horas_Prog": float(_prog),
+                        "Horas_Reales": float(r.get("Horas_Reales", 0.0)),
+                    })
+
         # Caso: TP con exceso -> split TP + TNPI
-        if tipo == "TP" and float(horas_prog) > 0 and float(horas_real) > float(horas_prog):
+        elif tipo == "TP" and float(horas_prog) > 0 and float(horas_real) > float(horas_prog):
             exceso_h = max(0.0, float(horas_real) - float(horas_prog))
             tipo_exceso = st.session_state.get("exceso_tipo_general", "TNPI")  # Obtener el tipo seleccionado
 
@@ -2448,6 +3030,8 @@ with st.sidebar.container(border=True):
                 "Operacion": operacion,
                 "Actividad": actividad,
                 "Turno": turno,
+                "Hora_Inicio": hora_ini_txt,
+                "Hora_Fin": hora_fin_txt,
                 "ROP_Prog_mh": float(rop_prog),
                 "ROP_Real_mh": float(rop_real),
                 "Comentario": comentario,
@@ -2550,6 +3134,8 @@ with st.sidebar.container(border=True):
                 "Operacion": operacion,
                 "Actividad": actividad,
                 "Turno": turno,
+                "Hora_Inicio": hora_ini_txt,
+                "Hora_Fin": hora_fin_txt,
                 "Tipo": tipo,
                 "Categoria_TNPI": categoria_tnpi if tipo == "TNPI" else "-",
                 "Detalle_TNPI": detalle_tnpi if tipo == "TNPI" else "-",
@@ -2565,21 +3151,19 @@ with st.sidebar.container(border=True):
 
         st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame(add_rows)], ignore_index=True)
         
-    st.session_state.df = _ensure_rowid(st.session_state.df)
-    st.session_state.df = _normalize_time_cause_columns(st.session_state.df)
+        st.session_state.df = _ensure_rowid(st.session_state.df)
+        st.session_state.df = _normalize_time_cause_columns(st.session_state.df)
+
+        # Eliminar columnas duplicadas (puede ocurrir por compatibilidad / merges)
+        if st.session_state.df.columns.duplicated().any():
+            st.session_state.df = _coalesce_duplicate_columns(st.session_state.df)
+
+        st.sidebar.success("Actividad agregada")
 
 
-# Eliminar columnas duplicadas (puede ocurrir por compatibilidad / merges)
-if hasattr(st.session_state, "df") and isinstance(st.session_state.df, pd.DataFrame):
-    if st.session_state.df.columns.duplicated().any():
-        st.session_state.df = _coalesce_duplicate_columns(st.session_state.df)
-
-st.sidebar.success("Actividad agregada")
-
-
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # CAPTURA ESPECIAL: CONEXIÓN PERFORANDO (MEJORADO - CON ETAPA ESPECÍFICA)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 if modo_reporte == "Perforación" and actividad == "Conexión perforando":
     with st.sidebar.expander("Conexión perforando (captura)", expanded=True):
         # Asegurar que se use la etapa seleccionada en el sidebar principal
@@ -2657,6 +3241,39 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
                 key="det_conn_tnp_full",
             )
             cat_tnpi_conn, det_tnpi_conn = "-", "-"
+
+        # Hora (opcional) para conexión
+        conn_use_time = st.checkbox("Registrar hora (conexión)", value=False, key="conn_use_time")
+        conn_hora_ini = None
+        conn_hora_fin = None
+        conn_bitacora_enabled = False
+        conn_bitacora_entries = st.session_state.get("act_bitacora_entries", [])
+        conn_bitacora_total_h = float(st.session_state.get("act_bitacora_total_h", 0.0) or 0.0)
+        if conn_use_time:
+            conn_hora_ini = st.time_input(
+                "Hora inicio (conexión)",
+                value=st.session_state.get("conn_hora_ini", datetime.now().time()),
+                key="conn_hora_ini",
+            )
+            conn_hora_fin = st.time_input(
+                "Hora fin (conexión)",
+                value=st.session_state.get("conn_hora_fin", datetime.now().time()),
+                key="conn_hora_fin",
+            )
+            conn_bitacora_enabled = st.toggle("Bitácora por horas (conexión)", value=False, key="conn_use_bitacora")
+        conn_hora_ini_txt = conn_hora_ini.strftime("%H:%M") if (conn_use_time and conn_hora_ini) else ""
+        conn_hora_fin_txt = conn_hora_fin.strftime("%H:%M") if (conn_use_time and conn_hora_fin) else ""
+        if conn_use_time and conn_bitacora_enabled:
+            st.caption("Completa la bitácora en la pestaña **Bitácora por horas**.")
+            conn_bitacora_mode = st.radio(
+                "Uso de bitácora (conexión)",
+                options=["Usar bitácora como total de conexión", "Seguir registrando por componentes"],
+                horizontal=True,
+                key="conn_bitacora_mode",
+                help="Define si la bitácora reemplaza el total real de conexión o solo sirve como referencia.",
+            )
+        else:
+            conn_bitacora_mode = "Seguir registrando por componentes"
 
         conn_comment = st.text_input("Comentario conexión", "", key="conn_comment")
 
@@ -2737,6 +3354,11 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
             
 
             total_real_min = float(df_new["Minutos_Reales"].sum())
+            if conn_use_time and conn_bitacora_enabled and conn_bitacora_total_h > 0 and conn_bitacora_mode == "Usar bitácora como total de conexión":
+                total_real_min = float(conn_bitacora_total_h) * 60.0
+                st.caption(f"Bitácora aplicada como total: {conn_bitacora_total_h:.2f} h")
+                if float(df_new["Minutos_Reales"].sum() or 0.0) <= 0.0:
+                    st.warning("Bitácora aplicada como total, pero los componentes están en 0. Esto afecta KPIs de conexiones.")
             std_total_line = float(std_map.get("TOTAL", std_pre + std_conn + std_post))
             exceso_total_min = max(0.0, total_real_min - std_total_line)
 
@@ -2771,6 +3393,8 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
                 Operacion="Perforación",
                 Actividad=f"Conexión perforando ({ang_bucket})",
                 Turno=turno,
+                Hora_Inicio=conn_hora_ini_txt,
+                Hora_Fin=conn_hora_fin_txt,
                 Tipo=tipo_tiempo_conn,
                 Categoria_TNPI="-",
                 Detalle_TNPI="-",
@@ -2818,9 +3442,9 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
             
         st.session_state.df = _ensure_rowid(st.session_state.df)
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # CAPTURA ESPECIAL: ARMA/DESARMA BHA
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 if actividad == "Arma/Desarma BHA":
     with st.sidebar.expander("Arma/Desarma BHA (captura)", expanded=True):
         bha_tipo_tiempo = st.session_state.get("tipo_time_general", "TP")
@@ -2843,19 +3467,64 @@ if actividad == "Arma/Desarma BHA":
 
         label_real_bha = "Real (h)"
         if st.session_state.get("bha_tipo_tiempo", "TP") == "TNP":
-            label_real_bha = "TNP (h) — tiempo real"
+            label_real_bha = "TNP (h) - tiempo real"
         elif st.session_state.get("bha_tipo_tiempo", "TP") == "TNPI":
-            label_real_bha = "TNPI (h) — tiempo real"
+            label_real_bha = "TNPI (h) - tiempo real"
         elif st.session_state.get("bha_tipo_tiempo", "TP") == "TP":
-            label_real_bha = "TP (h) — tiempo real"
+            label_real_bha = "TP (h) - tiempo real"
 
-        real_h = st.number_input(label_real_bha, min_value=0.0, step=0.25, value=0.0, key="bha_real_h")
+        # Hora (opcional) para BHA + bitácora
+        bha_use_time = st.checkbox("Registrar hora (BHA)", value=False, key="bha_use_time")
+        bha_hora_ini = None
+        bha_hora_fin = None
+        bha_bitacora_enabled = False
+        bha_bitacora_entries = st.session_state.get("act_bitacora_entries", [])
+        bha_bitacora_total_h = float(st.session_state.get("act_bitacora_total_h", 0.0) or 0.0)
+        if bha_use_time:
+            bha_hora_ini = st.time_input(
+                "Hora inicio (BHA)",
+                value=st.session_state.get("bha_hora_ini", datetime.now().time()),
+                key="bha_hora_ini",
+            )
+            bha_hora_fin = st.time_input(
+                "Hora fin (BHA)",
+                value=st.session_state.get("bha_hora_fin", datetime.now().time()),
+                key="bha_hora_fin",
+            )
+            bha_bitacora_enabled = st.toggle("Bitácora por horas (BHA)", value=False, key="bha_use_bitacora")
+        bha_hora_ini_txt = bha_hora_ini.strftime("%H:%M") if (bha_use_time and bha_hora_ini) else ""
+        bha_hora_fin_txt = bha_hora_fin.strftime("%H:%M") if (bha_use_time and bha_hora_fin) else ""
+        if bha_use_time and bha_bitacora_enabled:
+            st.caption("Completa la bitácora en la pestaña **Bitácora por horas**.")
+
+        if bha_use_time:
+            if bha_bitacora_enabled and bha_bitacora_total_h > 0:
+                real_h = float(bha_bitacora_total_h)
+                st.caption(f"Horas reales (bitácora): {real_h:.2f} h")
+            elif bha_hora_ini and bha_hora_fin:
+                _dt_ini = datetime.combine(datetime.today().date(), bha_hora_ini)
+                _dt_fin = datetime.combine(datetime.today().date(), bha_hora_fin)
+                real_h = (_dt_fin - _dt_ini).total_seconds() / 3600.0
+                if real_h < 0:
+                    real_h += 24.0
+                st.caption(f"Horas reales calculadas: {real_h:.2f} h")
+            else:
+                real_h = 0.0
+                st.caption("Horas reales calculadas: 0.00 h")
+        else:
+            real_h = st.number_input(label_real_bha, min_value=0.0, step=0.25, value=0.0, key="bha_real_h")
 
         tnpi_h = max(0.0, float(real_h) - float(estandar_h))
         tnp_h = 0.0
         if (st.session_state.get("tipo_time_bha") or st.session_state.get("tipo_time_general") or "TP") == "TNP":
             tnp_h = float(real_h)
             tnpi_h = 0.0
+
+        if bha_use_time and bha_bitacora_enabled and bha_bitacora_total_h > 0:
+            st.caption(
+                f"Bitácora aplicada: {bha_bitacora_total_h:.2f} h "
+                f"({'total' if bha_bitacora_enabled else 'referencia'})"
+            )
 
             tnp_h = float(real_h)
             tnpi_h = 0.0
@@ -2998,25 +3667,10 @@ if actividad == "Arma/Desarma BHA":
 
                 )
 
-            if "df_tnpi_cat" in globals() and "Categoria_TNPI" in df_tnpi_cat.columns and "Detalle_TNPI" in df_tnpi_cat.columns:
-                _det_opts = (
-                    df_tnpi_cat[df_tnpi_cat["Categoria_TNPI"] == bha_cat]["Detalle_TNPI"]
-                    .dropna()
-                    .unique()
-                    .tolist()
-                )
-            else:
-                _det_opts = ["-"]
-
-            bha_det = st.selectbox(
-                "Detalle TNPI (BHA)",
-                options=_det_opts if len(_det_opts) else ["-"],
-                index=0,
-                key="bha_det_simple_3",
-            )
+            # Nota: no sobrescribir la selección TNP con un selector TNPI.
 
             # --- Desglose opcional (múltiples causas) ---
-            with st.expander("Detalle TNPI (opcional) — desglose por múltiples causas", expanded=False):
+            with st.expander("Detalle TNPI (opcional) - desglose por múltiples causas", expanded=False):
                 st.caption("Agrega varias causas y presiona **Guardar cambios**. La suma debe ser igual al TNPI calculado.")
 
                 # Inicializar borrador si está vacío y no hay nada guardado
@@ -3150,6 +3804,8 @@ if actividad == "Arma/Desarma BHA":
                 Operacion=operacion,
                 Actividad=f"Arma/Desarma BHA (Tipo {int(bha_tipo)})",
                 Turno=bha_turno,
+                Hora_Inicio=bha_hora_ini_txt,
+                Hora_Fin=bha_hora_fin_txt,
                 ROP_Prog_mh=0.0,
                 ROP_Real_mh=0.0,
                 Comentario=bha_comment.strip(),
@@ -3211,25 +3867,47 @@ if actividad == "Arma/Desarma BHA":
                 st.session_state.bha_tnpi_breakdown_draft = []
                 st.session_state.bha_tnpi_breakdown_saved = False
 
+            # Si hay bitácora por horas, dividir en tramos y repartir horas proporcionalmente
+            if bha_use_time and bha_bitacora_enabled and bha_bitacora_total_h > 0 and len(bha_bitacora_entries) > 0:
+                total_bit = float(sum(r["Horas_Reales"] for r in bha_bitacora_entries))
+                new_rows = []
+                for r in bha_bitacora_entries:
+                    _factor = float(r.get("Horas_Reales", 0.0)) / total_bit if total_bit > 0 else 0.0
+                    for row in add:
+                        _hr = float(row.get("Horas_Reales", 0.0))
+                        if _hr <= 0 or _factor <= 0:
+                            continue
+                        _row = dict(row)
+                        _row["Hora_Inicio"] = str(r.get("Hora_Inicio", ""))
+                        _row["Hora_Fin"] = str(r.get("Hora_Fin", ""))
+                        _row["Horas_Reales"] = _hr * _factor
+                        if "Horas_Prog" in _row:
+                            _row["Horas_Prog"] = float(_row.get("Horas_Prog", 0.0)) * _factor
+                        _com = str(r.get("Comentario", "") or "").strip()
+                        if _com:
+                            _row["Comentario"] = (str(_row.get("Comentario", "") or "") + f" | {_com}").strip(" |")
+                        new_rows.append(_row)
+                add = new_rows
+
             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame(add)], ignore_index=True)
             st.success("BHA agregado")
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # MAIN DATA
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 df = st.session_state.df.copy()
 df_conn = st.session_state.df_conn.copy()
 df_bha = st.session_state.df_bha.copy()
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # BHA: GRAFICA ESTÁNDAR VS REAL (cuando estás capturando Arma/Desarma)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # Nota: se muestra solo cuando en el sidebar eliges la actividad "Arma/Desarma BHA"
 
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # KPIs base
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 total_prog = float(df["Horas_Prog"].sum()) if not df.empty else 0.0
 total_real = float(df["Horas_Reales"].sum()) if not df.empty else 0.0
 tp_h = float(df[df["Tipo"] == "TP"]["Horas_Reales"].sum()) if not df.empty else 0.0
@@ -3237,9 +3915,9 @@ tnpi_h = float(df[df["Tipo"] == "TNPI"]["Horas_Reales"].sum()) if not df.empty e
 tnp_h = float(df[df["Tipo"] == "TNP"]["Horas_Reales"].sum()) if not df.empty else 0.0
 eficiencia_dia = clamp_0_100(safe_pct(tp_h, total_real)) if total_real > 0 else 0.0
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # METROS / ROP (IMPORTANTE: define variables SIEMPRE)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 mr_total = 0.0
 tnpi_m_h = 0.0
 eff_m = 0.0
@@ -3261,9 +3939,9 @@ if modo_reporte == "Perforación":
     rr = (rr_d + rr_n) / (2 if (rr_d > 0 and rr_n > 0) else 1) if (rr_d > 0 or rr_n > 0) else 0.0
     eff_rop = clamp_0_100(safe_pct(rr, rp)) if rp > 0 else 0.0
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # KPI CONEXIONES (IMPORTANTE: define variables SIEMPRE)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 conn_real_min = 0.0
 conn_std_min = 0.0
 conn_tnpi_min = 0.0
@@ -3283,9 +3961,9 @@ if modo_reporte == "Perforación" and not df_conn.empty:
     eff_conn = clamp_0_100(safe_pct(conn_tp_min, conn_real_min)) if conn_real_min > 0 else 0.0
 
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # DrillSpot KPI Export (XLSX) -> Viajes & Conexiones (por hora)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 def _clean_drillspot_kpi_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     """
     Espera el formato típico del export 'KPI Report' de DrillSpot:
@@ -3418,9 +4096,9 @@ def default_trip_direction_from_activity(activity_name: str) -> str:
     # fallback
     return "Trip In"
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # CACHE: generar figuras (reduce lentitud)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 @st.cache_data(show_spinner=False)
 def _make_figs(df_json: str, df_conn_json: str, modo_reporte: str):
     df_local = pd.read_json(df_json, orient="split") if df_json else pd.DataFrame()
@@ -3511,24 +4189,111 @@ df_json = df.to_json(orient="split") if not df.empty else ""
 df_conn_json = df_conn.to_json(orient="split") if not df_conn.empty else ""
 figs = _make_figs(df_json, df_conn_json, modo_reporte) if show_charts else {"tiempos": None, "act_pie": None, "act_bar": None, "conn_pie": None, "conn_stack": None}
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # NAV PRO: TABS
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 st.session_state.df = _ensure_rowid(st.session_state.df)
 
-tab_resumen, tab_act, tab_conn, tab_viajes, tab_bha, tab_rop, tab_detalle, tab_comp, tab_estadisticas, tab_corridas, tab_drillspot, tab_general, tab_ejecutivo, tab_export = st.tabs([
+def _any_state_key(prefix: str) -> bool:
+    return any(k.startswith(prefix) and bool(st.session_state.get(k)) for k in st.session_state.keys())
 
-    "Resumen", "Indicadores (Actividades)", "Conexiones", "Viajes y conexiones", 
-    "BHA (Arma/Desarma)", "ROP", "Detalle", "Comparativa de Etapas", 
-    "Estadísticas por Etapa", "Estadísticas por Corrida", "Estadísticas DrillSpot",
+any_viaje_time = _any_state_key("viaje_use_time_")
+any_viaje_bitacora = _any_state_key("viaje_use_bitacora_")
+
+show_bitacora_tab = bool(st.session_state.get("act_use_time", False)) or bool(st.session_state.get("bha_use_time", False)) or bool(st.session_state.get("conn_use_time", False)) or any_viaje_time
+tab_labels = []
+if show_bitacora_tab:
+    tab_labels.append("Bitácora por horas")
+tab_labels += [
+    "Resumen", "Indicadores (Actividades)", "Conexiones", "Viajes y conexiones",
+    "BHA (Arma/Desarma)", "ROP", "Metros", "Detalle", "Comparativa de Etapas",
+    "Estadísticas CE", "Estadísticas por Etapa", "Estadísticas por Corrida", "Estadísticas DrillSpot",
     "Reporte General del Pozo", "Ejecutivo", "Exportar"
-])
-# =====================================================================
+]
+
+_tabs = st.tabs(tab_labels)
+if show_bitacora_tab:
+    tab_bitacora = _tabs[0]
+    (tab_resumen, tab_act, tab_conn, tab_viajes, tab_bha, tab_rop, tab_metros, tab_detalle, tab_comp,
+     tab_ce, tab_estadisticas, tab_corridas, tab_drillspot, tab_general, tab_ejecutivo, tab_export) = _tabs[1:]
+else:
+    tab_bitacora = None
+    (tab_resumen, tab_act, tab_conn, tab_viajes, tab_bha, tab_rop, tab_metros, tab_detalle, tab_comp,
+     tab_ce, tab_estadisticas, tab_corridas, tab_drillspot, tab_general, tab_ejecutivo, tab_export) = _tabs
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+# TAB: BITÁCORA (ACTIVIDADES)
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+if tab_bitacora is not None:
+    with tab_bitacora:
+        st.subheader("Bitácora por horas (todas las actividades)")
+        bitacora_enabled_any = bool(st.session_state.get("act_use_bitacora", False)) or bool(st.session_state.get("bha_use_bitacora", False)) or bool(st.session_state.get("conn_use_bitacora", False)) or any_viaje_bitacora
+        _act_label = st.session_state.get("actividad_select_sidebar", "")
+        _act_label = _act_label or st.session_state.get("actividad_otro", "") or "-"
+        st.caption(f"Actividad activa: **{_act_label}**")
+        if not show_bitacora_tab:
+            st.info("Activa **Registrar hora** en alguna actividad para habilitar esta bitácora.")
+        elif not bitacora_enabled_any:
+            st.info("Activa **Bitácora por horas** en la actividad que estás registrando.")
+        else:
+            if st.button("Limpiar bitácora", use_container_width=False):
+                st.session_state["act_bitacora_rows"] = pd.DataFrame([{"Hora inicio": "", "Hora fin": "", "Comentario": ""}])
+                st.session_state["act_bitacora_entries"] = []
+                st.session_state["act_bitacora_total_h"] = 0.0
+                st.success("Bitácora limpia.")
+                st.rerun()
+            st.caption("Cada tramo usa el tipo seleccionado en el sidebar.")
+            _default_bit = st.session_state.get("act_bitacora_rows", None)
+            if _default_bit is None or not isinstance(_default_bit, pd.DataFrame) or _default_bit.empty:
+                _default_bit = pd.DataFrame([{"Hora inicio": "", "Hora fin": "", "Comentario": ""}])
+            bit_df = st.data_editor(
+                _default_bit,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="act_bitacora_rows",
+                column_config={
+                    "Hora inicio": st.column_config.TextColumn("Hora inicio", help="Formato HH:MM"),
+                    "Hora fin": st.column_config.TextColumn("Hora fin", help="Formato HH:MM"),
+                    "Comentario": st.column_config.TextColumn("Comentario"),
+                },
+            )
+            invalid_rows = 0
+            bitacora_entries = []
+            if isinstance(bit_df, pd.DataFrame) and not bit_df.empty:
+                for _, r in bit_df.iterrows():
+                    _ini_txt = str(r.get("Hora inicio", "") or "").strip()
+                    _fin_txt = str(r.get("Hora fin", "") or "").strip()
+                    if not _ini_txt or not _fin_txt:
+                        continue
+                    _ini_dt = pd.to_datetime(_ini_txt, format="%H:%M", errors="coerce")
+                    _fin_dt = pd.to_datetime(_fin_txt, format="%H:%M", errors="coerce")
+                    if pd.isna(_ini_dt) or pd.isna(_fin_dt):
+                        invalid_rows += 1
+                        continue
+                    _dt_ini = datetime.combine(datetime.today().date(), _ini_dt.time())
+                    _dt_fin = datetime.combine(datetime.today().date(), _fin_dt.time())
+                    _h = (_dt_fin - _dt_ini).total_seconds() / 3600.0
+                    if _h < 0:
+                        _h += 24.0
+                    if _h <= 0:
+                        continue
+                    bitacora_entries.append({
+                        "Hora_Inicio": _ini_dt.strftime("%H:%M"),
+                        "Hora_Fin": _fin_dt.strftime("%H:%M"),
+                        "Horas_Reales": float(_h),
+                        "Comentario": str(r.get("Comentario", "") or "").strip(),
+                    })
+            bitacora_total_h = float(sum(x["Horas_Reales"] for x in bitacora_entries))
+            st.session_state["act_bitacora_entries"] = bitacora_entries
+            st.session_state["act_bitacora_total_h"] = float(bitacora_total_h)
+            st.caption(f"Total bitácora: {bitacora_total_h:.2f} h")
+            if invalid_rows > 0:
+                st.warning(f"Hay {invalid_rows} filas con hora inválida (usa HH:MM).")
+
 # TAB: RESUMEN
-# =====================================================================
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: RESUMEN (MODIFICADO CON FILTRO DE ETAPA)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 with tab_resumen:
 
     # --- MISSION CONTROL DASHBOARD ---
@@ -3681,10 +4446,142 @@ with tab_resumen:
         
         avance = (prof_act / pt_prog) if pt_prog > 0 else 0.0
         avance = max(0.0, min(1.0, avance))
-        
+
+        restante = max(0.0, pt_prog - prof_act)
+        tone_av = "green" if avance >= 0.85 else ("amber" if avance >= 0.70 else "red")
+        tone_rest = "green" if restante <= 0 else "gray"
+        riesgo_txt = "BAJO" if avance >= 0.85 else ("MEDIO" if avance >= 0.70 else "ALTO")
+
         st.markdown("### Avance de profundidad")
-        st.progress(avance)
-        
+
+        # Chips pro + barra futurista
+        render_chip_row([
+            {"label": "Etapa", "value": etapa_resumen, "tone": "blue"},
+            {"label": "PT programada", "value": f"{pt_prog:,.0f} m", "tone": "violet"},
+            {"label": "Prof. actual", "value": f"{prof_act:,.0f} m", "tone": "blue"},
+            {"label": "Restante", "value": f"{restante:,.0f} m", "tone": tone_rest},
+            {"label": "Avance", "value": f"{avance*100:.1f}%", "tone": tone_av},
+            {"label": "Riesgo", "value": riesgo_txt, "tone": tone_av},
+        ], use_iframe=True, height=120)
+
+        if avance >= 0.85:
+            bar_grad = "linear-gradient(90deg, #00ff88, #00c3ff 60%, #8b5cf6)"
+            glow_color = "rgba(0, 255, 136, 0.35)"
+            chip_bg = "rgba(10, 35, 24, 0.9)"
+            chip_border = "rgba(0, 255, 136, 0.65)"
+            chip_fg = "#c7ffe6"
+        elif avance >= 0.70:
+            bar_grad = "linear-gradient(90deg, #f59e0b, #fbbf24 60%, #fb7185)"
+            glow_color = "rgba(245, 158, 11, 0.35)"
+            chip_bg = "rgba(35, 25, 8, 0.9)"
+            chip_border = "rgba(245, 158, 11, 0.75)"
+            chip_fg = "#ffe6b0"
+        else:
+            bar_grad = "linear-gradient(90deg, #ef4444, #f97316 60%, #f59e0b)"
+            glow_color = "rgba(239, 68, 68, 0.35)"
+            chip_bg = "rgba(40, 10, 10, 0.9)"
+            chip_border = "rgba(239, 68, 68, 0.75)"
+            chip_fg = "#ffd3d3"
+
+        progress_html = f"""
+        <style>
+          .ds-progress-wrap {{
+            border-radius: 16px;
+            padding: 14px 16px;
+            background: linear-gradient(180deg, rgba(18,18,22,0.92), rgba(10,10,14,0.95));
+            border: 1px solid rgba(255,255,255,0.08);
+            box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+          }}
+          .ds-progress-head {{
+            display:flex; align-items:center; justify-content:space-between;
+            color: rgba(255,255,255,0.8); font-size:12px; font-weight:700;
+            letter-spacing:0.4px; text-transform:uppercase;
+          }}
+          .ds-progress-bar {{
+            position: relative; height: 14px; border-radius: 999px;
+            background: rgba(255,255,255,0.08);
+            overflow: hidden; margin-top: 10px;
+          }}
+          .ds-progress-fill {{
+            height: 100%;
+            width: {avance*100:.2f}%;
+            border-radius: 999px;
+            background: {bar_grad};
+            box-shadow: 0 0 18px {glow_color};
+          }}
+          .ds-progress-sheen {{
+            position:absolute; inset:0;
+            background: linear-gradient(120deg, rgba(255,255,255,0.0), rgba(255,255,255,0.25), rgba(255,255,255,0.0));
+            transform: translateX(-120%);
+            animation: sheen 3.2s ease-in-out infinite;
+            mix-blend-mode: screen;
+            pointer-events:none;
+          }}
+          .ds-progress-glow {{
+            position:absolute; inset:0;
+            background: radial-gradient(120px 20px at 20% 50%, rgba(0,255,136,0.25), transparent 60%);
+            mix-blend-mode: screen;
+          }}
+          .ds-progress-ticks {{
+            display:flex; justify-content:space-between; margin-top:8px;
+            font-size:11px; color: rgba(255,255,255,0.55);
+          }}
+          .ds-progress-chip {{
+            position:absolute; top:-28px;
+            left: calc({avance*100:.2f}%);
+            transform: translateX(-50%);
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: {chip_bg};
+            border: 1px solid {chip_border};
+            color: {chip_fg};
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.2px;
+            box-shadow: 0 8px 18px rgba(0,0,0,0.45), 0 0 12px {glow_color};
+            backdrop-filter: blur(6px);
+            white-space: nowrap;
+            animation: chipPulse 2.4s ease-in-out infinite;
+          }}
+          .ds-progress-chip::after {{
+            content:"";
+            position:absolute; left: 50%; bottom: -5px;
+            transform: translateX(-50%);
+            width: 0; height: 0;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 6px solid {chip_border};
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.35));
+          }}
+          @keyframes chipPulse {{
+            0% {{ transform: translateX(-50%) scale(1); opacity: 1; }}
+            50% {{ transform: translateX(-50%) scale(1.03); opacity: 0.88; }}
+            100% {{ transform: translateX(-50%) scale(1); opacity: 1; }}
+          }}
+          @keyframes sheen {{
+            0% {{ transform: translateX(-120%); }}
+            50% {{ transform: translateX(20%); }}
+            100% {{ transform: translateX(120%); }}
+          }}
+        </style>
+        <div class="ds-progress-wrap">
+          <div class="ds-progress-head">
+            <span>PROFUNDIDAD</span>
+            <span>{prof_act:,.0f} / {pt_prog:,.0f} m</span>
+          </div>
+          <div class="ds-progress-bar">
+            <div class="ds-progress-fill"></div>
+            <div class="ds-progress-glow"></div>
+            <div class="ds-progress-sheen"></div>
+            <div class="ds-progress-chip">Avance {avance*100:.1f}%</div>
+          </div>
+          <div class="ds-progress-ticks">
+            <span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span>
+          </div>
+        </div>
+        """
+        st.markdown(progress_html, unsafe_allow_html=True)
+
         c1, c2, c3 = st.columns(3)
         c1.metric("PT programada (m)", f"{pt_prog:,.0f}")
         c2.metric("Profundidad actual (m)", f"{prof_act:,.0f}")
@@ -3780,9 +4677,9 @@ with tab_resumen:
                     cols_show = [c for c in ["Fecha","Etapa","Actividad","Tipo","Horas_Prog","Horas_Reales","Categoria_TNPI","Detalle_TNPI","Categoria_TNP","Detalle_TNP","Comentario"] if c in df_diario.columns]
                     st.dataframe(df_diario[cols_show], use_container_width=True, height=260)
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: INDICADORES ACTIVIDADES
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 with tab_act:
     # --- NUEVO: Vista de indicadores (diario vs acumulado) ---
     vista_ind = st.radio(
@@ -3835,9 +4732,9 @@ with tab_act:
     else:
         st.info("Aún no hay datos suficientes para indicador por actividades.")
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: CONEXIONES
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 with tab_conn:
     if st.session_state.get("_toast_conn", False):
         st.success("Conexión agregada correctamente")
@@ -3880,7 +4777,7 @@ with tab_conn:
                         names="Componente",
                         values="Minutos_Reales",
                         hole=0.35,
-                        title=f"Distribución de tiempo en conexión — {etapa_conn_view}",
+                        title=f"Distribución de tiempo en conexión - {etapa_conn_view}",
                         color="Componente",
                         color_discrete_map=CONN_COLOR_MAP,
                     )
@@ -3911,7 +4808,7 @@ with tab_conn:
                     category_orders={"Componente": CONN_ORDER},
                     color_discrete_map=CONN_COLOR_MAP,
                     barmode="stack",
-                    title=f"Conexiones perforando — {etapa_conn_view}",
+                    title=f"Conexiones perforando - {etapa_conn_view}",
                     labels={"Conn_Label": "Profundidad (m)", "Minutos_Reales": "Tiempo (min)"},
                 )
 
@@ -3965,564 +4862,16 @@ with tab_conn:
                 )
 
         if rows_conn:
-            components.html(indicators_table_html(f"Indicador de desempeño por conexiones — {etapa_conn_view}", rows_conn, kind="conexion"), height=420, scrolling=True)
+            components.html(indicators_table_html(f"Indicador de desempeño por conexiones - {etapa_conn_view}", rows_conn, kind="conexion"), height=420, scrolling=True)
         else:
             st.info("Aún no hay conexiones para indicador en la etapa seleccionada.")
 
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: ROP (REAL VS PROGRAMADO)
-# =====================================================================
-# =====================================================================
-with tab_rop:
-    st.subheader("ROP del día – Real vs Programado")
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 
-    if modo_reporte != "Perforación":
-        st.info("Esta pestaña aplica para modo **Perforación**.")
-    else:
-        # --- NUEVO: captura por fecha (evita que se "arrastre" al cambiar de día) ---
-        fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
-        def _get_by_date(etapa_data: dict, k: str, default: float = 0.0) -> float:
-            try:
-                return float((etapa_data.get(k, {}) or {}).get(fecha_key, default))
-            except Exception:
-                return float(default)
-
-
-
-        # --- NUEVO: aplicar reseteos pendientes ANTES de instanciar widgets (evita StreamlitAPIException) ---
-        if st.session_state.get("_pending_widget_resets"):
-            for _k, _v in list(st.session_state["_pending_widget_resets"].items()):
-                st.session_state[_k] = _v
-            st.session_state["_pending_widget_resets"].clear()
-
-        # FIX: asegurar que etapa_data_rop exista antes de usarse
-        etapa_data_rop = get_etapa_data(etapa)
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            # Obtener/actualizar datos de ROP para esta etapa
-            rop_prog_val = float(etapa_data_rop.get("rop_prog_total", 0.0))
-            rop_prog_val = st.number_input(
-                f"ROP programada - {etapa} (m/h)",
-                min_value=0.0, step=0.1,
-                value=rop_prog_val,
-                key=f"rop_prog_{etapa}",
-            )
-            etapa_data_rop["rop_prog_total"] = float(rop_prog_val)
-            st.session_state.drill_day["rop_prog_total"] = float(rop_prog_val)
-            
-        with c2:
-            rop_dia_val = _get_by_date(etapa_data_rop, "rop_real_dia_by_date", 0.0)
-            rop_dia_val = st.number_input(
-                f"ROP real Día - {etapa} (m/h)",
-                min_value=0.0, step=0.1,
-                value=float(rop_dia_val),
-                key=f"rop_real_dia_{etapa}_{fecha_key}",
-            )
-            etapa_data_rop["rop_real_dia"] = float(rop_dia_val)
-            st.session_state.drill_day["rop_real_dia"] = float(rop_dia_val)
-
-            # Guardar histórico por fecha (1 valor por día)
-            _fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
-            etapa_data_rop.setdefault("rop_real_dia_by_date", {})
-            if float(rop_dia_val) > 0:
-                etapa_data_rop["rop_real_dia_by_date"][_fecha_key] = float(rop_dia_val)
-            
-        with c3:
-            rop_noche_val = _get_by_date(etapa_data_rop, "rop_real_noche_by_date", 0.0)
-            rop_noche_val = st.number_input(
-                f"ROP real Noche - {etapa} (m/h)",
-                min_value=0.0, step=0.1,
-                value=float(rop_noche_val),
-                key=f"rop_real_noche_{etapa}_{fecha_key}",
-            )
-            etapa_data_rop["rop_real_noche"] = float(rop_noche_val)
-            st.session_state.drill_day["rop_real_noche"] = float(rop_noche_val)
-
-            _fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
-            etapa_data_rop.setdefault("rop_real_noche_by_date", {})
-            if float(rop_noche_val) > 0:
-                etapa_data_rop["rop_real_noche_by_date"][_fecha_key] = float(rop_noche_val)
-
-        # Sincroniza (compatibilidad con otros bloques que lean claves sueltas)
-        st.session_state["rop_prog_total"] = float(st.session_state.drill_day["rop_prog_total"])
-        st.session_state["rop_real_diurno"] = float(st.session_state.drill_day["rop_real_dia"])
-        st.session_state["rop_real_nocturno"] = float(st.session_state.drill_day["rop_real_noche"])
-
-        rp = float(st.session_state.drill_day.get("rop_prog_total", 0.0) or 0.0)
-        rd = float(st.session_state.drill_day.get("rop_real_dia", 0.0) or 0.0)
-        rn = float(st.session_state.drill_day.get("rop_real_noche", 0.0) or 0.0)
-
-        # Promedio ponderado por metros (si están capturados), si no, promedio simple de turnos no-cero
-        md = float(st.session_state.drill_day.get("metros_real_dia", 0.0) or 0.0)
-        mn = float(st.session_state.drill_day.get("metros_real_noche", 0.0) or 0.0)
-        if (md + mn) > 0:
-            rr_avg = ((rd * md) + (rn * mn)) / (md + mn)
-        else:
-            vals = [v for v in [rd, rn] if v > 0]
-            rr_avg = sum(vals) / len(vals) if vals else 0.0
-
-        eff_rop_day = clamp_0_100(safe_pct(rr_avg, rp)) if rp > 0 else 0.0
-        sk, sl, sc = status_from_eff(eff_rop_day)
-
-        k1, k2, k3, k4 = st.columns([1.2, 1.2, 1.2, 1.0])
-        k1.metric("ROP real promedio (m/h)", f"{rr_avg:.2f}")
-        k2.metric("ROP programada (m/h)", f"{rp:.2f}")
-        k3.metric("Eficiencia ROP (%)", f"{eff_rop_day:.0f}%")
-        with k4:
-            st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;margin-top:28px;">
-                <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:{sc};box-shadow:0 0 0 2px rgba(255,255,255,0.08);"></span>
-                <div style="font-weight:800;font-size:22px;letter-spacing:0.5px;">{sl}</div>
-            </div>""", unsafe_allow_html=True)
-
-        # Gráfica
-        df_rop = pd.DataFrame([
-            {"Turno": "Día", "Programado (m/h)": rp, "Real (m/h)": rd},
-            {"Turno": "Noche", "Programado (m/h)": rp, "Real (m/h)": rn},
-        ])
-        fig_rop = px.bar(df_rop, x="Turno", y=["Programado (m/h)", "Real (m/h)"], barmode="group", text_auto=True)
-        fig_rop.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=340, legend_title_text="Serie")
-        st.plotly_chart(fig_rop, use_container_width=True, key="bar_rop")
-
-        # Detalle + semáforo por turno
-        def _eff_turno(real_v: float, prog_v: float) -> float:
-            return clamp_0_100(safe_pct(real_v, prog_v)) if prog_v > 0 else 0.0
-
-        rows = []
-        for turno_lbl, real_v in [("Día", rd), ("Noche", rn)]:
-            e = _eff_turno(real_v, rp)
-            _, _, c = status_from_eff(e)
-            rows.append({
-                "Turno": turno_lbl,
-                "ROP Programado (m/h)": round(rp, 2),
-                "ROP Real (m/h)": round(real_v, 2),
-                "Eficiencia (%)": round(e, 0),
-                "Semáforo": "🟢" if e >= 85 else ("🟡" if e >= 70 else "🔴"),
-            })
-        st.markdown("### Detalle")
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-       # ---------------------- Metros perforados (día): Programado vs Real ----------------------
-        st.subheader(f"Metros perforados (día) - {etapa}")
-
-        # Obtener datos específicos de esta etapa
-        etapa_data_rop = get_etapa_data(etapa)
-        
-        # Inputs (mismo estilo que ROP, pero para metros) - AHORA POR ETAPA
-        colm1, colm2, colm3 = st.columns(3)
-        
-        with colm1:
-            mp = st.number_input(
-                f"Metros programados - {etapa} (m)",
-                min_value=0.0,
-                value=float(etapa_data_rop.get("metros_prog_total", 0.0)),
-                step=1.0,
-                key=f"metros_prog_{etapa}",
-            )
-            # Guardar en datos por etapa
-            etapa_data_rop["metros_prog_total"] = float(mp)
-        
-        with colm2:
-            mr_d = st.number_input(
-                f"Metros reales Día - {etapa} (m)",
-                min_value=0.0,
-                value=float(_get_by_date(etapa_data_rop, "metros_real_dia_by_date", 0.0)),
-                step=1.0,
-                key=f"metros_real_dia_{etapa}_{fecha_key}",
-            )
-            etapa_data_rop["metros_real_dia"] = float(mr_d)
-        
-        with colm3:
-
-            _fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
-            etapa_data_rop.setdefault("metros_real_dia_by_date", {})
-            if float(mr_d) > 0:
-                etapa_data_rop["metros_real_dia_by_date"][_fecha_key] = float(mr_d)
-            mr_n = st.number_input(
-                f"Metros reales Noche - {etapa} (m)",
-                min_value=0.0,
-                value=float(_get_by_date(etapa_data_rop, "metros_real_noche_by_date", 0.0)),
-                step=1.0,
-                key=f"metros_real_noche_{etapa}_{fecha_key}",
-            )
-            etapa_data_rop["metros_real_noche"] = float(mr_n)
-
-
-        # --- NUEVO: botón para registrar SOLO el día de la ETAPA ACTUAL ---
-        col_reg1, col_reg2 = st.columns([1.4, 2.6])
-        with col_reg1:
-            if st.button(f"Registrar día (etapa {etapa})", use_container_width=True, key=f"btn_registrar_dia_{etapa}_{fecha_key}"):
-                etapa_data_rop.setdefault("metros_real_dia_by_date", {})
-                etapa_data_rop.setdefault("metros_real_noche_by_date", {})
-                etapa_data_rop.setdefault("rop_real_dia_by_date", {})
-                etapa_data_rop.setdefault("rop_real_noche_by_date", {})
-
-                # Guardar valores del día seleccionado
-                etapa_data_rop["metros_real_dia_by_date"][fecha_key] = float(mr_d)
-                etapa_data_rop["metros_real_noche_by_date"][fecha_key] = float(mr_n)
-                etapa_data_rop["rop_real_dia_by_date"][fecha_key] = float(st.session_state.get(f"rop_real_dia_{etapa}_{fecha_key}", 0.0))
-                etapa_data_rop["rop_real_noche_by_date"][fecha_key] = float(st.session_state.get(f"rop_real_noche_{etapa}_{fecha_key}", 0.0))
-
-                # Limpia la captura visible de ese día (para que el siguiente día empiece limpio)
-                st.session_state.setdefault("_pending_widget_resets", {})
-                st.session_state["_pending_widget_resets"][f"metros_real_dia_{etapa}_{fecha_key}"] = 0.0
-                st.session_state["_pending_widget_resets"][f"metros_real_noche_{etapa}_{fecha_key}"] = 0.0
-                st.session_state["_pending_widget_resets"][f"rop_real_dia_{etapa}_{fecha_key}"] = 0.0
-                st.session_state["_pending_widget_resets"][f"rop_real_noche_{etapa}_{fecha_key}"] = 0.0
-
-                st.success("Día registrado ✅ (se guardó en el histórico por fecha de la etapa)")
-                st.rerun()
-        with col_reg2:
-            st.caption("Al cambiar la fecha, los inputs ahora son independientes por día. Este botón confirma el registro del día para la etapa actual y limpia la captura.")
-
-        # Mantener compatibilidad (opcional)
-
-            _fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
-            etapa_data_rop.setdefault("metros_real_noche_by_date", {})
-            if float(mr_n) > 0:
-                etapa_data_rop["metros_real_noche_by_date"][_fecha_key] = float(mr_n)
-        st.session_state["drill_day"]["metros_prog_total"] = float(mp)
-        st.session_state["drill_day"]["metros_real_diurno"] = float(mr_d)
-        st.session_state["drill_day"]["metros_real_nocturno"] = float(mr_n)
-
-        mr_total = float(mr_d) + float(mr_n)
-        eff_m = 0.0
-        if mp > 0:
-            eff_m = max(0.0, min(100.0, (mr_total / mp) * 100.0))
-
-        # KPIs tipo "pro" (como ROP)
-        kpi1, kpi2, kpi3, kpi4 = st.columns([1.2, 1.2, 1.2, 1.0])
-        with kpi1:
-            st.metric("Metros reales (total)", f"{mr_total:.0f} m")
-        with kpi2:
-            st.metric("Metros programados", f"{mp:.0f} m")
-        with kpi3:
-            st.metric("Eficiencia metros (%)", f"{eff_m:.0f}%")
-        with kpi4:
-            _st_key, _st_label, _st_color = status_from_eff(eff_m)
-            st.markdown(
-                f"""<div style='display:flex;align-items:center;gap:10px;'>
-                        <span style='height:12px;width:12px;border-radius:50%;background:{_st_color};display:inline-block;'></span>
-                        <span style='font-size:22px;font-weight:800;'>{_st_label}</span>
-                    </div>""",
-                unsafe_allow_html=True,
-            )
-
-        # Gráfica: Programado vs Real (Día / Noche / Total)
-        df_m = pd.DataFrame(
-            {
-                "Concepto": ["Programado", "Real (Día)", "Real (Noche)", "Real (Total)"],
-                "Metros": [mp, mr_d, mr_n, mr_total],
-            }
-        )
-
-        if df_m["Metros"].sum() > 0:
-            is_dark = st.session_state.get("ui_mode", "Nocturno") == "Nocturno"
-            fig_m = px.bar(
-                df_m,
-                x="Concepto",
-                y="Metros",
-                text="Metros",
-                color="Concepto",
-                title="Metros perforados — Programado vs Real",
-                template="plotly_dark" if is_dark else "plotly_white",
-                color_discrete_map={
-                    "Programado": "#636EFA",
-                    "Real (Día)": "#00CC96",
-                    "Real (Noche)": "#AB63FA",
-                    "Real (Total)": "#EF553B",
-                },
-            )
-            fig_m.update_traces(textposition="outside")
-            fig_m.update_layout(margin=dict(l=10, r=10, t=60, b=10), height=420)
-            st.plotly_chart(fig_m, use_container_width=True)
-        else:
-            st.info("Aún no hay datos para metros perforados.")
-
-        # Tabla corta con semáforo (bolita)
-        df_kpi_m = pd.DataFrame(
-            [
-                {
-                    "KPI": "Metros perforados (día)",
-                    "Programado_m": round(mp, 2),
-                    "Real_Diurno_m": round(mr_d, 2),
-                    "Real_Nocturno_m": round(mr_n, 2),
-                    "Real_Total_m": round(mr_total, 2),
-                    "Eficiencia_pct": round(eff_m, 1),
-                    "Semáforo": semaforo_dot(eff_m),
-                }
-            ]
-        )
-        st.dataframe(df_kpi_m, use_container_width=True)
-
-
-
-        # ¿Existe TNPI por perforación?
-        if not df.empty:
-            df_perf_tnpi = df[(df.get("Operacion", "") == "Perforación") & (df.get("Tipo", "") == "TNPI")]
-            tnpi_perf_h = float(df_perf_tnpi["Horas_Reales"].sum()) if not df_perf_tnpi.empty else 0.0
-        else:
-            tnpi_perf_h = 0.0
-
-        st.markdown("### TNPI por perforación")
-        if tnpi_perf_h > 0:
-            st.warning(f"Sí hay TNPI de perforación registrado: **{tnpi_perf_h:.2f} h**.")
-        else:
-            st.success("No se detecta TNPI de perforación registrado en el día.")
-
-        st.caption("Tip: si registras TNPI por viajes/conexiones, lo verás en su pestaña y también impacta la eficiencia general del día.")
-
-
-# =====================================================================
-# TAB: DETALLE
-# =====================================================================
-# =====================================================================
-# NUEVA TAB: COMPARATIVA DE ETAPAS
-# =====================================================================
-
-with tab_comp:
-    # -----------------------------------------------------------------
-    # COMPARATIVO POR DÍAS (2 fechas) - KPIs y actividades
-    # -----------------------------------------------------------------
-    with st.expander("Comparativo por días (calendario)", expanded=False):
-        df_base = st.session_state.get("df", pd.DataFrame()).copy()
-        days_all = _available_days(df_base)
-        if len(days_all) < 2:
-            st.info("Se requieren al menos 2 días con datos para comparar.")
-        else:
-            col_d1, col_d2 = st.columns(2)
-            with col_d1:
-                d1 = st.date_input("Día A", value=days_all[-2], min_value=days_all[0], max_value=days_all[-1], key="cmp_day_a")
-            with col_d2:
-                d2 = st.date_input("Día B", value=days_all[-1], min_value=days_all[0], max_value=days_all[-1], key="cmp_day_b")
-
-            df_a = split_day(df_base, d1, date_col="Fecha")
-            df_b = split_day(df_base, d2, date_col="Fecha")
-
-            def _kpi_row(df_: pd.DataFrame, label: str) -> dict:
-                total = float(df_.get("Horas_Reales", pd.Series(dtype=float)).fillna(0).sum())
-                tp = float(df_[df_.get("Tipo", "") == "TP"]["Horas_Reales"].sum()) if "Tipo" in df_.columns else total
-                tnpi = float(df_[df_.get("Tipo", "") == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in df_.columns else 0.0
-                tnp = float(df_[df_.get("Tipo", "") == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_.columns else 0.0
-                eff = clamp_0_100(safe_pct(tp, total)) if total > 0 else 0.0
-                return {"Día": label, "TP": tp, "TNPI": tnpi, "TNP": tnp, "Total": total, "Eficiencia": eff}
-
-            df_cmp = pd.DataFrame([_kpi_row(df_a, d1.isoformat()), _kpi_row(df_b, d2.isoformat())])
-            st.dataframe(df_cmp, use_container_width=True, height=120)
-
-            df_bar = df_cmp.melt(id_vars=["Día"], value_vars=["TP", "TNPI", "TNP"], var_name="Tipo", value_name="Horas")
-            fig_bar = px.bar(df_bar, x="Tipo", y="Horas", color="Día", barmode="group", title="Comparativo de KPIs (horas)")
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-            if "Actividad" in df_base.columns and "Horas_Reales" in df_base.columns:
-                col_ta, col_tb = st.columns(2)
-                with col_ta:
-                    st.caption(f"Top actividades - {d1.isoformat()}")
-                    df_act_a = df_a.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(12) if not df_a.empty else pd.DataFrame(columns=["Actividad","Horas_Reales"])
-                    st.dataframe(df_act_a, use_container_width=True, height=260)
-                with col_tb:
-                    st.caption(f"Top actividades - {d2.isoformat()}")
-                    df_act_b = df_b.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(12) if not df_b.empty else pd.DataFrame(columns=["Actividad","Horas_Reales"])
-                    st.dataframe(df_act_b, use_container_width=True, height=260)
-
-    st.subheader("📊 Comparativa de Etapas")
-
-    # Estiliza select/multiselect para que no se vea con borde rojo (tema oscuro)
-    st.markdown(
-        """
-        <style>
-        div[data-baseweb="select"] > div{
-            border-color: rgba(255,255,255,0.18) !important;
-            box-shadow: none !important;
-        }
-        div[data-baseweb="select"] > div:focus-within{
-            border-color: rgba(255,255,255,0.35) !important;
-            box-shadow: none !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if df.empty:
-        st.info("No hay datos disponibles. Por favor, captura algunas actividades primero.")
-    else:
-        etapas = sorted(df["Etapa"].dropna().unique().tolist())
-
-                # Selector de etapas (sin chips rojos): 2 selectbox
-        col_cmp1, col_cmp2 = st.columns(2)
-        with col_cmp1:
-            etapa_cmp_a = st.selectbox("Etapa A", options=etapas, index=0 if len(etapas)>0 else None, key="etapa_cmp_a")
-        with col_cmp2:
-            idx_b = 1 if len(etapas)>1 else 0
-            etapa_cmp_b = st.selectbox("Etapa B", options=etapas, index=idx_b if len(etapas)>0 else None, key="etapa_cmp_b")
-
-        etapas_seleccionadas = [e for e in [etapa_cmp_a, etapa_cmp_b] if e]
-
-        if not etapas_seleccionadas:
-            st.info("Selecciona al menos una etapa.")
-        else:
-            comparativa_data = []
-            for etapa_comp in etapas_seleccionadas:
-                df_etapa_comp = df[df["Etapa"] == etapa_comp].copy()
-
-                total_h = float(df_etapa_comp["Horas_Reales"].sum()) if not df_etapa_comp.empty else 0.0
-                tp_h = float(df_etapa_comp[df_etapa_comp["Tipo"] == "TP"]["Horas_Reales"].sum()) if not df_etapa_comp.empty else 0.0
-                tnpi_h = float(df_etapa_comp[df_etapa_comp["Tipo"] == "TNPI"]["Horas_Reales"].sum()) if not df_etapa_comp.empty else 0.0
-                tnp_h = float(df_etapa_comp[df_etapa_comp["Tipo"] == "TNP"]["Horas_Reales"].sum()) if not df_etapa_comp.empty else 0.0
-                eff = clamp_0_100(safe_pct(tp_h, total_h)) if total_h > 0 else 0.0
-
-                # Conexiones (si existe df_conn)
-                if "Etapa" in df_conn.columns and "Conn_No" in df_conn.columns:
-                    conexiones = int(df_conn[df_conn["Etapa"] == etapa_comp]["Conn_No"].nunique()) if not df_conn.empty else 0
-                else:
-                    conexiones = 0
-
-                comparativa_data.append(
-                    {
-                        "Etapa": etapa_comp,
-                        "Horas Totales": total_h,
-                        "TP (h)": tp_h,
-                        "TNPI (h)": tnpi_h,
-                        "TNP (h)": tnp_h,
-                        "Eficiencia %": eff,
-                        "Conexiones": conexiones,
-                    }
-                )
-
-            df_grafica = pd.DataFrame(comparativa_data)
-
-            if show_charts:
-                # Barras: Eficiencia
-                fig_comp = px.bar(
-                    df_grafica,
-                    x="Etapa",
-                    y="Eficiencia %",
-                    title="Comparativa de Eficiencia por Etapa",
-                    text="Eficiencia %",
-                    color="Eficiencia %",
-                    color_continuous_scale=["#E74C3C", "#F1C40F", "#2ECC71"],
-                )
-                fig_comp.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-                fig_comp.update_layout(height=420, coloraxis_showscale=False)
-                st.plotly_chart(fig_comp, use_container_width=True, key="bar_comparativa_etapas")
-
-                # Radar (se mantiene) + alternativa “más pro”: Heatmap normalizado
-                categorias = ["Horas Totales", "TP (h)", "TNPI (h)", "TNP (h)", "Eficiencia %", "Conexiones"]
-
-                if len(etapas_seleccionadas) <= 5:
-                    fig_radar = go.Figure()
-                    for etapa_comp in etapas_seleccionadas:
-                        row = df_grafica[df_grafica["Etapa"] == etapa_comp].iloc[0]
-                        vals = []
-                        for cat in categorias:
-                            v = float(row[cat])
-                            if cat == "Eficiencia %":
-                                vals.append(v)
-                            else:
-                                vmax = float(df_grafica[cat].max()) if float(df_grafica[cat].max()) > 0 else 1.0
-                                vals.append((v / vmax) * 100.0)
-                        fig_radar.add_trace(
-                            go.Scatterpolar(
-                                r=vals,
-                                theta=categorias,
-                                fill="toself",
-                                name=str(etapa_comp),
-                                opacity=0.35,
-                            )
-                        )
-                    fig_radar.update_layout(
-                        title="Radar comparativo (normalizado 0–100)",
-                        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-                        height=520,
-                        legend_title_text="Etapa",
-                    )
-                    st.plotly_chart(fig_radar, use_container_width=True, key="radar_etapas")
-                else:
-                    st.info("Radar oculto: seleccionaste más de 5 etapas.")
-
-                # Heatmap “pro” (misma info, más legible para muchas etapas)
-                df_hm = df_grafica.set_index("Etapa")[categorias].copy()
-
-                # Normaliza columnas a 0-100 (Eficiencia ya está en 0-100)
-                for col in df_hm.columns:
-                    if col == "Eficiencia %":
-                        df_hm[col] = df_hm[col].astype(float).clip(0, 100)
-                    else:
-                        vmax = float(df_hm[col].max()) if float(df_hm[col].max()) > 0 else 1.0
-                        df_hm[col] = (df_hm[col].astype(float) / vmax) * 100.0
-
-                fig_hm = go.Figure(
-                    data=go.Heatmap(
-                        z=df_hm.values,
-                        x=df_hm.columns.tolist(),
-                        y=df_hm.index.tolist(),
-                        colorbar=dict(title="0–100"),
-                    )
-                )
-                fig_hm.update_layout(
-                    title="Comparativo normalizado (heatmap 0–100)",
-                    height=420 + (18 * len(df_hm.index)),
-                    margin=dict(l=20, r=20, t=60, b=20),
-                )
-                st.plotly_chart(fig_hm, use_container_width=True, key="heatmap_etapas")
-
-                # --- Análisis TNP (Comparativo por etapas) ---
-                st.markdown("### 🔵 Análisis de TNP (comparativo)")
-                df_cmp_sel = df[df["Etapa"].isin(etapas_seleccionadas)].copy()
-                df_tnp_cmp = df_cmp_sel[df_cmp_sel["Tipo"] == "TNP"].copy()
-
-                if df_tnp_cmp.empty:
-                    st.info("No hay registros TNP en las etapas seleccionadas.")
-                else:
-                    # Normaliza etiquetas para evitar NaN / '-'
-                    for c, fb in [("Categoria_TNP", "Sin categoría"), ("Detalle_TNP", "Sin detalle")]:
-                        if c not in df_tnp_cmp.columns:
-                            df_tnp_cmp[c] = fb
-                        df_tnp_cmp[c] = (
-                            df_tnp_cmp[c]
-                            .astype(str)
-                            .replace({"nan": fb, "None": fb, "-": fb, "": fb})
-                            .fillna(fb)
-                        )
-
-                    df_tnp_cat = (
-                        df_tnp_cmp.groupby(["Etapa", "Categoria_TNP"], as_index=False)["Horas_Reales"]
-                        .sum()
-                        .sort_values(["Etapa", "Horas_Reales"], ascending=[True, False])
-                    )
-                    fig_tnp_cat = px.bar(
-                        df_tnp_cat,
-                        x="Horas_Reales",
-                        y="Etapa",
-                        color="Categoria_TNP",
-                        orientation="h",
-                        title="TNP por categoría y etapa (h)",
-                    )
-                    st.plotly_chart(fig_tnp_cat, use_container_width=True, key="bar_tnp_cat")
-
-                    df_tnp_det = (
-                        df_tnp_cmp.groupby(["Detalle_TNP"], as_index=False)["Horas_Reales"]
-                        .sum()
-                        .sort_values("Horas_Reales", ascending=False)
-                        .head(10)
-                    )
-                    fig_tnp_det = px.bar(
-                        df_tnp_det,
-                        x="Horas_Reales",
-                        y="Detalle_TNP",
-                        orientation="h",
-                        title="Top 10 - Detalles TNP (h)",
-                    )
-                    st.plotly_chart(fig_tnp_det, use_container_width=True, key="bar_tnp_det")
-
-
-            # Tabla resumen
-            st.dataframe(
-                df_grafica.sort_values("Etapa"),
-                use_container_width=True,
-                hide_index=True,
-            )
 
 with tab_viajes:
     st.subheader("Viajes y conexiones de TP")
@@ -4939,22 +5288,6 @@ with tab_viajes:
 
         st.caption("El cálculo de horas usa: Horas = Distancia/Velocidad + (#Conexiones × min/conexión)/60 (si está habilitado).")
 
-        # Permite override de horas reales si no hay suficientes datos
-        auto_real_h = 0.0
-        if dist > 0 and speed_real > 0:
-            auto_real_h = dist / speed_real
-            if considerar_conexion and n_conn_total and conn_real > 0:
-                auto_real_h += (float(n_conn_total) * float(conn_real) / 60.0)
-
-        horas_reales_override = st.number_input(
-            "Horas reales (override, opcional)",
-            min_value=0.0,
-            step=0.1,
-            value=float(auto_real_h) if auto_real_h > 0 else 0.0,
-            key=f"viaje_realh_override_{viaje_tipo}",
-            help="Si no quieres usar el cálculo automático (por velocidad), escribe aquí las horas reales totales del viaje."
-        )
-
         # Categoría/detalle para TNPI si aplica
         cat_opts = (cat_list if 'cat_list' in globals() else ["-"])
         categoria_viaje = st.selectbox(
@@ -4973,6 +5306,75 @@ with tab_viajes:
             value="",
             key=f"viaje_com_{viaje_tipo}"
         )
+
+        # Hora (opcional) para viaje
+        viaje_use_time = st.checkbox(
+            "Registrar hora (viaje)",
+            value=False,
+            key=f"viaje_use_time_{viaje_tipo}",
+        )
+        viaje_hora_ini = None
+        viaje_hora_fin = None
+        viaje_bitacora_enabled = False
+        viaje_bitacora_entries = st.session_state.get("act_bitacora_entries", [])
+        viaje_bitacora_total_h = float(st.session_state.get("act_bitacora_total_h", 0.0) or 0.0)
+        if viaje_use_time:
+            viaje_hora_ini = st.time_input(
+                "Hora inicio (viaje)",
+                value=st.session_state.get(f"viaje_hora_ini_{viaje_tipo}", datetime.now().time()),
+                key=f"viaje_hora_ini_{viaje_tipo}",
+            )
+            viaje_hora_fin = st.time_input(
+                "Hora fin (viaje)",
+                value=st.session_state.get(f"viaje_hora_fin_{viaje_tipo}", datetime.now().time()),
+                key=f"viaje_hora_fin_{viaje_tipo}",
+            )
+            viaje_bitacora_enabled = st.toggle("Bitácora por horas (viaje)", value=False, key=f"viaje_use_bitacora_{viaje_tipo}")
+        viaje_hora_ini_txt = viaje_hora_ini.strftime("%H:%M") if (viaje_use_time and viaje_hora_ini) else ""
+        viaje_hora_fin_txt = viaje_hora_fin.strftime("%H:%M") if (viaje_use_time and viaje_hora_fin) else ""
+        if viaje_use_time and viaje_bitacora_enabled:
+            st.caption("Completa la bitácora en la pestaña **Bitácora por horas**.")
+            viaje_bitacora_mode = st.radio(
+                "Uso de bitácora (viaje)",
+                options=["Usar bitácora como total del viaje", "Seguir con cálculo estándar/KPI"],
+                horizontal=True,
+                key=f"viaje_bitacora_mode_{viaje_tipo}",
+                help="Define si la bitácora reemplaza las horas reales del viaje o solo sirve como referencia.",
+            )
+        else:
+            viaje_bitacora_mode = "Seguir con cálculo estándar/KPI"
+
+        # Permite override de horas reales si no hay suficientes datos
+        auto_real_h = 0.0
+        if dist > 0 and speed_real > 0:
+            auto_real_h = dist / speed_real
+            if considerar_conexion and n_conn_total and conn_real > 0:
+                auto_real_h += (float(n_conn_total) * float(conn_real) / 60.0)
+
+        if viaje_use_time:
+            if viaje_bitacora_enabled and viaje_bitacora_total_h > 0 and viaje_bitacora_mode == "Usar bitácora como total del viaje":
+                horas_reales_override = float(viaje_bitacora_total_h)
+                st.caption(f"Bitácora aplicada como total: {horas_reales_override:.2f} h")
+            elif viaje_hora_ini and viaje_hora_fin:
+                _dt_ini = datetime.combine(datetime.today().date(), viaje_hora_ini)
+                _dt_fin = datetime.combine(datetime.today().date(), viaje_hora_fin)
+                horas_reales_override = (_dt_fin - _dt_ini).total_seconds() / 3600.0
+                if horas_reales_override < 0:
+                    horas_reales_override += 24.0
+                st.caption(f"Horas reales calculadas: {horas_reales_override:.2f} h")
+            else:
+                horas_reales_override = 0.0
+                st.caption("Horas reales calculadas: 0.00 h")
+            st.session_state[f"viaje_realh_override_{viaje_tipo}"] = float(horas_reales_override)
+        else:
+            horas_reales_override = st.number_input(
+                "Horas reales (override, opcional)",
+                min_value=0.0,
+                step=0.1,
+                value=float(auto_real_h) if auto_real_h > 0 else 0.0,
+                key=f"viaje_realh_override_{viaje_tipo}",
+                help="Si no quieres usar el cálculo automático (por velocidad), escribe aquí las horas reales totales del viaje."
+            )
 
     # Horas estándar (desde catálogo) y reales (auto/override)
     n_conn_used = int(st.session_state.get(f"viaje_nconn_total_{viaje_tipo}", n_conn_total_default) or 0)
@@ -5078,6 +5480,37 @@ with tab_viajes:
     cM2.metric("Real (h)", f"{real_h:.2f}")
     cM3.metric("TNPI por exceso (h)", f"{tnpi_h:.2f}")
 
+    chip_items_viaje = [
+        build_delta_chip_item(
+            "Δ Tiempo real",
+            real=real_h,
+            prog=std_h,
+            unit="h",
+            higher_is_better=False,
+            precision=2,
+        ),
+        build_delta_chip_item(
+            "Δ Velocidad",
+            real=speed_real,
+            prog=vel_std,
+            unit="m/h",
+            higher_is_better=True,
+            precision=1,
+        ),
+    ]
+    if considerar_conexion:
+        chip_items_viaje.append(
+            build_delta_chip_item(
+                "Δ Conexión",
+                real=conn_real,
+                prog=tconn_std,
+                unit="min",
+                higher_is_better=False,
+                precision=1,
+            )
+        )
+    render_chip_row(chip_items_viaje, use_iframe=True, height=140)
+
     # Botón para registrar en el DataFrame principal (st.session_state.df)
     # Decide si al registrar quieres separar automáticamente el exceso como TNPI (sin perder el estándar general).
     auto_tnpi_por_desempeno = st.toggle(
@@ -5165,6 +5598,8 @@ with tab_viajes:
                 "Detalle_TNPI": detalle_registro if "detalle_registro" in locals() else "",
                 "Categoria_TNPI": categoria_tnpi_registro if "categoria_tnpi_registro" in locals() else "",
                 "Origen": "Viajes y conexiones",
+                "Hora_Inicio": viaje_hora_ini_txt,
+                "Hora_Fin": viaje_hora_fin_txt,
                 "Longitud_m": float(dist or 0.0),
                 "std_speed_mh": _std_speed_mh,
                 "real_speed_mh": _real_speed_mh,
@@ -5256,6 +5691,7 @@ with tab_viajes:
                 st.success(f"Registro agregado: {len(_rows)} fila(s).")
                 st.rerun()
 
+
 with tab_bha:
     st.subheader("BHA (Arma/Desarma)")
 
@@ -5274,6 +5710,24 @@ with tab_bha:
     if df_bha.empty:
         st.info("Aún no hay registros BHA para graficar.")
     else:
+        std_sum = float(pd.to_numeric(df_bha.get("Estandar_h", 0.0), errors="coerce").fillna(0.0).sum())
+        real_sum = float(pd.to_numeric(df_bha.get("Real_h", 0.0), errors="coerce").fillna(0.0).sum())
+        eff_avg = clamp_0_100(safe_pct(std_sum, real_sum)) if real_sum > 0 else 0.0
+        eff_tone = "green" if eff_avg >= 85 else ("amber" if eff_avg >= 75 else "red")
+
+        render_chip_row([
+            build_delta_chip_item(
+                "Δ Tiempo real BHA",
+                real=real_sum,
+                prog=std_sum,
+                unit="h",
+                higher_is_better=False,
+                precision=2,
+            ),
+            {"label": "Eficiencia prom.", "value": f"{eff_avg:.0f}%", "tone": eff_tone},
+            {"label": "Registros", "value": f"{len(df_bha)}", "tone": "gray"},
+        ], use_iframe=True, height=120)
+
         n_bha = n_max_bha = min(50, len(df_bha))
         if n_max_bha <= 1:
             n_bha = n_max_bha
@@ -5318,6 +5772,502 @@ with tab_bha:
         st.plotly_chart(fig_bha, use_container_width=True, key="bar_bha")
 
         st.dataframe(df_bha_last, use_container_width=True, hide_index=True)
+
+
+
+with tab_rop:
+    st.subheader("ROP – Registro diario (Real) + Programado por corrida")
+
+    if modo_reporte != "Perforación":
+        st.info("Esta pestaña aplica para modo **Perforación**.")
+    else:
+        # --- captura por fecha (evita que se 'arrastre' al cambiar de día) ---
+        fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
+
+        def _get_by_date(etapa_data: dict, k: str, default: float = 0.0) -> float:
+            try:
+                return float((etapa_data.get(k, {}) or {}).get(fecha_key, default))
+            except Exception:
+                return float(default)
+
+        # --- aplicar reseteos pendientes ANTES de instanciar widgets (evita StreamlitAPIException) ---
+        if st.session_state.get("_pending_widget_resets"):
+            for _k, _v in list(st.session_state["_pending_widget_resets"].items()):
+                st.session_state[_k] = _v
+            st.session_state["_pending_widget_resets"].clear()
+
+        # asegurar que etapa_data exista antes de usarse
+        etapa_data_rop = get_etapa_data(etapa)
+
+        # Corrida activa (viene del sidebar: 'Corrida (Run)')
+        corrida_activa = str(st.session_state.get("corrida_activa") or st.session_state.drill_day.get("corrida_activa") or "Run 1")
+
+        st.caption(f"📌 Corrida activa: **{corrida_activa}** · Fecha seleccionada: **{fecha_key}**")
+
+        sub_diario, sub_corrida = st.tabs(["📅 Diario", "🏷️ ROP programado por corrida"])
+
+        # == == == == == == == == == == == == =
+        # 📅 Diario: ROP real día/noche + ROP programado del día
+        # == == == == == == == == == == == == =
+        with sub_diario:
+            c1, c2, c3 = st.columns(3)
+
+            # --- ROP programada del día (se guarda por fecha, con corrida asociada) ---
+            with c1:
+                etapa_data_rop.setdefault("rop_prog_by_date", {})
+                etapa_data_rop.setdefault("rop_prog_by_corrida", {})
+
+                _rp_entry = (etapa_data_rop.get("rop_prog_by_date") or {}).get(fecha_key)
+                if isinstance(_rp_entry, dict) and "rop_prog" in _rp_entry:
+                    rp_default = float(_rp_entry.get("rop_prog") or 0.0)
+                else:
+                    # default sugerido: maestro por corrida -> (fallback) último valor por etapa -> rop_prog_etapa
+                    rp_default = float((etapa_data_rop.get("rop_prog_by_corrida") or {}).get(corrida_activa, 0.0) or 0.0)
+                    if rp_default <= 0:
+                        rp_default = float(etapa_data_rop.get("rop_prog_total", 0.0) or 0.0)
+                    if rp_default <= 0:
+                        rp_default = float(etapa_data_rop.get("rop_prog_etapa", 0.0) or 0.0)
+
+                rp = st.number_input(
+                    f"ROP programada (m/h) - {fecha_key}",
+                    min_value=0.0, step=0.1,
+                    value=float(rp_default),
+                    key=f"rop_prog_diaria_{etapa}_{fecha_key}",
+                    help="Registro diario. Por defecto toma el valor del maestro de la corrida activa (si existe).",
+                )
+
+                # Guardar "foto del día" (no se recalcula si mañana cambias de corrida/plan)
+                etapa_data_rop["rop_prog_by_date"][fecha_key] = {"corrida_id": corrida_activa, "rop_prog": float(rp)}
+
+                # Compatibilidad con otros bloques que aún lean rop_prog_total
+                etapa_data_rop["rop_prog_total"] = float(rp)
+                st.session_state.drill_day["rop_prog_total"] = float(rp)
+
+            # --- ROP real Día ---
+            with c2:
+                rop_dia_val = _get_by_date(etapa_data_rop, "rop_real_dia_by_date", 0.0)
+                rop_dia_val = st.number_input(
+                    f"ROP real Día - {etapa} (m/h)",
+                    min_value=0.0, step=0.1,
+                    value=float(rop_dia_val),
+                    key=f"rop_real_dia_{etapa}_{fecha_key}",
+                )
+                etapa_data_rop["rop_real_dia"] = float(rop_dia_val)
+                st.session_state.drill_day["rop_real_dia"] = float(rop_dia_val)
+
+                etapa_data_rop.setdefault("rop_real_dia_by_date", {})
+                if float(rop_dia_val) > 0:
+                    etapa_data_rop["rop_real_dia_by_date"][fecha_key] = float(rop_dia_val)
+
+            # --- ROP real Noche ---
+            with c3:
+                rop_noche_val = _get_by_date(etapa_data_rop, "rop_real_noche_by_date", 0.0)
+                rop_noche_val = st.number_input(
+                    f"ROP real Noche - {etapa} (m/h)",
+                    min_value=0.0, step=0.1,
+                    value=float(rop_noche_val),
+                    key=f"rop_real_noche_{etapa}_{fecha_key}",
+                )
+                etapa_data_rop["rop_real_noche"] = float(rop_noche_val)
+                st.session_state.drill_day["rop_real_noche"] = float(rop_noche_val)
+
+                etapa_data_rop.setdefault("rop_real_noche_by_date", {})
+                if float(rop_noche_val) > 0:
+                    etapa_data_rop["rop_real_noche_by_date"][fecha_key] = float(rop_noche_val)
+
+            # (Metros perforados se registran en la pestaña 'Metros')
+
+
+            # Sincroniza (compatibilidad con otros bloques que lean claves sueltas)
+            st.session_state["rop_prog_total"] = float(st.session_state.drill_day["rop_prog_total"])
+            st.session_state["rop_real_diurno"] = float(st.session_state.drill_day["rop_real_dia"])
+            st.session_state["rop_real_nocturno"] = float(st.session_state.drill_day["rop_real_noche"])
+
+            rp = float(st.session_state.drill_day.get("rop_prog_total", 0.0) or 0.0)
+            rd = float(st.session_state.drill_day.get("rop_real_dia", 0.0) or 0.0)
+            rn = float(st.session_state.drill_day.get("rop_real_noche", 0.0) or 0.0)
+
+            # Promedio ponderado por metros (si están capturados), si no, promedio simple de turnos no-cero
+            md = float(st.session_state.drill_day.get("metros_real_dia", 0.0) or 0.0)
+            mn = float(st.session_state.drill_day.get("metros_real_noche", 0.0) or 0.0)
+            if (md + mn) > 0:
+                rr_avg = ((rd * md) + (rn * mn)) / (md + mn)
+            else:
+                vals = [v for v in [rd, rn] if v > 0]
+                rr_avg = sum(vals) / len(vals) if vals else 0.0
+
+            eff_rop_day = clamp_0_100(safe_pct(rr_avg, rp)) if rp > 0 else 0.0
+            _, sl, sc = status_from_eff(eff_rop_day)
+
+            k1, k2, k3, k4 = st.columns([1.2, 1.2, 1.2, 1.0])
+            k1.metric("ROP real promedio (m/h)", f"{rr_avg:.2f}")
+            k2.metric("ROP programada del día (m/h)", f"{rp:.2f}")
+            k3.metric("Eficiencia ROP (%)", f"{eff_rop_day:.0f}%")
+            with k4:
+                st.markdown(
+                    f"""<div style="display:flex;align-items:center;gap:10px;margin-top:28px;">
+                        <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:{sc};box-shadow:0 0 0 2px rgba(255,255,255,0.08);"></span>
+                        <div style="font-weight:800;font-size:22px;letter-spacing:0.5px;">{sl}</div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+            render_chip_row([
+                build_delta_chip_item(
+                    "Δ ROP real",
+                    real=rr_avg,
+                    prog=rp,
+                    unit="m/h",
+                    higher_is_better=True,
+                    precision=2,
+                )
+            ], use_iframe=True, height=90)
+
+            # Gráfica
+            df_rop = pd.DataFrame(
+                [
+                    {"Turno": "Día", "Programado (m/h)": rp, "Real (m/h)": rd},
+                    {"Turno": "Noche", "Programado (m/h)": rp, "Real (m/h)": rn},
+                ]
+            )
+            fig_rop = px.bar(df_rop, x="Turno", y=["Programado (m/h)", "Real (m/h)"], barmode="group", text_auto=True)
+            fig_rop.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=340, legend_title_text="Serie")
+            st.plotly_chart(fig_rop, use_container_width=True, key="bar_rop")
+
+
+            # == == == == == == == == == == == == =
+            # Tendencia por fecha (ROP)
+            # == == == == == == == == == == == == =
+            st.markdown("### Tendencia por fecha")
+
+            # Construir serie por fecha desde registros diarios
+            _prog_map = etapa_data_rop.get("rop_prog_by_date") or {}
+            _rd_map = etapa_data_rop.get("rop_real_dia_by_date") or {}
+            _rn_map = etapa_data_rop.get("rop_real_noche_by_date") or {}
+            _md_map = etapa_data_rop.get("metros_real_dia_by_date") or {}
+            _mn_map = etapa_data_rop.get("metros_real_noche_by_date") or {}
+
+            _dates = sorted({*list(_prog_map.keys()), *list(_rd_map.keys()), *list(_rn_map.keys())})
+            trend_rows = []
+            if _dates:
+                for _d in _dates:
+                    _p_entry = _prog_map.get(_d, {})
+                    _prog = float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
+                    _rd = float(_rd_map.get(_d, 0.0) or 0.0)
+                    _rn = float(_rn_map.get(_d, 0.0) or 0.0)
+
+                    _md = float(_md_map.get(_d, 0.0) or 0.0)
+                    _mn = float(_mn_map.get(_d, 0.0) or 0.0)
+
+                    # mismo criterio que el KPI diario: ponderado por metros si existen
+                    if (_md + _mn) > 0:
+                        _real_avg = ((_rd * _md) + (_rn * _mn)) / (_md + _mn)
+                    else:
+                        _vals = [v for v in [_rd, _rn] if v > 0]
+                        _real_avg = sum(_vals) / len(_vals) if _vals else 0.0
+
+                    _eff = clamp_0_100(safe_pct(_real_avg, _prog)) if _prog > 0 else 0.0
+                    _sem = "🟢" if _eff >= 85 else ("🟡" if _eff >= 70 else "🔴")
+
+                    trend_rows.append({
+                        "Fecha": _d,
+                        "Programado": round(_prog, 2),
+                        "Real Día": round(_rd, 2),
+                        "Real Noche": round(_rn, 2),
+                        "Real Promedio": round(_real_avg, 4),
+                        "Eficiencia_pct": round(_eff, 4),
+                        "Semáforo": _sem,
+                    })
+
+                df_tr = pd.DataFrame(trend_rows)
+
+                fig_tr = go.Figure()
+                fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Día"], name="Real Día", marker_color="rgba(34,197,94,0.90)")
+                fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Noche"], name="Real Noche", marker_color="rgba(168,85,247,0.85)")
+                fig_tr.add_trace(go.Scatter(x=df_tr["Fecha"], y=df_tr["Programado"], mode="lines+markers", name="Programado", line=dict(color="rgba(96,165,250,0.95)", width=3), marker=dict(size=8)))
+                fig_tr.add_trace(go.Scatter(x=df_tr["Fecha"], y=df_tr["Real Promedio"], mode="lines+markers", name="Real Promedio", line=dict(color="rgba(249,115,22,0.95)", width=3), marker=dict(size=8)))
+
+                fig_tr.update_layout(
+                    barmode="stack",
+                    height=420,
+                    margin=dict(l=10, r=10, t=20, b=10),
+                    legend=dict(orientation="v", x=1.02, y=1.0),
+                    xaxis_title="Fecha",
+                    yaxis_title="ROP (m/h)",
+                )
+                st.plotly_chart(fig_tr, use_container_width=True, key=f"trend_rop_{etapa}")
+
+                st.dataframe(df_tr, use_container_width=True, hide_index=True)
+            else:
+                st.info("Aún no hay suficientes registros diarios para mostrar la tendencia.")
+
+            # Detalle + semáforo por turno
+            def _eff_turno(real_v: float, prog_v: float) -> float:
+                return clamp_0_100(safe_pct(real_v, prog_v)) if prog_v > 0 else 0.0
+
+            rows = []
+            for turno_lbl, real_v in [("Día", rd), ("Noche", rn)]:
+                e = _eff_turno(real_v, rp)
+                rows.append(
+                    {
+                        "Turno": turno_lbl,
+                        "ROP Programado (m/h)": round(rp, 2),
+                        "ROP Real (m/h)": round(real_v, 2),
+                        "Eficiencia (%)": round(e, 0),
+                        "Semáforo": "🟢" if e >= 85 else ("🟡" if e >= 70 else "🔴"),
+                    }
+                )
+            st.markdown("### Detalle")
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        # == == == == == == == == == == == == =
+        # 🏷️ Maestro: ROP programado por corrida (editable)
+        # == == == == == == == == == == == == =
+        with sub_corrida:
+            st.markdown("### Maestro: ROP programado por corrida")
+            st.caption("Guarda aquí el **ROP programado base** de la corrida. Este valor se propone como *default* en el registro diario si ese día aún no tiene ROP programada.")
+
+            etapa_data_rop.setdefault("rop_prog_by_corrida", {})
+            etapa_data_rop.setdefault("rop_prog_by_corrida_meta", {})
+            etapa_data_rop.setdefault("rop_prog_by_date", {})
+
+            # Valor guardado actualmente (si existe)
+            rp_saved = float((etapa_data_rop["rop_prog_by_corrida"].get(corrida_activa, 0.0)) or 0.0)
+            rp_master = st.number_input(
+                f"ROP programada de la corrida **{corrida_activa}** (m/h)",
+                min_value=0.0, step=0.1,
+                value=float(rp_saved),
+                key=f"rop_prog_corrida_{etapa}_{corrida_activa}",
+                help="⚠️ Nota: escribir el valor NO lo guarda automáticamente; debes presionar **Guardar** para que quede registrado en el maestro.",
+            )
+
+            # Estado visual: guardado vs pendiente
+            is_pending = abs(float(rp_master) - float(rp_saved)) > 1e-9
+            last_meta = (etapa_data_rop["rop_prog_by_corrida_meta"].get(corrida_activa) or {})
+            last_ts = str(last_meta.get("updated_at") or "").strip()
+            last_by = str(last_meta.get("updated_by") or "").strip()
+
+            top = st.columns([1.1, 1.1, 1.2])
+            with top[0]:
+                st.metric("Guardado (maestro)", f"{rp_saved:.2f} m/h" if rp_saved > 0 else "-")
+            with top[1]:
+                st.metric("Entrada actual", f"{float(rp_master):.2f} m/h" if float(rp_master) > 0 else "-")
+            with top[2]:
+                badge = "🟡 Pendiente de guardar" if is_pending else ("🟢 Guardado" if rp_saved > 0 else "⚪ Sin registrar")
+                extra = (f" · {last_ts}" if last_ts else "")
+                st.markdown(f"**Estado:** {badge}{extra}")
+
+            btn_a, btn_b, btn_c = st.columns([1.1, 1.1, 0.9])
+            with btn_a:
+                if st.button("💾 Guardar en maestro", use_container_width=True, key=f"save_master_{etapa}_{corrida_activa}"):
+                    etapa_data_rop["rop_prog_by_corrida"][corrida_activa] = float(rp_master)
+                    etapa_data_rop["rop_prog_by_corrida_meta"][corrida_activa] = {
+                        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "updated_by": (st.session_state.get("username") or ""),
+                    }
+                    st.success("Maestro actualizado (ROP programado por corrida).")
+                    st.rerun()
+            with btn_b:
+                if st.button("📅 Copiar a registro diario (fecha)", use_container_width=True, key=f"copy_master_to_day_{etapa}_{corrida_activa}"):
+                    # asegura que el maestro quede guardado también
+                    etapa_data_rop["rop_prog_by_corrida"][corrida_activa] = float(rp_master)
+                    etapa_data_rop["rop_prog_by_corrida_meta"][corrida_activa] = {
+                        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "updated_by": (st.session_state.get("username") or ""),
+                    }
+                    # "foto del día"
+                    etapa_data_rop["rop_prog_by_date"][fecha_key] = {"corrida_id": corrida_activa, "rop_prog": float(rp_master)}
+                    etapa_data_rop["rop_prog_total"] = float(rp_master)
+                    st.session_state.drill_day["rop_prog_total"] = float(rp_master)
+                    st.success(f"Registro diario actualizado para {fecha_key}.")
+                    st.rerun()
+            with btn_c:
+                _show_master_key = f"_show_master_{etapa}"
+                _is_showing = bool(st.session_state.get(_show_master_key, False))
+                if not _is_showing:
+                    if st.button("🧾 Ver maestro", use_container_width=True, key=f"show_master_{etapa}_{corrida_activa}"):
+                        st.session_state[_show_master_key] = True
+                        st.rerun()
+                else:
+                    if st.button("🙈 Ocultar maestro", use_container_width=True, key=f"hide_master_{etapa}_{corrida_activa}"):
+                        st.session_state[_show_master_key] = False
+                        st.rerun()
+
+            show_master = bool(st.session_state.get(f"_show_master_{etapa}", False))
+
+            # Tabla del maestro (con metadatos)
+            st.markdown("---")
+            st.markdown("#### Maestro registrado (por corrida)")
+            if etapa_data_rop["rop_prog_by_corrida"]:
+                rows = []
+                for k, v in (etapa_data_rop["rop_prog_by_corrida"].items() or []):
+                    meta = (etapa_data_rop.get("rop_prog_by_corrida_meta", {}) or {}).get(k, {}) or {}
+                    rows.append({
+                        "Corrida": str(k),
+                        "ROP_Prog_mh": float(v),
+                        "Actualizado": str(meta.get("updated_at") or ""),
+                        "Usuario": str(meta.get("updated_by") or ""),
+                    })
+                df_master = pd.DataFrame(rows).sort_values("Corrida").reset_index(drop=True)
+
+                if not show_master:
+                    st.info("Maestro oculto (presiona **Ver maestro** para mostrarlo).")
+                else:
+                    st.dataframe(df_master, use_container_width=True, hide_index=True)
+
+                # Ayuda: por qué 'no se ve guardado'
+                st.caption("💡 Si escribes un valor y cambias de pestaña sin presionar **Guardar en maestro**, el valor queda solo como *entrada* y no se registra en el maestro.")
+            else:
+                st.info("Aún no hay ROP programado guardado por corrida para esta etapa.")
+
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+with tab_metros:
+    st.subheader("Metros perforados - Registro diario")
+
+    corrida_activa = str(st.session_state.get("corrida_activa", ""))
+    fecha_key = str(st.session_state.get("fecha_val", datetime.today().date()))
+    st.caption(f"📌 Corrida activa: **{corrida_activa or '-'}** · Fecha seleccionada: **{fecha_key}**")
+
+    etapa_data_rop = get_etapa_data(etapa)
+
+    def _get_by_date(d: dict, key: str, default=0.0):
+        dd = d.get(key) or {}
+        try:
+            return float(dd.get(fecha_key, default))
+        except Exception:
+            return float(default)
+
+    st.markdown("### Metros perforados (registro diario)")
+    m1, m2, m3 = st.columns(3)
+
+    # --- Metros programados del día (total) ---
+    with m1:
+        etapa_data_rop.setdefault("metros_prog_by_date", {})
+        _mp_entry = (etapa_data_rop.get("metros_prog_by_date") or {}).get(fecha_key)
+        if isinstance(_mp_entry, dict) and "metros_prog" in _mp_entry:
+            mp_default = float(_mp_entry.get("metros_prog") or 0.0)
+        else:
+            mp_default = float(etapa_data_rop.get("metros_prog_total", 0.0) or 0.0)
+
+        mp = st.number_input(
+            f"Metros programados (m) - {fecha_key}",
+            min_value=0.0, step=0.1,
+            value=float(mp_default),
+            key=f"metros_prog_diaria_{etapa}_{fecha_key}",
+            help="Registro diario. Se guarda por fecha y se asocia a la corrida activa."
+        )
+        etapa_data_rop["metros_prog_total"] = float(mp)
+        st.session_state.drill_day["metros_prog_total"] = float(mp)
+        etapa_data_rop["metros_prog_by_date"][fecha_key] = {"corrida_id": corrida_activa, "metros_prog": float(mp)}
+
+    # --- Metros reales Día ---
+    with m2:
+        mr_dia_val = _get_by_date(etapa_data_rop, "metros_real_dia_by_date", 0.0)
+        mr_dia_val = st.number_input(
+            f"Metros reales Día - {etapa} (m)",
+            min_value=0.0, step=0.1,
+            value=float(mr_dia_val),
+            key=f"metros_real_dia_{etapa}_{fecha_key}",
+        )
+        etapa_data_rop["metros_real_dia"] = float(mr_dia_val)
+        st.session_state.drill_day["metros_real_dia"] = float(mr_dia_val)
+        etapa_data_rop.setdefault("metros_real_dia_by_date", {})
+        if float(mr_dia_val) > 0:
+            etapa_data_rop["metros_real_dia_by_date"][fecha_key] = float(mr_dia_val)
+
+    # --- Metros reales Noche ---
+    with m3:
+        mr_noche_val = _get_by_date(etapa_data_rop, "metros_real_noche_by_date", 0.0)
+        mr_noche_val = st.number_input(
+            f"Metros reales Noche - {etapa} (m)",
+            min_value=0.0, step=0.1,
+            value=float(mr_noche_val),
+            key=f"metros_real_noche_{etapa}_{fecha_key}",
+        )
+        etapa_data_rop["metros_real_noche"] = float(mr_noche_val)
+        st.session_state.drill_day["metros_real_noche"] = float(mr_noche_val)
+        etapa_data_rop.setdefault("metros_real_noche_by_date", {})
+        if float(mr_noche_val) > 0:
+            etapa_data_rop["metros_real_noche_by_date"][fecha_key] = float(mr_noche_val)
+
+    # KPI + gráfica
+    mr_total = float(st.session_state.drill_day.get("metros_real_dia", 0.0)) + float(st.session_state.drill_day.get("metros_real_noche", 0.0))
+    eff_m = clamp_0_100(safe_pct(mr_total, float(mp))) if float(mp) > 0 else 0.0
+    st.caption(f"📌 Metros reales total: **{mr_total:.2f} m** · Eficiencia metros: **{eff_m:.0f}%**")
+
+    render_chip_row([
+        build_delta_chip_item(
+            "Δ Metros reales",
+            real=mr_total,
+            prog=float(mp),
+            unit="m",
+            higher_is_better=True,
+            precision=1,
+        )
+    ], use_iframe=True, height=90)
+
+    df_m = pd.DataFrame([
+        {"Tipo": "Programado (total)", "Metros (m)": float(mp)},
+        {"Tipo": "Real Día", "Metros (m)": float(st.session_state.drill_day.get("metros_real_dia", 0.0))},
+        {"Tipo": "Real Noche", "Metros (m)": float(st.session_state.drill_day.get("metros_real_noche", 0.0))},
+        {"Tipo": "Real Total", "Metros (m)": mr_total},
+    ])
+    fig_m = px.bar(df_m, x="Tipo", y="Metros (m)", text_auto=True)
+    fig_m.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=340)
+    st.plotly_chart(fig_m, use_container_width=True, key=f"bar_metros_{etapa}_{fecha_key}")
+
+
+    # == == == == == == == == == == == == =
+    # Tendencia por fecha (Metros)
+    # == == == == == == == == == == == == =
+    st.markdown("### Tendencia por fecha")
+
+    _prog_map = etapa_data_rop.get("metros_prog_by_date") or {}
+    _rd_map = etapa_data_rop.get("metros_real_dia_by_date") or {}
+    _rn_map = etapa_data_rop.get("metros_real_noche_by_date") or {}
+
+    _dates = sorted({*list(_prog_map.keys()), *list(_rd_map.keys()), *list(_rn_map.keys())})
+    trend_rows = []
+    if _dates:
+        for _d in _dates:
+            _p_entry = _prog_map.get(_d, {})
+            _prog = float(_p_entry.get("metros_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
+            _rd = float(_rd_map.get(_d, 0.0) or 0.0)
+            _rn = float(_rn_map.get(_d, 0.0) or 0.0)
+            _rt = _rd + _rn
+            _eff = clamp_0_100(safe_pct(_rt, _prog)) if _prog > 0 else 0.0
+            _sem = "🟢" if _eff >= 85 else ("🟡" if _eff >= 70 else "🔴")
+            trend_rows.append({
+                "Fecha": _d,
+                "Programado": round(_prog, 2),
+                "Real Día": round(_rd, 2),
+                "Real Noche": round(_rn, 2),
+                "Real Total": round(_rt, 2),
+                "Eficiencia_pct": round(_eff, 2),
+                "Semáforo": _sem,
+            })
+
+        df_tr = pd.DataFrame(trend_rows)
+
+        fig_tr = go.Figure()
+        fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Día"], name="Real Día", marker_color="rgba(34,197,94,0.90)")
+        fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Noche"], name="Real Noche", marker_color="rgba(168,85,247,0.85)")
+        fig_tr.add_trace(go.Scatter(x=df_tr["Fecha"], y=df_tr["Programado"], mode="lines+markers", name="Programado", line=dict(color="rgba(96,165,250,0.95)", width=3), marker=dict(size=8)))
+        fig_tr.add_trace(go.Scatter(x=df_tr["Fecha"], y=df_tr["Real Total"], mode="lines+markers", name="Real Total", line=dict(color="rgba(249,115,22,0.95)", width=3), marker=dict(size=8)))
+
+        fig_tr.update_layout(
+            barmode="stack",
+            height=420,
+            margin=dict(l=10, r=10, t=20, b=10),
+            legend=dict(orientation="v", x=1.02, y=1.0),
+            xaxis_title="Fecha",
+            yaxis_title="Metros (m)",
+        )
+        st.plotly_chart(fig_tr, use_container_width=True, key=f"trend_metros_{etapa}")
+
+        st.dataframe(df_tr, use_container_width=True, hide_index=True)
+    else:
+        st.info("Aún no hay suficientes registros diarios para mostrar la tendencia.")
 
 
 with tab_detalle:
@@ -5407,12 +6357,592 @@ with tab_detalle:
         st.subheader("Detalle BHA")
         st.dataframe(add_semaforo_column(df_bha), use_container_width=True, height=280)
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+# TAB: COMPARATIVA DE ETAPAS
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+with tab_comp:
+    st.subheader("Comparativa de Etapas (Pro)")
+
+    if df.empty or "Etapa" not in df.columns:
+        st.info("No hay datos suficientes para comparar etapas.")
+    else:
+        # Estilo neutro para chips/tags del multiselect (evita rojo)
+        st.markdown(
+            """
+            <style>
+            div[data-baseweb="tag"]{
+                background-color: rgba(255,255,255,0.10) !important;
+                border: 1px solid rgba(255,255,255,0.18) !important;
+            }
+            div[data-baseweb="tag"] span{
+                color: rgba(255,255,255,0.90) !important;
+            }
+            div[data-baseweb="tag"] svg{
+                fill: rgba(255,255,255,0.70) !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.expander("Comparativo por días (calendario)", expanded=False):
+            days_all = _available_days(df)
+            if len(days_all) < 1:
+                st.info("No hay fechas disponibles para comparar.")
+            else:
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    day_a = st.date_input("Día A", value=days_all[-1], min_value=days_all[0], max_value=days_all[-1], key="cmp_day_a")
+                with col_d2:
+                    day_b_default = days_all[-2] if len(days_all) >= 2 else days_all[-1]
+                    day_b = st.date_input("Día B", value=day_b_default, min_value=days_all[0], max_value=days_all[-1], key="cmp_day_b")
+
+                df_a = split_day(df, day_a, date_col="Fecha")
+                df_b = split_day(df, day_b, date_col="Fecha")
+
+                def _kpis_day(dfin: pd.DataFrame) -> dict:
+                    total = float(dfin.get("Horas_Reales", pd.Series(dtype=float)).fillna(0).sum()) if not dfin.empty else 0.0
+                    tp = float(dfin[dfin.get("Tipo", "") == "TP"]["Horas_Reales"].sum()) if "Tipo" in dfin.columns else total
+                    tnpi = float(dfin[dfin.get("Tipo", "") == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in dfin.columns else 0.0
+                    tnp = float(dfin[dfin.get("Tipo", "") == "TNP"]["Horas_Reales"].sum()) if "Tipo" in dfin.columns else 0.0
+                    eff = clamp_0_100(safe_pct(tp, total)) if total > 0 else 0.0
+                    return {"TP": tp, "TNPI": tnpi, "TNP": tnp, "Total": total, "Eficiencia": eff}
+
+                k_a = _kpis_day(df_a)
+                k_b = _kpis_day(df_b)
+
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric(f"Total A ({day_a})", f"{k_a['Total']:.1f} h")
+                c2.metric(f"TP A", f"{k_a['TP']:.1f} h")
+                c3.metric(f"TNPI A", f"{k_a['TNPI']:.1f} h")
+                c4.metric(f"TNP A", f"{k_a['TNP']:.1f} h")
+                c5.metric(f"Eficiencia A", f"{k_a['Eficiencia']:.0f}%")
+
+                c1b, c2b, c3b, c4b, c5b = st.columns(5)
+                c1b.metric(f"Total B ({day_b})", f"{k_b['Total']:.1f} h")
+                c2b.metric("TP B", f"{k_b['TP']:.1f} h")
+                c3b.metric("TNPI B", f"{k_b['TNPI']:.1f} h")
+                c4b.metric("TNP B", f"{k_b['TNP']:.1f} h")
+                c5b.metric("Eficiencia B", f"{k_b['Eficiencia']:.0f}%")
+
+                render_chip_row([
+                    {"label": f"Día A {day_a}", "value": f"{k_a['Total']:.1f} h", "tone": "blue"},
+                    {"label": "TP A", "value": f"{k_a['TP']:.1f} h", "tone": "green"},
+                    {"label": "TNPI A", "value": f"{k_a['TNPI']:.1f} h", "tone": "amber"},
+                    {"label": "TNP A", "value": f"{k_a['TNP']:.1f} h", "tone": "red"},
+                    {"label": "Eficiencia A", "value": f"{k_a['Eficiencia']:.0f}%", "tone": "blue"},
+                ], use_iframe=True, height=110)
+
+                render_chip_row([
+                    {"label": f"Día B {day_b}", "value": f"{k_b['Total']:.1f} h", "tone": "blue"},
+                    {"label": "TP B", "value": f"{k_b['TP']:.1f} h", "tone": "green"},
+                    {"label": "TNPI B", "value": f"{k_b['TNPI']:.1f} h", "tone": "amber"},
+                    {"label": "TNP B", "value": f"{k_b['TNP']:.1f} h", "tone": "red"},
+                    {"label": "Eficiencia B", "value": f"{k_b['Eficiencia']:.0f}%", "tone": "blue"},
+                ], use_iframe=True, height=110)
+
+                if show_charts:
+                    df_cmp_days = pd.DataFrame(
+                        [
+                            {"Día": str(day_a), "Total": k_a["Total"], "TP": k_a["TP"], "TNPI": k_a["TNPI"], "TNP": k_a["TNP"]},
+                            {"Día": str(day_b), "Total": k_b["Total"], "TP": k_b["TP"], "TNPI": k_b["TNPI"], "TNP": k_b["TNP"]},
+                        ]
+                    )
+                    fig_days = px.bar(
+                        df_cmp_days,
+                        x="Día",
+                        y=["TP", "TNPI", "TNP"],
+                        barmode="stack",
+                        title="Comparativo de tiempos (Día A vs Día B)",
+                    )
+                    st.plotly_chart(fig_days, use_container_width=True)
+
+        st.markdown("## Comparativa de Etapas")
+        col_a, col_b = st.columns(2)
+        etapas_all = sorted([e for e in df["Etapa"].dropna().unique().tolist() if str(e).strip() != ""])
+        with col_a:
+            etapa_a = st.selectbox("Etapa A", options=etapas_all, index=0, key="cmp_etapa_a")
+        with col_b:
+            etapa_b = st.selectbox("Etapa B", options=etapas_all, index=1 if len(etapas_all) > 1 else 0, key="cmp_etapa_b")
+
+        def _kpis_etapa(etp: str) -> dict:
+            dfx = df[df["Etapa"] == etp].copy()
+            total = float(dfx.get("Horas_Reales", pd.Series(dtype=float)).fillna(0).sum()) if not dfx.empty else 0.0
+            tp = float(dfx[dfx.get("Tipo", "") == "TP"]["Horas_Reales"].sum()) if "Tipo" in dfx.columns else total
+            tnpi = float(dfx[dfx.get("Tipo", "") == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in dfx.columns else 0.0
+            tnp = float(dfx[dfx.get("Tipo", "") == "TNP"]["Horas_Reales"].sum()) if "Tipo" in dfx.columns else 0.0
+            eff = clamp_0_100(safe_pct(tp, total)) if total > 0 else 0.0
+            return {"TP": tp, "TNPI": tnpi, "TNP": tnp, "Total": total, "Eficiencia": eff}
+
+        k_a = _kpis_etapa(etapa_a)
+        k_b = _kpis_etapa(etapa_b)
+
+        st.markdown("### Comparativa de Eficiencia por Etapa")
+        if show_charts:
+            fig_eff2 = px.bar(
+                pd.DataFrame(
+                    [
+                        {"Etapa": etapa_a, "Eficiencia": k_a["Eficiencia"]},
+                        {"Etapa": etapa_b, "Eficiencia": k_b["Eficiencia"]},
+                    ]
+                ),
+                x="Etapa",
+                y="Eficiencia",
+                text_auto=True,
+                title="Eficiencia (%)",
+            )
+            fig_eff2.update_traces(marker_color=["#22c55e", "#3b82f6"])
+            fig_eff2.update_layout(yaxis_title="Eficiencia (%)", xaxis_title="Etapa")
+            st.plotly_chart(fig_eff2, use_container_width=True)
+
+        render_chip_row([
+            {"label": f"Etapa A {etapa_a}", "value": f"{k_a['Total']:.1f} h", "tone": "blue"},
+            {"label": "TP A", "value": f"{k_a['TP']:.1f} h", "tone": "green"},
+            {"label": "TNPI A", "value": f"{k_a['TNPI']:.1f} h", "tone": "amber"},
+            {"label": "TNP A", "value": f"{k_a['TNP']:.1f} h", "tone": "red"},
+            {"label": "Eficiencia A", "value": f"{k_a['Eficiencia']:.0f}%", "tone": "blue"},
+        ], use_iframe=True, height=110)
+
+        render_chip_row([
+            {"label": f"Etapa B {etapa_b}", "value": f"{k_b['Total']:.1f} h", "tone": "blue"},
+            {"label": "TP B", "value": f"{k_b['TP']:.1f} h", "tone": "green"},
+            {"label": "TNPI B", "value": f"{k_b['TNPI']:.1f} h", "tone": "amber"},
+            {"label": "TNP B", "value": f"{k_b['TNP']:.1f} h", "tone": "red"},
+            {"label": "Eficiencia B", "value": f"{k_b['Eficiencia']:.0f}%", "tone": "blue"},
+        ], use_iframe=True, height=110)
+
+        st.divider()
+        st.markdown("### Detalle A vs B")
+        df_cmp_etapas = pd.DataFrame(
+            [
+                {"Etapa": etapa_a, "Horas Totales": k_a["Total"], "TP (h)": k_a["TP"], "TNPI (h)": k_a["TNPI"], "TNP (h)": k_a["TNP"], "Eficiencia %": k_a["Eficiencia"]},
+                {"Etapa": etapa_b, "Horas Totales": k_b["Total"], "TP (h)": k_b["TP"], "TNPI (h)": k_b["TNPI"], "TNP (h)": k_b["TNP"], "Eficiencia %": k_b["Eficiencia"]},
+            ]
+        )
+        st.dataframe(df_cmp_etapas, use_container_width=True, hide_index=True)
+
+        st.divider()
+        # --- Comparativo multi-etapas (radar/heatmap + TNP + resumen) ---
+        etapas_all = sorted([e for e in df["Etapa"].dropna().unique().tolist() if str(e).strip() != ""])
+        etapas_sel = st.multiselect(
+            "Etapas a comparar",
+            options=etapas_all,
+            default=etapas_all[:2] if len(etapas_all) >= 2 else etapas_all,
+            key="cmp_etapas_sel",
+        )
+        if not etapas_sel:
+            st.info("Selecciona al menos una etapa.")
+        else:
+            df_cmp = df[df["Etapa"].isin(etapas_sel)].copy()
+
+            g = (
+                df_cmp.groupby(["Etapa", "Tipo"], dropna=False)["Horas_Reales"]
+                .sum()
+                .reset_index()
+            )
+            piv = (
+                g.pivot_table(index="Etapa", columns="Tipo", values="Horas_Reales", fill_value=0.0)
+                .reset_index()
+            )
+            for col in ["TP", "TNPI", "TNP"]:
+                if col not in piv.columns:
+                    piv[col] = 0.0
+
+            piv["Total_h"] = piv["TP"] + piv["TNPI"] + piv["TNP"]
+            piv["Eficiencia_pct"] = piv.apply(
+                lambda r: clamp_0_100(safe_pct(r["TP"], r["Total_h"])) if r["Total_h"] > 0 else 0.0,
+                axis=1,
+            )
+            piv["Semáforo"] = piv["Eficiencia_pct"].apply(semaforo_dot)
+
+            # Conexiones por etapa
+            conn_map = {}
+            if not df_conn.empty and "Etapa" in df_conn.columns:
+                dfc = df_conn[df_conn["Etapa"].isin(etapas_sel)].copy()
+                conn_map = dfc.groupby("Etapa")["Conn_No"].nunique().to_dict()
+            piv["Conexiones"] = piv["Etapa"].map(lambda e: int(conn_map.get(e, 0)))
+
+            # Normalización 0-100
+            def _norm_series(s: pd.Series) -> pd.Series:
+                try:
+                    s = pd.to_numeric(s, errors="coerce").fillna(0.0)
+                    mn, mx = float(s.min()), float(s.max())
+                    if mx == mn:
+                        return s.apply(lambda v: 100.0 if v > 0 else 0.0)
+                    return (s - mn) / (mx - mn) * 100.0
+                except Exception:
+                    return pd.Series([0.0] * len(s))
+
+            radar_cols = ["Total_h", "TP", "TNPI", "TNP", "Eficiencia_pct", "Conexiones"]
+            radar_labels = ["Horas Totales", "TP (h)", "TNPI (h)", "TNP (h)", "Eficiencia %", "Conexiones"]
+            norm_df = piv.copy()
+            for c in radar_cols:
+                norm_df[c] = _norm_series(norm_df[c])
+
+            if show_charts:
+                st.markdown("### Radar comparativo (normalizado 0–100)")
+                fig_r = go.Figure()
+                palette = px.colors.qualitative.Vivid
+                for _, r in norm_df.iterrows():
+                    color = palette[int(_ % len(palette))]
+                    fig_r.add_trace(
+                        go.Scatterpolar(
+                            r=[float(r[c]) for c in radar_cols],
+                            theta=radar_labels,
+                            fill="toself",
+                            name=str(r["Etapa"]),
+                            opacity=0.35,
+                            line=dict(color=color, width=2),
+                            fillcolor=color,
+                        )
+                    )
+                fig_r.update_layout(
+                    polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                    showlegend=True,
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    height=380,
+                )
+                st.plotly_chart(fig_r, use_container_width=True)
+
+                st.markdown("### Comparativo normalizado (heatmap 0–100)")
+                hm = norm_df.set_index("Etapa")[radar_cols]
+                hm.columns = radar_labels
+                fig_hm = px.imshow(
+                    hm,
+                    color_continuous_scale="Turbo",
+                    range_color=[0, 100],
+                    aspect="auto",
+                )
+                fig_hm.update_layout(margin=dict(l=20, r=20, t=30, b=20), height=320)
+                st.plotly_chart(fig_hm, use_container_width=True)
+
+            st.markdown("### Análisis de TNP (comparativo)")
+            df_tnp = df_cmp[df_cmp["Tipo"] == "TNP"].copy()
+            if df_tnp.empty:
+                st.info("No hay registros TNP en las etapas seleccionadas.")
+            else:
+                for c, fb in [("Categoria_TNP", "Sin categoría"), ("Detalle_TNP", "Sin detalle")]:
+                    if c not in df_tnp.columns:
+                        df_tnp[c] = fb
+                    df_tnp[c] = df_tnp[c].fillna(fb).replace({"-": fb, "None": fb, "nan": fb})
+
+                tnp_et = (
+                    df_tnp.groupby("Etapa", as_index=False)["Horas_Reales"]
+                    .sum()
+                    .sort_values("Horas_Reales", ascending=False)
+                )
+                if show_charts:
+                    fig_tnp = px.bar(
+                        tnp_et,
+                        x="Etapa",
+                        y="Horas_Reales",
+                        title="TNP por etapa (h)",
+                        text_auto=True,
+                    )
+                    fig_tnp.update_traces(marker_color="#f59e0b")
+                    st.plotly_chart(fig_tnp, use_container_width=True)
+
+                tnp_det = (
+                    df_tnp.groupby(["Etapa", "Categoria_TNP", "Detalle_TNP"], as_index=False)["Horas_Reales"]
+                    .sum()
+                    .sort_values("Horas_Reales", ascending=False)
+                )
+                st.dataframe(tnp_det, use_container_width=True, hide_index=True)
+
+            st.markdown("### Resumen comparativo")
+            show_cols = ["Etapa", "Total_h", "TP", "TNPI", "TNP", "Eficiencia_pct", "Conexiones", "Semáforo"]
+            st.dataframe(piv[show_cols].sort_values("Etapa"), use_container_width=True, hide_index=True)
+
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: ESTADÍSTICAS POR ETAPA
-# =====================================================================
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: ESTADÍSTICAS POR ETAPA
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+# TAB: ESTADÍSTICAS CAMBIO DE ETAPA (CE)
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+with tab_ce:
+    st.markdown("### 🔁 ")
+# --- CE metrics safety defaults ---
+horas_total_ce = 0.0
+tp_ce = 0.0
+tnpi_ce = 0.0
+tnp_ce = 0.0
+eficiencia_ce = 0.0
+
+st.markdown("### Estadísticas - Cambio de etapa (CE)")
+df_all = st.session_state.df.copy()
+
+if df_all.empty:
+    st.info("Aún no hay actividades registradas. Agrega actividades y vuelve aquí para ver estadísticas.")
+else:
+    # Filtrar CE
+    if "Modo_Reporte" in df_all.columns:
+        df_ce = df_all[df_all["Modo_Reporte"].astype(str) == "Cambio de etapa"].copy()
+    else:
+        df_ce = df_all.copy()
+
+    if df_ce.empty:
+        st.warning("No hay actividades registradas con Modo de reporte = 'Cambio de etapa'.")
+        st.caption("Tip: cambia el 'Modo reporte' en el panel lateral antes de agregar actividades de CE.")
+    else:
+        # Normalizar columnas mínimas
+        if "Fecha" in df_ce.columns:
+            df_ce["Fecha"] = pd.to_datetime(df_ce["Fecha"], errors="coerce").dt.date
+        else:
+            df_ce["Fecha"] = pd.NaT
+
+        df_ce["Horas_Reales"] = pd.to_numeric(df_ce.get("Horas_Reales", 0), errors="coerce").fillna(0.0)
+
+        # Filtros
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c1:
+            fechas = [d for d in df_ce["Fecha"].dropna().unique().tolist() if d]
+            if fechas:
+                fmin, fmax = min(fechas), max(fechas)
+            else:
+                fmin = fmax = datetime.today().date()
+            rango = st.date_input("Rango de fechas", value=(fmin, fmax), key="ce_rango")
+            if isinstance(rango, tuple) and len(rango) == 2:
+                f_ini, f_fin = rango
+            else:
+                f_ini, f_fin = fmin, fmax
+        with c2:
+            etapas = sorted([str(x) for x in df_ce.get("Etapa", pd.Series(dtype=str)).fillna("").unique().tolist() if str(x).strip() != ""])
+            etapa_f = st.selectbox("Etapa", options=["(Todas)"] + etapas, index=0, key="ce_etapa")
+        with c3:
+            mostrar_detalle = st.toggle("Ver tabla detalle", value=False, key="ce_det_toggle")
+
+        if "Fecha" in df_ce.columns and f_ini and f_fin:
+            df_ce = df_ce[(df_ce["Fecha"] >= f_ini) & (df_ce["Fecha"] <= f_fin)].copy()
+        if etapa_f != "(Todas)" and "Etapa" in df_ce.columns:
+            df_ce = df_ce[df_ce["Etapa"].astype(str) == str(etapa_f)].copy()
+
+        if df_ce.empty:
+            st.warning("No hay datos CE para ese filtro.")
+            st.stop()
+
+        # KPIs
+        total_h = float(df_ce["Horas_Reales"].sum())
+        tp_h = float(df_ce[df_ce.get("Tipo", "") == "TP"]["Horas_Reales"].sum()) if "Tipo" in df_ce.columns else total_h
+        tnpi_h = float(df_ce[df_ce.get("Tipo", "") == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in df_ce.columns else 0.0
+        tnp_h = float(df_ce[df_ce.get("Tipo", "") == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_ce.columns else 0.0
+        eff = (tp_h / total_h * 100.0) if total_h > 0 else 0.0
+
+        # Semáforo (ajustable)
+        warn_below = 75.0
+        crit_below = 60.0
+        if eff >= warn_below:
+            tone = "green"
+            sem_txt = "OK"
+        elif eff >= crit_below:
+            tone = "amber"
+            sem_txt = "ATENCIÓN"
+        else:
+            tone = "red"
+            sem_txt = "CRÍTICO"
+
+        # Persistir KPIs CE globales (para otros bloques)
+        horas_total_ce = total_h
+        tp_ce = tp_h
+        tnpi_ce = tnpi_h
+        tnp_ce = tnp_h
+        eficiencia_ce = eff
+
+        # Chips pro (KPIs CE)
+        render_chip_row([
+            {"label": "Horas total (CE)", "value": f"{total_h:.2f} h", "tone": "blue"},
+            {"label": "TP", "value": f"{tp_h:.2f} h", "tone": "green"},
+            {"label": "TNPI", "value": f"{tnpi_h:.2f} h", "tone": "amber"},
+            {"label": "TNP", "value": f"{tnp_h:.2f} h", "tone": "red"},
+            {"label": "Eficiencia", "value": f"{eff:.0f}% · {sem_txt}", "tone": tone},
+        ], use_iframe=True, height=120)
+
+        # Chips adicionales (pro)
+        n_act = int(df_ce["Actividad"].nunique()) if "Actividad" in df_ce.columns else 0
+        n_days = int(df_ce["Fecha"].nunique()) if "Fecha" in df_ce.columns else 0
+        avg_day = (total_h / n_days) if n_days > 0 else 0.0
+        render_chip_row([
+            {"label": "Días con CE", "value": f"{n_days}", "tone": "gray"},
+            {"label": "Actividades", "value": f"{n_act}", "tone": "violet"},
+            {"label": "Promedio diario", "value": f"{avg_day:.2f} h", "tone": "blue"},
+        ], use_iframe=True, height=110)
+
+        st.divider()
+
+        # Gráficas principales
+        g1, g2 = st.columns([1, 1])
+        with g1:
+            if "Tipo" in df_ce.columns:
+                df_tipo = df_ce.groupby("Tipo", as_index=False)["Horas_Reales"].sum()
+                if not df_tipo.empty:
+                    fig = px.pie(df_tipo, names="Tipo", values="Horas_Reales", hole=0.55, title="Distribución TP / TNPI / TNP (CE)")
+                    st.plotly_chart(fig, use_container_width=True)
+        with g2:
+            if "Actividad" in df_ce.columns:
+                df_a = df_ce.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(15)
+                if not df_a.empty:
+                    palette = px.colors.qualitative.Set3 + px.colors.qualitative.Pastel + px.colors.qualitative.Bold
+                    act_names = df_a["Actividad"].tolist()
+                    act_color_map = {a: palette[i % len(palette)] for i, a in enumerate(act_names)}
+                    fig = px.bar(
+                        df_a,
+                        x="Actividad",
+                        y="Horas_Reales",
+                        color="Actividad",
+                        title="Top actividades por horas (CE)",
+                        color_discrete_map=act_color_map,
+                    )
+                    fig.update_layout(xaxis_title="", yaxis_title="Horas", xaxis_tickangle=-35, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+
+        # Tendencia por fecha / hora
+        if "Fecha" in df_ce.columns and df_ce["Fecha"].notna().any():
+            st.markdown("### Tendencia (CE)")
+            has_time = ("Hora_Inicio" in df_ce.columns) and df_ce["Hora_Inicio"].astype(str).str.strip().ne("").any()
+            tendencia_mode = st.radio(
+                "Vista",
+                ["Por día", "Por hora"],
+                index=0,
+                horizontal=True,
+                key="ce_tendencia_mode",
+            )
+            if tendencia_mode == "Por hora" and not has_time:
+                st.info("No hay horas registradas. Activa 'Registrar hora' al capturar CE.")
+                tendencia_mode = "Por día"
+
+            if tendencia_mode == "Por hora":
+                df_tmp = df_ce.copy()
+                df_tmp["_Hora"] = pd.to_datetime(df_tmp["Hora_Inicio"], format="%H:%M", errors="coerce").dt.hour
+                df_tmp = df_tmp.dropna(subset=["_Hora"])
+                if df_tmp.empty:
+                    st.info("No hay horas válidas para generar tendencia por hora.")
+                else:
+                    g = df_tmp.groupby(["_Hora", "Tipo"], as_index=False)["Horas_Reales"].sum()
+                    piv = g.pivot_table(index="_Hora", columns="Tipo", values="Horas_Reales", fill_value=0.0).reset_index()
+                    for c in ["TP", "TNPI", "TNP"]:
+                        if c not in piv.columns:
+                            piv[c] = 0.0
+                    piv["Total_h"] = piv["TP"] + piv["TNPI"] + piv["TNP"]
+                    piv = piv.sort_values("_Hora")
+                    piv["Eficiencia_pct"] = piv.apply(lambda r: (r["TP"] / r["Total_h"] * 100.0) if r["Total_h"] > 0 else 0.0, axis=1)
+                    piv["Semáforo"] = piv["Eficiencia_pct"].apply(semaforo_dot)
+
+                    # Chips pro
+                    best_row = piv.sort_values("Eficiencia_pct", ascending=False).iloc[0]
+                    worst_row = piv.sort_values("Eficiencia_pct", ascending=True).iloc[0]
+                    avg_eff = float(piv["Eficiencia_pct"].mean()) if len(piv) > 0 else 0.0
+                    render_chip_row([
+                        {"label": "Mejor hora", "value": f"{int(best_row['_Hora']):02d}:00 · {best_row['Eficiencia_pct']:.0f}%", "tone": "green"},
+                        {"label": "Peor hora", "value": f"{int(worst_row['_Hora']):02d}:00 · {worst_row['Eficiencia_pct']:.0f}%", "tone": "red"},
+                        {"label": "Eficiencia promedio", "value": f"{avg_eff:.0f}%", "tone": "blue"},
+                        {"label": "Horas con CE", "value": f"{len(piv)}", "tone": "gray"},
+                    ], use_iframe=True, height=120)
+
+                    df_long = piv.melt(
+                        id_vars=["_Hora"],
+                        value_vars=["Total_h", "TP", "TNPI", "TNP"],
+                        var_name="Serie",
+                        value_name="Horas",
+                    )
+                    fig = px.line(
+                        df_long,
+                        x="_Hora",
+                        y="Horas",
+                        color="Serie",
+                        markers=True,
+                        title="Tendencia por hora (CE)",
+                    )
+                    fig.update_layout(xaxis_title="Hora", yaxis_title="Horas")
+                    fig.update_xaxes(dtick=1)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    st.markdown("#### Semáforo por hora (CE)")
+                    st.dataframe(
+                        piv[["_Hora", "Total_h", "TP", "TNPI", "TNP", "Eficiencia_pct", "Semáforo"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+            else:
+                df_d = df_ce.groupby("Fecha", as_index=False).agg(
+                    Total_h=("Horas_Reales", "sum"),
+                    TP_h=("Horas_Reales", lambda s: float(s[df_ce.loc[s.index, "Tipo"].astype(str) == "TP"].sum()) if "Tipo" in df_ce.columns else float(s.sum())),
+                    TNPI_h=("Horas_Reales", lambda s: float(s[df_ce.loc[s.index, "Tipo"].astype(str) == "TNPI"].sum()) if "Tipo" in df_ce.columns else 0.0),
+                    TNP_h=("Horas_Reales", lambda s: float(s[df_ce.loc[s.index, "Tipo"].astype(str) == "TNP"].sum()) if "Tipo" in df_ce.columns else 0.0),
+                ).sort_values("Fecha")
+
+                df_d["Eficiencia_pct"] = df_d.apply(lambda r: (r["TP_h"]/r["Total_h"]*100.0) if r["Total_h"]>0 else 0.0, axis=1)
+                df_d["Semáforo"] = df_d["Eficiencia_pct"].apply(semaforo_dot)
+                df_d["Fecha"] = pd.to_datetime(df_d["Fecha"], errors="coerce")
+
+                # Chips pro arriba de la tendencia
+                if not df_d.empty:
+                    best_row = df_d.sort_values("Eficiencia_pct", ascending=False).iloc[0]
+                    worst_row = df_d.sort_values("Eficiencia_pct", ascending=True).iloc[0]
+                    avg_eff = float(df_d["Eficiencia_pct"].mean()) if len(df_d) > 0 else 0.0
+                    best_day = best_row["Fecha"].date().isoformat() if pd.notna(best_row["Fecha"]) else "-"
+                    worst_day = worst_row["Fecha"].date().isoformat() if pd.notna(worst_row["Fecha"]) else "-"
+                    render_chip_row([
+                        {"label": "Mejor día", "value": f"{best_day} · {best_row['Eficiencia_pct']:.0f}%", "tone": "green"},
+                        {"label": "Peor día", "value": f"{worst_day} · {worst_row['Eficiencia_pct']:.0f}%", "tone": "red"},
+                        {"label": "Eficiencia promedio", "value": f"{avg_eff:.0f}%", "tone": "blue"},
+                        {"label": "Días", "value": f"{len(df_d)}", "tone": "gray"},
+                    ], use_iframe=True, height=120)
+
+                df_long = df_d.melt(
+                    id_vars=["Fecha"],
+                    value_vars=["Total_h", "TP_h", "TNPI_h", "TNP_h"],
+                    var_name="Serie",
+                    value_name="Horas",
+                )
+                fig = px.line(
+                    df_long,
+                    x="Fecha",
+                    y="Horas",
+                    color="Serie",
+                    markers=True,
+                    title="Tendencia por fecha (CE)",
+                )
+                fig.update_layout(xaxis_title="", yaxis_title="Horas")
+                fig.update_xaxes(dtick="D1", tickformat="%Y-%m-%d")
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Semáforos por fecha (tabla + chips)
+                st.markdown("#### Semáforo por fecha (CE)")
+                st.dataframe(
+                    df_d[["Fecha", "Total_h", "TP_h", "TNPI_h", "TNP_h", "Eficiencia_pct", "Semáforo"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        # Tabla resumen por actividad
+        if "Actividad" in df_ce.columns:
+            if "Tipo" in df_ce.columns:
+                piv = df_ce.pivot_table(index="Actividad", columns="Tipo", values="Horas_Reales", aggfunc="sum", fill_value=0.0)
+                for c in ["TP","TNPI","TNP"]:
+                    if c not in piv.columns:
+                        piv[c]=0.0
+                piv["Total"] = piv[["TP","TNPI","TNP"]].sum(axis=1)
+                piv["Eficiencia_%"] = piv.apply(lambda r: (r["TP"]/r["Total"]*100.0) if r["Total"]>0 else 0.0, axis=1)
+                piv["Semáforo"] = piv["Eficiencia_%"].apply(semaforo_dot)
+                piv = piv.sort_values("Total", ascending=False).reset_index()
+            else:
+                piv = df_ce.groupby("Actividad", as_index=False)["Horas_Reales"].sum().rename(columns={"Horas_Reales":"Total"})
+                piv["TP"]=piv["Total"]; piv["TNPI"]=0.0; piv["TNP"]=0.0; piv["Eficiencia_%"]=100.0
+                piv["Semáforo"] = piv["Eficiencia_%"].apply(semaforo_dot)
+
+            st.markdown("#### Resumen por actividad (CE)")
+            st.dataframe(piv, use_container_width=True, hide_index=True)
+
+        if mostrar_detalle:
+            st.markdown("#### Detalle (CE)")
+            st.dataframe(df_ce.sort_values(["Fecha","Turno"], ascending=[True, True]), use_container_width=True, hide_index=True)
+
+        st.caption("Recomendación: usa CE para capturar tiempos de transición (cambio de herramienta/etapa, cementación, WOC, etc.). Esto permite separar desempeño de perforación vs tiempos de cambio de etapa.")
+
+
 with tab_estadisticas:
     st.subheader("📊 Estadísticas por Etapa")
     
@@ -5518,9 +7048,13 @@ with tab_estadisticas:
                     # Metros reales por etapa: acumulado de metros diarios capturados (día + noche)
                     _mr_d_map = etapa_data.get("metros_real_dia_by_date", {}) or {}
                     _mr_n_map = etapa_data.get("metros_real_noche_by_date", {}) or {}
-                    mr_etapa = float(sum(_mr_d_map.values()) + sum(_mr_n_map.values()))
-                    if mr_etapa == 0.0:
-                        mr_etapa = float((etapa_data.get("metros_real_dia", 0.0) or 0.0) + (etapa_data.get("metros_real_noche", 0.0) or 0.0))
+                    mr_total_calc = float(sum(_mr_d_map.values()) + sum(_mr_n_map.values()))
+                    if legacy_calc_value == 0.0:
+                        legacy_calc_value = float(
+                            (etapa_data.get("metros_real_dia", 0.0) or 0.0)
+                            + (etapa_data.get("metros_real_noche", 0.0) or 0.0)
+                        )
+                    mr_etapa = mr_total_calc if mr_total_calc > 0 else float(legacy_calc_value or 0.0)
 
                     # ROP programada por etapa (meta)
                     rp_etapa = float(etapa_data.get("rop_prog_etapa", 0.0) or 0.0)
@@ -5713,6 +7247,9 @@ with tab_estadisticas:
             # ---- SECCIÓN 5: RESUMEN EJECUTIVO ----
             st.markdown("### 📋 Resumen Ejecutivo")
             
+            # Asegurar valores por defecto si no se calcularon en esta ruta
+            rr_etapa = float(rr_etapa) if "rr_etapa" in locals() else 0.0
+
             # Crear resumen ejecutivo
             resumen_data = {
                 "Métrica": ["Horas Totales", "TP (Horas Productivas)", "TNPI (Horas No Productivas)", 
@@ -5724,7 +7261,7 @@ with tab_estadisticas:
                     f"{tnpi_h_etapa:.1f} h",
                     f"{tnp_h_etapa:.1f} h",
                     f"{eficiencia_etapa:.0f}%",
-                    f"{mr_etapa:.0f} m" if modo_reporte == "Perforación" else "N/A",
+                    f"{0.0:.0f} m" if modo_reporte == "Perforación" else "N/A",
                     f"{rr_etapa:.1f} m/h" if modo_reporte == "Perforación" else "N/A",
                     f"{conexiones_count}",
                     f"{len(df_bha_etapa)}" if not df_bha_etapa.empty else "0"
@@ -5735,7 +7272,7 @@ with tab_estadisticas:
                     "🟡" if 0 < tnpi_h_etapa < 5 else ("🔴" if tnpi_h_etapa >= 5 else "🟢"),
                     "🟡" if 0 < tnp_h_etapa < 3 else ("🔴" if tnp_h_etapa >= 3 else "🟢"),
                     semaforo_dot(eficiencia_etapa),
-                    "🟢" if mr_etapa > 0 else "⚪",
+                    "🟢" if horas_total_ce > 0 else "⚪",
                     "🟢" if rr_etapa > 0 else "⚪",
                     "🟢" if conexiones_count > 0 else "⚪",
                     "🟢" if len(df_bha_etapa) > 0 else "⚪"
@@ -5778,11 +7315,11 @@ with tab_estadisticas:
             st.session_state["active_tab"] = "Reporte General del Pozo"
             st.rerun()
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: ESTADÍSTICAS POR CORRIDA
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 with tab_corridas:
     st.subheader("Estadísticas por corrida")
 
@@ -6059,7 +7596,7 @@ with tab_corridas:
                 eff = (tp_h / total_h * 100.0) if total_h > 0 else 0.0
 
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Ventana", f"{tmin.date()} → {tmax.date()}" if pd.notna(tmin) and pd.notna(tmax) else "—")
+                c1.metric("Ventana", f"{tmin.date()} → {tmax.date()}" if pd.notna(tmin) and pd.notna(tmax) else "-")
                 c2.metric("Total (h)", f"{total_h:.2f}")
                 c3.metric("TNPI (h)", f"{tnpi_h:.2f}")
                 c4.metric("Eficiencia (%)", f"{eff:.1f}")
@@ -6147,9 +7684,9 @@ with tab_corridas:
                 st.dataframe(d.drop(columns=["Fecha_dt"], errors="ignore"), use_container_width=True, hide_index=True)
 
 
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: ESTADÍSTICAS DRILLSPOT (KPI EXPORT)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 with tab_drillspot:
     st.subheader("Estadísticas DrillSpot (KPI Export)")
     st.caption("Estas estadísticas se calculan aparte y no modifican tus actividades. Carga el KPI Export (CSV o XLSX) para activar la vista.")
@@ -6289,7 +7826,7 @@ with tab_drillspot:
             st.error(f"No pude leer el archivo. Error: {e}")
 
 # NUEVA TAB: REPORTE GENERAL DEL POZO (TODAS LAS ETAPAS)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 with tab_general:
     st.subheader("📊 Reporte General del Pozo - Todas las Etapas")
     
@@ -6689,9 +8226,9 @@ with tab_general:
                     file_name=f"Reporte_General_{pozo}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: EJECUTIVO (Causa–raíz + Recomendaciones + PDF)
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 with tab_ejecutivo:
     st.subheader("Análisis causa–raíz (Viajes)")
     df_main = st.session_state.df.copy()
@@ -6825,7 +8362,7 @@ with tab_ejecutivo:
 
 
 # TAB: EXPORTAR
-# =====================================================================
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 with tab_export:
     st.subheader("Exportar (PDF / PowerPoint)")
     render_export_diario_calendario()

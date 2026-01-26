@@ -1,0 +1,40 @@
+{
+  "users": [
+    {
+      "username": "l.brito",
+      "password": "$2b$12$ox.8d.4jd/.Ko/aVlJxLtO7sElCLWUDBKo08OPHFxN3NOaDKSPJ0q",
+      "name": "Lenin Jose Brito Hernandez",
+      "email": "l.brito@rogii.com",
+      "role": "admin",
+      "photo": "https://ca.slack-edge.com/T96H98CDP-U085TB2KW5B-63d16e1cb335-512"
+    },
+    {
+      "username": "fmoreno90",
+      "password": "$2b$12$9el9sdmFyYFui66dEw9gJ.eyi.Q4H.6akWehewdud2zMcZ1WqJ0hi",
+      "name": "Francisco Moreno Garcia",
+      "email": "f.garcia@rogii.com",
+      "role": "operador",
+      "photo": "https://ca.slack-edge.com/T96H98CDP-U09UH7YSUJ3-c925a45d4552-192"
+    },
+    {
+      "username": "mlucio",
+      "password": "$2b$12$WXGoLBsPXLl7DF4dwWC97OAhjgN9l/bi07uugtw073HwhCec3Ix/y",
+      "name": "Massiel Villarreal",
+      "email": "m.lucio@rogii.com",
+      "role": "operador",
+      "photo": "https://ca.slack-edge.com/T96H98CDP-U08NYR9RMU5-a97e1ecdf0a1-512"
+    },
+    {
+      "username": "emartinez86",
+      "password": "$2b$12$ogcj6MBRj7QOgJpAZxzZEulduwZ2QUZW.4fjm9GSSc6tHrLnDVK1y",
+      "name": "Edgar Martínez",
+      "email": "e.martinez@rogii.com",
+      "role": "operador",
+      "photo": "https://ca.slack-edge.com/T96H98CDP-U09TCS116NA-486af247e618-192"
+    }
+  ]
+}
+
+
+
+
