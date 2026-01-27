@@ -581,6 +581,21 @@ def _coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _decorate_turno_df(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Añade ☀️/🌙 en Turno para tablas sin tocar data base."""
+    if df is None:
+        return df
+    _df = df.copy()
+    if "Turno" in _df.columns:
+        _df["Turno"] = _df["Turno"].replace({
+            "Día": "Día ☀️",
+            "Noche": "Noche 🌙",
+            "Diurno": "Día ☀️",
+            "Nocturno": "Noche 🌙",
+        })
+    return _df
+
+
 def add_semaforo_column(df, eff_col="Eficiencia_pct"):
     """Agrega columna 'Semáforo' sin alterar estilos (solo texto)."""
     if df is None:
@@ -590,7 +605,9 @@ def add_semaforo_column(df, eff_col="Eficiencia_pct"):
         return df
     if eff_col not in df.columns:
         return df
-    _df = df.copy()
+    _df = _decorate_turno_df(df)
+    if _df is None:
+        return _df
     _df["Semáforo"] = _df[eff_col].apply(_semaforo_from_eff)
     return _df
 
@@ -4672,6 +4689,275 @@ with tab_resumen:
                     )
                     st.plotly_chart(fig_act_pie_d, use_container_width=True)
 
+                # ------------------------------
+                # KPI diario pro (semáforos)
+                # ------------------------------
+                st.markdown("### KPIs diarios (pro)")
+                sem_tp = semaforo_dot(safe_pct(tp_h_d, total_real_d)) if total_real_d > 0 else "⚪"
+                sem_eff = semaforo_dot(eff_d)
+                kpi_rows_d = [
+                    {"Métrica": "Horas reales", "Valor": f"{total_real_d:.2f} h", "Semáforo": "⚪"},
+                    {"Métrica": "TP", "Valor": f"{tp_h_d:.2f} h", "Semáforo": sem_tp},
+                    {"Métrica": "TNPI", "Valor": f"{tnpi_h_d:.2f} h", "Semáforo": semaforo_dot(safe_pct(tp_h_d, total_real_d)) if total_real_d > 0 else "⚪"},
+                    {"Métrica": "TNP", "Valor": f"{tnp_h_d:.2f} h", "Semáforo": "⚪"},
+                    {"Métrica": "Eficiencia", "Valor": f"{eff_d:.1f}%", "Semáforo": sem_eff},
+                ]
+                st.dataframe(pd.DataFrame(kpi_rows_d), use_container_width=True, hide_index=True)
+
+                # ------------------------------
+                # Top 5 causas TNPI/TNP (diario)
+                # ------------------------------
+                st.markdown("### Top 5 causas TNPI/TNP del día")
+                col_t1, col_t2 = st.columns(2)
+
+                with col_t1:
+                    df_tnpi_d = df_diario[df_diario.get("Tipo", "") == "TNPI"].copy()
+                    if df_tnpi_d.empty:
+                        st.info("No hay TNPI para este día.")
+                    else:
+                        df_tnpi_d["Detalle_TNPI"] = df_tnpi_d.get("Detalle_TNPI", "-").replace({"-": "Sin detalle"}).astype(str)
+                        g_tnpi = (
+                            df_tnpi_d.groupby("Detalle_TNPI", as_index=False)["Horas_Reales"]
+                            .sum()
+                            .sort_values("Horas_Reales", ascending=False)
+                            .head(5)
+                        )
+                        total_tnpi = float(df_tnpi_d["Horas_Reales"].sum())
+                        g_tnpi["%"] = g_tnpi["Horas_Reales"].apply(lambda v: (float(v) / total_tnpi * 100.0) if total_tnpi > 0 else 0.0)
+                        fig_tnpi = px.bar(
+                            g_tnpi.sort_values("Horas_Reales"),
+                            x="Horas_Reales",
+                            y="Detalle_TNPI",
+                            orientation="h",
+                            title="TNPI - Top 5 causas",
+                            text=g_tnpi["%"].map(lambda v: f"{v:.0f}%"),
+                        )
+                        fig_tnpi.update_layout(xaxis_title="Horas", yaxis_title="Detalle")
+                        fig_tnpi.update_traces(marker_color="#EF4444", textposition="outside")
+                        st.plotly_chart(fig_tnpi, use_container_width=True)
+
+                with col_t2:
+                    df_tnp_d = df_diario[df_diario.get("Tipo", "") == "TNP"].copy()
+                    if df_tnp_d.empty:
+                        st.info("No hay TNP para este día.")
+                    else:
+                        df_tnp_d["Detalle_TNP"] = df_tnp_d.get("Detalle_TNP", "-").replace({"-": "Sin detalle"}).astype(str)
+                        g_tnp = (
+                            df_tnp_d.groupby("Detalle_TNP", as_index=False)["Horas_Reales"]
+                            .sum()
+                            .sort_values("Horas_Reales", ascending=False)
+                            .head(5)
+                        )
+                        total_tnp = float(df_tnp_d["Horas_Reales"].sum())
+                        g_tnp["%"] = g_tnp["Horas_Reales"].apply(lambda v: (float(v) / total_tnp * 100.0) if total_tnp > 0 else 0.0)
+                        fig_tnp = px.bar(
+                            g_tnp.sort_values("Horas_Reales"),
+                            x="Horas_Reales",
+                            y="Detalle_TNP",
+                            orientation="h",
+                            title="TNP - Top 5 causas",
+                            text=g_tnp["%"].map(lambda v: f"{v:.0f}%"),
+                        )
+                        fig_tnp.update_layout(xaxis_title="Horas", yaxis_title="Detalle")
+                        fig_tnp.update_traces(marker_color="#3B82F6", textposition="outside")
+                        st.plotly_chart(fig_tnp, use_container_width=True)
+
+                # ------------------------------
+                # ROP diario (Día vs Noche)
+                # ------------------------------
+                st.markdown("### ROP real vs programado (Día/Noche)")
+                etapa_data_rop_d = get_etapa_data(etapa_resumen) if etapa_resumen != "Sin datos" else {}
+                _prog_map = etapa_data_rop_d.get("rop_prog_by_date", {}) or {}
+                _rd_map = etapa_data_rop_d.get("rop_real_dia_by_date", {}) or {}
+                _rn_map = etapa_data_rop_d.get("rop_real_noche_by_date", {}) or {}
+                _p_entry = _prog_map.get(str(fecha_resumen), {})
+                rop_prog_d = float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
+                rop_rd = float(_rd_map.get(str(fecha_resumen), 0.0) or 0.0)
+                rop_rn = float(_rn_map.get(str(fecha_resumen), 0.0) or 0.0)
+                df_rop_d = pd.DataFrame(
+                    [
+                        {"Turno": "Día ☀️", "Programado (m/h)": rop_prog_d, "Real (m/h)": rop_rd},
+                        {"Turno": "Noche 🌙", "Programado (m/h)": rop_prog_d, "Real (m/h)": rop_rn},
+                    ]
+                )
+                if (rop_prog_d + rop_rd + rop_rn) > 0:
+                    fig_rop_d = px.bar(
+                        df_rop_d,
+                        x="Turno",
+                        y=["Programado (m/h)", "Real (m/h)"],
+                        barmode="group",
+                        text_auto=True,
+                    )
+                    fig_rop_d.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=320, legend_title_text="Serie")
+                    st.plotly_chart(fig_rop_d, use_container_width=True)
+                else:
+                    st.info("No hay datos de ROP para este día.")
+
+                # ------------------------------
+                # Metros perforados diario (Día/Noche)
+                # ------------------------------
+                st.markdown("### Metros perforados (Real vs Programado)")
+                _mp_map = etapa_data_rop_d.get("metros_prog_by_date", {}) or {}
+                _md_map = etapa_data_rop_d.get("metros_real_dia_by_date", {}) or {}
+                _mn_map = etapa_data_rop_d.get("metros_real_noche_by_date", {}) or {}
+                _mp_entry = _mp_map.get(str(fecha_resumen), {})
+                mp_d = float(_mp_entry.get("metros_prog") if isinstance(_mp_entry, dict) else (_mp_entry or 0.0))
+                mr_d = float(_md_map.get(str(fecha_resumen), 0.0) or 0.0)
+                mr_n = float(_mn_map.get(str(fecha_resumen), 0.0) or 0.0)
+                mr_t = mr_d + mr_n
+                df_m_d = pd.DataFrame(
+                    [
+                        {"Tipo": "Programado (total)", "Metros (m)": mp_d},
+                        {"Tipo": "Real Día ☀️", "Metros (m)": mr_d},
+                        {"Tipo": "Real Noche 🌙", "Metros (m)": mr_n},
+                        {"Tipo": "Real Total", "Metros (m)": mr_t},
+                    ]
+                )
+                if (mp_d + mr_d + mr_n) > 0:
+                    fig_m_d = px.bar(
+                        df_m_d,
+                        x="Tipo",
+                        y="Metros (m)",
+                        text_auto=True,
+                        color="Tipo",
+                        color_discrete_map={
+                            "Programado (total)": "#6B7280",
+                            "Real Día ☀️": "#F59E0B",
+                            "Real Noche 🌙": "#1D4ED8",
+                            "Real Total": "#22C55E",
+                        },
+                    )
+                    fig_m_d.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=320)
+                    st.plotly_chart(fig_m_d, use_container_width=True)
+                else:
+                    st.info("No hay datos de metros para este día.")
+
+                # ------------------------------
+                # BHA diario (Real vs Estándar)
+                # ------------------------------
+                st.markdown("### BHA (Real vs Estándar)")
+                df_bha_d = st.session_state.get("df_bha", pd.DataFrame()).copy()
+                if not df_bha_d.empty and "Fecha" in df_bha_d.columns:
+                    df_bha_d["Fecha"] = df_bha_d["Fecha"].astype(str)
+                    df_bha_d = df_bha_d[df_bha_d["Fecha"] == str(fecha_resumen)].copy()
+                    if "Etapa" in df_bha_d.columns and etapa_resumen != "Sin datos":
+                        df_bha_d = df_bha_d[df_bha_d["Etapa"] == etapa_resumen].copy()
+                if not df_bha_d.empty:
+                    df_long_bha = df_bha_d.melt(
+                        id_vars=[c for c in ["Accion", "BHA_Tipo"] if c in df_bha_d.columns],
+                        value_vars=[c for c in ["Estandar_h", "Real_h"] if c in df_bha_d.columns],
+                        var_name="Serie",
+                        value_name="Horas",
+                    )
+                    fig_bha_d = px.bar(
+                        df_long_bha,
+                        x="BHA_Tipo" if "BHA_Tipo" in df_long_bha.columns else "Accion",
+                        y="Horas",
+                        color="Serie",
+                        barmode="group",
+                        title=f"BHA - {fecha_resumen} / {etapa_resumen}",
+                    )
+                    fig_bha_d.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=320)
+                    st.plotly_chart(fig_bha_d, use_container_width=True)
+                else:
+                    st.info("No hay registros BHA para este día.")
+
+                # ------------------------------
+                # Conexiones perforando (diario)
+                # ------------------------------
+                st.markdown("### Conexiones perforando (diario)")
+                df_conn_d = df_conn_filtrado.copy()
+                if not df_conn_d.empty and "Fecha" in df_conn_d.columns:
+                    df_conn_d["Fecha"] = df_conn_d["Fecha"].astype(str)
+                    df_conn_d = df_conn_d[df_conn_d["Fecha"] == str(fecha_resumen)].copy()
+                if not df_conn_d.empty:
+                    df_conn_sum = df_conn_d.groupby("Componente", as_index=False)["Minutos_Reales"].sum()
+                    df_conn_sum["Componente"] = pd.Categorical(df_conn_sum["Componente"], categories=CONN_ORDER, ordered=True)
+                    df_conn_sum = df_conn_sum.sort_values("Componente")
+                    fig_conn_pie_d = px.pie(
+                        df_conn_sum,
+                        names="Componente",
+                        values="Minutos_Reales",
+                        hole=0.35,
+                        title=f"Distribución tiempo en conexión - {fecha_resumen}",
+                        color="Componente",
+                        color_discrete_map=CONN_COLOR_MAP,
+                    )
+                    st.plotly_chart(fig_conn_pie_d, use_container_width=True)
+
+                    df_stack = df_conn_d.copy()
+                    df_stack["Conn_Label"] = df_stack["Profundidad_m"].fillna(df_stack["Conn_No"]).astype(float).astype(int).astype(str)
+                    df_stack["Componente"] = pd.Categorical(df_stack["Componente"], categories=CONN_ORDER, ordered=True)
+                    df_stack_g = (
+                        df_stack.groupby(["Conn_Label", "Componente"], as_index=False)["Minutos_Reales"]
+                        .sum()
+                        .sort_values(["Conn_Label", "Componente"])
+                    )
+                    fig_conn_stack_d = px.bar(
+                        df_stack_g,
+                        x="Conn_Label",
+                        y="Minutos_Reales",
+                        color="Componente",
+                        category_orders={"Componente": CONN_ORDER},
+                        color_discrete_map=CONN_COLOR_MAP,
+                        barmode="stack",
+                        title=f"Conexiones perforando - {fecha_resumen}",
+                        labels={"Conn_Label": "Profundidad (m)", "Minutos_Reales": "Tiempo (min)"},
+                    )
+                    fig_conn_stack_d.update_layout(legend_title_text="", xaxis_tickangle=0, height=320)
+                    st.plotly_chart(fig_conn_stack_d, use_container_width=True)
+                else:
+                    st.info("No hay conexiones para este día.")
+
+                # ------------------------------
+                # Viajes (si aplica)
+                # ------------------------------
+                st.markdown("### Viajes (si aplica)")
+                viajes_store = st.session_state.get("viajes_hourly_store", {})
+                if isinstance(viajes_store, dict) and len(viajes_store) > 0:
+                    viaje_tipo_sel = st.selectbox("Tipo de viaje (resumen diario)", options=sorted(list(viajes_store.keys())))
+                    store_v = viajes_store.get(viaje_tipo_sel, {})
+                    hourly_df = store_v.get("hourly")
+                    if isinstance(hourly_df, pd.DataFrame) and not hourly_df.empty:
+                        df_plot = hourly_df.copy().sort_values("hour").reset_index(drop=True)
+                        df_plot["hour_str"] = df_plot["hour"].astype(int)
+                        day_start = int(st.session_state.get("day_start", 6))
+                        day_end = int(st.session_state.get("day_end", 18))
+                        def _is_day(h: int) -> bool:
+                            if day_start == day_end:
+                                return True
+                            if day_start < day_end:
+                                return day_start <= h < day_end
+                            return (h >= day_start) or (h < day_end)
+                        df_plot["Turno"] = df_plot["hour"].astype(int).apply(lambda h: "Día ☀️" if _is_day(h) else "Noche 🌙")
+                        fig_v = px.bar(
+                            df_plot,
+                            x="hour_str",
+                            y="speed_mh",
+                            color="Turno",
+                            color_discrete_map={"Día ☀️": "#F59E0B", "Noche 🌙": "#1D4ED8"},
+                            labels={"hour_str": "Hora", "speed_mh": "m/h", "Turno": "Turno"},
+                            title=f"Viaje – {viaje_tipo_sel}",
+                        )
+                        fig_v.update_layout(xaxis=dict(dtick=1))
+                        st.plotly_chart(fig_v, use_container_width=True)
+
+                        fig_c = px.bar(
+                            df_plot,
+                            x="hour_str",
+                            y="conn_min",
+                            color="Turno",
+                            color_discrete_map={"Día ☀️": "#F59E0B", "Noche 🌙": "#1D4ED8"},
+                            labels={"hour_str": "Hora", "conn_min": "min", "Turno": "Turno"},
+                            title=f"Conexiones – {viaje_tipo_sel}",
+                        )
+                        fig_c.update_layout(xaxis=dict(dtick=1))
+                        st.plotly_chart(fig_c, use_container_width=True)
+                    else:
+                        st.info("No hay datos de viajes para mostrar.")
+                else:
+                    st.info("No hay viajes registrados para el resumen diario.")
+
                 # Tabla resumen diario
                 with st.expander("Ver tabla diaria (etapa + fecha)", expanded=False):
                     cols_show = [c for c in ["Fecha","Etapa","Actividad","Tipo","Horas_Prog","Horas_Reales","Categoria_TNPI","Detalle_TNPI","Categoria_TNP","Detalle_TNP","Comentario"] if c in df_diario.columns]
@@ -5159,7 +5445,7 @@ with tab_viajes:
         # Cruza medianoche
         return (h >= day_start) or (h < day_end)
 
-    df_plot["Turno"] = df_plot["hour"].astype(int).apply(lambda h: "Día" if _is_day(h) else "Noche")
+    df_plot["Turno"] = df_plot["hour"].astype(int).apply(lambda h: "Día ☀️" if _is_day(h) else "Noche 🌙")
 
 
     fig_v = px.bar(
@@ -5167,7 +5453,7 @@ with tab_viajes:
         x="hour_str",
         y="speed_mh",
         color="Turno",
-        color_discrete_map={"Día": "#1f77b4", "Noche": "#ff7f0e"},
+        color_discrete_map={"Día ☀️": "#F59E0B", "Noche 🌙": "#1D4ED8"},
         labels={"hour_str": "Hora", "speed_mh": "m/h", "Turno": "Turno"},
         title=f"Viaje – {viaje_tipo}"
     )
@@ -5199,7 +5485,7 @@ with tab_viajes:
             x="hour_str",
             y="conn_min",
             color="Turno",
-            color_discrete_map={"Día": "#1f77b4", "Noche": "#ff7f0e"},
+            color_discrete_map={"Día ☀️": "#F59E0B", "Noche 🌙": "#1D4ED8"},
             labels={"hour_str": "Hora", "conn_min": "min", "Turno": "Turno"},
             title=f"Conexiones – {viaje_tipo}"
         )
@@ -5847,7 +6133,7 @@ with tab_rop:
             with c2:
                 rop_dia_val = _get_by_date(etapa_data_rop, "rop_real_dia_by_date", 0.0)
                 rop_dia_val = st.number_input(
-                    f"ROP real Día - {etapa} (m/h)",
+                    f"ROP real Día ☀️ - {etapa} (m/h)",
                     min_value=0.0, step=0.1,
                     value=float(rop_dia_val),
                     key=f"rop_real_dia_{etapa}_{fecha_key}",
@@ -5863,7 +6149,7 @@ with tab_rop:
             with c3:
                 rop_noche_val = _get_by_date(etapa_data_rop, "rop_real_noche_by_date", 0.0)
                 rop_noche_val = st.number_input(
-                    f"ROP real Noche - {etapa} (m/h)",
+                    f"ROP real Noche 🌙 - {etapa} (m/h)",
                     min_value=0.0, step=0.1,
                     value=float(rop_noche_val),
                     key=f"rop_real_noche_{etapa}_{fecha_key}",
@@ -5926,8 +6212,8 @@ with tab_rop:
             # Gráfica
             df_rop = pd.DataFrame(
                 [
-                    {"Turno": "Día", "Programado (m/h)": rp, "Real (m/h)": rd},
-                    {"Turno": "Noche", "Programado (m/h)": rp, "Real (m/h)": rn},
+                    {"Turno": "Día ☀️", "Programado (m/h)": rp, "Real (m/h)": rd},
+                    {"Turno": "Noche 🌙", "Programado (m/h)": rp, "Real (m/h)": rn},
                 ]
             )
             fig_rop = px.bar(df_rop, x="Turno", y=["Programado (m/h)", "Real (m/h)"], barmode="group", text_auto=True)
@@ -5972,8 +6258,8 @@ with tab_rop:
                     trend_rows.append({
                         "Fecha": _d,
                         "Programado": round(_prog, 2),
-                        "Real Día": round(_rd, 2),
-                        "Real Noche": round(_rn, 2),
+                        "Real Día ☀️": round(_rd, 2),
+                        "Real Noche 🌙": round(_rn, 2),
                         "Real Promedio": round(_real_avg, 4),
                         "Eficiencia_pct": round(_eff, 4),
                         "Semáforo": _sem,
@@ -5982,8 +6268,8 @@ with tab_rop:
                 df_tr = pd.DataFrame(trend_rows)
 
                 fig_tr = go.Figure()
-                fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Día"], name="Real Día", marker_color="rgba(34,197,94,0.90)")
-                fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Noche"], name="Real Noche", marker_color="rgba(168,85,247,0.85)")
+                fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Día ☀️"], name="Real Día ☀️", marker_color="rgba(245,158,11,0.90)")
+                fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Noche 🌙"], name="Real Noche 🌙", marker_color="rgba(29,78,216,0.85)")
                 fig_tr.add_trace(go.Scatter(x=df_tr["Fecha"], y=df_tr["Programado"], mode="lines+markers", name="Programado", line=dict(color="rgba(96,165,250,0.95)", width=3), marker=dict(size=8)))
                 fig_tr.add_trace(go.Scatter(x=df_tr["Fecha"], y=df_tr["Real Promedio"], mode="lines+markers", name="Real Promedio", line=dict(color="rgba(249,115,22,0.95)", width=3), marker=dict(size=8)))
 
@@ -6006,7 +6292,7 @@ with tab_rop:
                 return clamp_0_100(safe_pct(real_v, prog_v)) if prog_v > 0 else 0.0
 
             rows = []
-            for turno_lbl, real_v in [("Día", rd), ("Noche", rn)]:
+            for turno_lbl, real_v in [("Día ☀️", rd), ("Noche 🌙", rn)]:
                 e = _eff_turno(real_v, rp)
                 rows.append(
                     {
@@ -6164,7 +6450,7 @@ with tab_metros:
     with m2:
         mr_dia_val = _get_by_date(etapa_data_rop, "metros_real_dia_by_date", 0.0)
         mr_dia_val = st.number_input(
-            f"Metros reales Día - {etapa} (m)",
+            f"Metros reales Día ☀️ - {etapa} (m)",
             min_value=0.0, step=0.1,
             value=float(mr_dia_val),
             key=f"metros_real_dia_{etapa}_{fecha_key}",
@@ -6179,7 +6465,7 @@ with tab_metros:
     with m3:
         mr_noche_val = _get_by_date(etapa_data_rop, "metros_real_noche_by_date", 0.0)
         mr_noche_val = st.number_input(
-            f"Metros reales Noche - {etapa} (m)",
+            f"Metros reales Noche 🌙 - {etapa} (m)",
             min_value=0.0, step=0.1,
             value=float(mr_noche_val),
             key=f"metros_real_noche_{etapa}_{fecha_key}",
@@ -6208,12 +6494,28 @@ with tab_metros:
 
     df_m = pd.DataFrame([
         {"Tipo": "Programado (total)", "Metros (m)": float(mp)},
-        {"Tipo": "Real Día", "Metros (m)": float(st.session_state.drill_day.get("metros_real_dia", 0.0))},
-        {"Tipo": "Real Noche", "Metros (m)": float(st.session_state.drill_day.get("metros_real_noche", 0.0))},
+        {"Tipo": "Real Día ☀️", "Metros (m)": float(st.session_state.drill_day.get("metros_real_dia", 0.0))},
+        {"Tipo": "Real Noche 🌙", "Metros (m)": float(st.session_state.drill_day.get("metros_real_noche", 0.0))},
         {"Tipo": "Real Total", "Metros (m)": mr_total},
     ])
-    fig_m = px.bar(df_m, x="Tipo", y="Metros (m)", text_auto=True)
-    fig_m.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=340)
+    fig_m = px.bar(
+        df_m,
+        x="Tipo",
+        y="Metros (m)",
+        text_auto=True,
+        color="Tipo",
+        color_discrete_map={
+            "Programado (total)": "#6B7280",  # gris (plan)
+            "Real Día ☀️": "#F59E0B",  # ámbar (día)
+            "Real Noche 🌙": "#1D4ED8",  # azul (noche)
+            "Real Total": "#22C55E",  # verde (total)
+        },
+    )
+    fig_m.update_layout(
+        title="Metros perforados — Programado vs Real (☀️/🌙)",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=340,
+    )
     st.plotly_chart(fig_m, use_container_width=True, key=f"bar_metros_{etapa}_{fecha_key}")
 
 
@@ -6240,8 +6542,8 @@ with tab_metros:
             trend_rows.append({
                 "Fecha": _d,
                 "Programado": round(_prog, 2),
-                "Real Día": round(_rd, 2),
-                "Real Noche": round(_rn, 2),
+                "Real Día ☀️": round(_rd, 2),
+                "Real Noche 🌙": round(_rn, 2),
                 "Real Total": round(_rt, 2),
                 "Eficiencia_pct": round(_eff, 2),
                 "Semáforo": _sem,
@@ -6250,8 +6552,8 @@ with tab_metros:
         df_tr = pd.DataFrame(trend_rows)
 
         fig_tr = go.Figure()
-        fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Día"], name="Real Día", marker_color="rgba(34,197,94,0.90)")
-        fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Noche"], name="Real Noche", marker_color="rgba(168,85,247,0.85)")
+        fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Día ☀️"], name="Real Día ☀️", marker_color="rgba(245,158,11,0.90)")
+        fig_tr.add_bar(x=df_tr["Fecha"], y=df_tr["Real Noche 🌙"], name="Real Noche 🌙", marker_color="rgba(29,78,216,0.85)")
         fig_tr.add_trace(go.Scatter(x=df_tr["Fecha"], y=df_tr["Programado"], mode="lines+markers", name="Programado", line=dict(color="rgba(96,165,250,0.95)", width=3), marker=dict(size=8)))
         fig_tr.add_trace(go.Scatter(x=df_tr["Fecha"], y=df_tr["Real Total"], mode="lines+markers", name="Real Total", line=dict(color="rgba(249,115,22,0.95)", width=3), marker=dict(size=8)))
 
@@ -6282,26 +6584,66 @@ with tab_detalle:
         st.info("No hay registros para editar.")
     else:
         with st.expander("Editar registros en tabla (guardar cambios)", expanded=False):
-            editable_cols = ["RowID", "Fecha", "Etapa", "Actividad", "Tipo", "Categoria_TNPI", "Detalle_TNPI", "Categoria_TNP", "Detalle_TNP", "Horas_Prog", "Horas_Reales", "Comentario"]
+            editable_cols = [
+                "RowID",
+                "Fecha",
+                "Etapa",
+                "Operacion",
+                "Actividad",
+                "Turno",
+                "Corrida",
+                "Tipo",
+                "Categoria_TNPI",
+                "Detalle_TNPI",
+                "Categoria_TNP",
+                "Detalle_TNP",
+                "Horas_Prog",
+                "Horas_Reales",
+                "Comentario",
+            ]
             show_cols = [c for c in editable_cols if c in df_det.columns]
+            if "Eliminar" not in df_det.columns:
+                df_det["Eliminar"] = False
+            show_cols = ["Eliminar"] + show_cols
 
-            cat_opts = ["-"]
-            det_opts = ["-"]
+            # Opciones de catálogos
+            cat_tnpi_opts = ["-"]
+            det_tnpi_opts = ["-"]
             if "df_tnpi_cat" in globals():
                 if "Categoria_TNPI" in df_tnpi_cat.columns:
-                    cat_opts = sorted(df_tnpi_cat["Categoria_TNPI"].dropna().unique().tolist())
+                    cat_tnpi_opts = sorted(df_tnpi_cat["Categoria_TNPI"].dropna().unique().tolist())
                 if "Detalle_TNPI" in df_tnpi_cat.columns:
-                    det_opts = sorted(df_tnpi_cat["Detalle_TNPI"].dropna().unique().tolist())
+                    det_tnpi_opts = sorted(df_tnpi_cat["Detalle_TNPI"].dropna().unique().tolist())
+
+            cat_tnp_opts = ["-"]
+            det_tnp_opts = ["-"]
+            if "df_tnp_cat" in globals():
+                if "Categoria_TNP" in df_tnp_cat.columns:
+                    cat_tnp_opts = sorted(df_tnp_cat["Categoria_TNP"].dropna().unique().tolist())
+                if "Detalle_TNP" in df_tnp_cat.columns:
+                    det_tnp_opts = sorted(df_tnp_cat["Detalle_TNP"].dropna().unique().tolist())
+
+            actividades_opts = sorted(list(set(ACTIVIDADES + ACTIVIDADES_CE + st.session_state.get("custom_actividades", []))))
+            etapas_opts = sorted(list(set(SECCIONES_DEFAULT + df_det.get("Etapa", pd.Series(dtype=str)).dropna().astype(str).tolist())))
+            corridas_opts = sorted(list(set(df_det.get("Corrida", pd.Series(dtype=str)).dropna().astype(str).tolist())))
 
             edited = st.data_editor(
                 df_det[show_cols],
                 use_container_width=True,
                 hide_index=True,
-                num_rows="fixed",
+                num_rows="dynamic",
                 column_config={
+                    "Eliminar": st.column_config.CheckboxColumn("Eliminar", help="Marca para borrar el registro"),
                     "Tipo": st.column_config.SelectboxColumn("Tipo", options=["TP", "TNPI", "TNP"]),
-                    "Categoria_TNPI": st.column_config.SelectboxColumn("Categoría TNPI", options=cat_opts),
-                    "Detalle_TNPI": st.column_config.SelectboxColumn("Detalle TNPI", options=det_opts),
+                    "Operacion": st.column_config.SelectboxColumn("Operación", options=["Perforación", "Superficie", "TR", "Otra"]),
+                    "Actividad": st.column_config.SelectboxColumn("Actividad", options=actividades_opts),
+                    "Turno": st.column_config.SelectboxColumn("Turno", options=TURNOS),
+                    "Etapa": st.column_config.SelectboxColumn("Etapa", options=etapas_opts),
+                    "Corrida": st.column_config.SelectboxColumn("Corrida", options=corridas_opts) if corridas_opts else st.column_config.TextColumn("Corrida"),
+                    "Categoria_TNPI": st.column_config.SelectboxColumn("Categoría TNPI", options=cat_tnpi_opts),
+                    "Detalle_TNPI": st.column_config.SelectboxColumn("Detalle TNPI", options=det_tnpi_opts),
+                    "Categoria_TNP": st.column_config.SelectboxColumn("Categoría TNP", options=cat_tnp_opts),
+                    "Detalle_TNP": st.column_config.SelectboxColumn("Detalle TNP", options=det_tnp_opts),
                     "Horas_Prog": st.column_config.NumberColumn("Horas Prog", min_value=0.0, step=0.25, format="%.2f"),
                     "Horas_Reales": st.column_config.NumberColumn("Horas Reales", min_value=0.0, step=0.25, format="%.2f"),
                 },
@@ -6310,23 +6652,51 @@ with tab_detalle:
 
             if st.button("Guardar cambios (Detalle)", use_container_width=True):
                 ed = edited.copy()
+
+                # Eliminar filas marcadas
+                if "Eliminar" in ed.columns:
+                    ed = ed[~ed["Eliminar"].astype(bool)].copy()
+                if "Eliminar" in ed.columns:
+                    ed.drop(columns=["Eliminar"], inplace=True, errors="ignore")
+
+                # Asegurar RowID en nuevos registros
+                if "RowID" in ed.columns:
+                    ed["RowID"] = ed["RowID"].astype(str)
+                    missing = ed["RowID"].isna() | (ed["RowID"].astype(str).str.strip() == "")
+                    if missing.any():
+                        ed.loc[missing, "RowID"] = [str(uuid.uuid4()) for _ in range(int(missing.sum()))]
+
                 if "Horas_Prog" in ed.columns:
                     ed["Horas_Prog"] = pd.to_numeric(ed["Horas_Prog"], errors="coerce").fillna(0.0)
                 if "Horas_Reales" in ed.columns:
                     ed["Horas_Reales"] = pd.to_numeric(ed["Horas_Reales"], errors="coerce").fillna(0.0)
 
-                mask_not_tnpi = ed["Tipo"].astype(str).str.upper() != "TNPI"
-                if "Categoria_TNPI" in ed.columns:
-                    ed.loc[mask_not_tnpi, "Categoria_TNPI"] = "-"
-                if "Detalle_TNPI" in ed.columns:
-                    ed.loc[mask_not_tnpi, "Detalle_TNPI"] = "-"
+                # Limpieza de categorías según tipo
+                if "Tipo" in ed.columns:
+                    mask_not_tnpi = ed["Tipo"].astype(str).str.upper() != "TNPI"
+                    mask_not_tnp = ed["Tipo"].astype(str).str.upper() != "TNP"
+                    if "Categoria_TNPI" in ed.columns:
+                        ed.loc[mask_not_tnpi, "Categoria_TNPI"] = "-"
+                    if "Detalle_TNPI" in ed.columns:
+                        ed.loc[mask_not_tnpi, "Detalle_TNPI"] = "-"
+                    if "Categoria_TNP" in ed.columns:
+                        ed.loc[mask_not_tnp, "Categoria_TNP"] = "-"
+                    if "Detalle_TNP" in ed.columns:
+                        ed.loc[mask_not_tnp, "Detalle_TNP"] = "-"
 
+                # Merge seguro por RowID
                 master = st.session_state.get("df", pd.DataFrame()).copy()
                 master = _ensure_rowid(master)
                 master = master.set_index("RowID")
                 ed2 = ed.set_index("RowID")
                 common = [c for c in ed2.columns if c in master.columns]
                 master.update(ed2[common])
+
+                # Agregar nuevos registros (RowID no existente)
+                new_rows = ed2.loc[~ed2.index.isin(master.index)]
+                if not new_rows.empty:
+                    master = pd.concat([master, new_rows[common]], axis=0)
+
                 master = master.reset_index()
                 st.session_state.df = _ensure_rowid(master)
                 st.success("Cambios guardados. Las gráficas se actualizaron.")
@@ -6938,7 +7308,11 @@ else:
 
         if mostrar_detalle:
             st.markdown("#### Detalle (CE)")
-            st.dataframe(df_ce.sort_values(["Fecha","Turno"], ascending=[True, True]), use_container_width=True, hide_index=True)
+            st.dataframe(
+                _decorate_turno_df(df_ce.sort_values(["Fecha", "Turno"], ascending=[True, True])),
+                use_container_width=True,
+                hide_index=True
+            )
 
         st.caption("Recomendación: usa CE para capturar tiempos de transición (cambio de herramienta/etapa, cementación, WOC, etc.). Esto permite separar desempeño de perforación vs tiempos de cambio de etapa.")
 
