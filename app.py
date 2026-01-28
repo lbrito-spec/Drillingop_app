@@ -259,6 +259,7 @@ def render_chip_row(items: list[dict], use_iframe: bool = False, height: int = 1
     Renderiza chips elegantes en una fila.
     items: [{"label": "...", "value": "...", "tone": "blue|green|amber|red|violet|gray"}]
     """
+    light_mode = _is_light_theme()
     tones = {
         "blue": ("#38bdf8", "rgba(56, 189, 248, 0.28)", "rgba(56, 189, 248, 0.35)"),
         "green": ("#22c55e", "rgba(34, 197, 94, 0.28)", "rgba(34, 197, 94, 0.35)"),
@@ -267,6 +268,13 @@ def render_chip_row(items: list[dict], use_iframe: bool = False, height: int = 1
         "violet": ("#8b5cf6", "rgba(139, 92, 246, 0.28)", "rgba(139, 92, 246, 0.35)"),
         "gray": ("#e2e8f0", "rgba(148, 163, 184, 0.20)", "rgba(148, 163, 184, 0.22)"),
     }
+    if light_mode:
+        tones["gray"] = ("#334155", "rgba(148, 163, 184, 0.18)", "rgba(148, 163, 184, 0.25)")
+        tones["blue"] = ("#2563eb", "rgba(37, 99, 235, 0.16)", "rgba(37, 99, 235, 0.25)")
+        tones["green"] = ("#16a34a", "rgba(22, 163, 74, 0.16)", "rgba(22, 163, 74, 0.25)")
+        tones["amber"] = ("#d97706", "rgba(217, 119, 6, 0.16)", "rgba(217, 119, 6, 0.25)")
+        tones["red"] = ("#dc2626", "rgba(220, 38, 38, 0.16)", "rgba(220, 38, 38, 0.25)")
+        tones["violet"] = ("#7c3aed", "rgba(124, 58, 237, 0.16)", "rgba(124, 58, 237, 0.25)")
     chips_html = []
     for it in items:
         label = str(it.get("label", "")).strip()
@@ -282,6 +290,7 @@ def render_chip_row(items: list[dict], use_iframe: bool = False, height: int = 1
             """
         )
 
+    label_color = "#475569" if light_mode else "rgba(255,255,255,0.70)"
     html = textwrap.dedent(
         f"""
         <style>
@@ -306,7 +315,7 @@ def render_chip_row(items: list[dict], use_iframe: bool = False, height: int = 1
             letter-spacing: 0.2px;
           }}
           .ds-chip-label {{
-            color: rgba(255,255,255,0.70);
+            color: {label_color};
             font-weight: 700;
           }}
           .ds-chip-value {{
@@ -358,6 +367,7 @@ def mission_control_dashboard(etapa, eficiencia, tp_h, tnpi_h, tnp_h, total_real
     """
     Panel de control tipo NASA con KPIs críticos
     """
+    light_mode = _is_light_theme()
     # Determinar color del status basado en eficiencia
     if eficiencia >= 85:
         status_color = "#00ff88"
@@ -368,7 +378,33 @@ def mission_control_dashboard(etapa, eficiencia, tp_h, tnpi_h, tnp_h, total_real
     else:
         status_color = "#ff4444"
         status_text = "CRÍTICO"
-    
+    if light_mode:
+        panel_bg = "linear-gradient(180deg, #ffffff 0%, #f4f7fb 100%)"
+        panel_border = "rgba(15,23,42,0.10)"
+        panel_shadow = "0 8px 24px rgba(15,23,42,0.10)"
+        card_bg = "rgba(15,23,42,0.03)"
+        card_border = "rgba(15,23,42,0.08)"
+        card_hover_bg = "rgba(15,23,42,0.06)"
+        hover_border = "rgba(0, 136, 255, 0.35)"
+        text_main = "#0f172a"
+        text_muted = "#475569"
+        badge_bg = "rgba(15,23,42,0.04)"
+        progress_bg = "rgba(15,23,42,0.10)"
+        divider = "rgba(15,23,42,0.10)"
+    else:
+        panel_bg = "linear-gradient(180deg, #0f1620 0%, #0a0e14 100%)"
+        panel_border = "rgba(255,255,255,0.1)"
+        panel_shadow = "0 8px 32px rgba(0,0,0,0.4)"
+        card_bg = "rgba(255,255,255,0.05)"
+        card_border = "rgba(255,255,255,0.08)"
+        card_hover_bg = "rgba(255,255,255,0.1)"
+        hover_border = "rgba(0, 136, 255, 0.3)"
+        text_main = "#ffffff"
+        text_muted = "rgba(255,255,255,0.7)"
+        badge_bg = "rgba(255,255,255,0.05)"
+        progress_bg = "rgba(255,255,255,0.1)"
+        divider = "rgba(255,255,255,0.08)"
+
     # Calcular porcentajes
     tp_percent = (tp_h / total_real * 100) if total_real > 0 else 0
     tnpi_percent = (tnpi_h / total_real * 100) if total_real > 0 else 0
@@ -377,12 +413,12 @@ def mission_control_dashboard(etapa, eficiencia, tp_h, tnpi_h, tnp_h, total_real
     return f"""
     <style>
     .mission-panel {{
-        background: linear-gradient(180deg, #0f1620 0%, #0a0e14 100%);
-        border: 1px solid rgba(255,255,255,0.1);
+        background: {panel_bg};
+        border: 1px solid {panel_border};
         border-radius: 16px;
         padding: 20px;
         margin: 10px 0 20px 0;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        box-shadow: {panel_shadow};
         position: relative;
         overflow: hidden;
     }}
@@ -402,28 +438,28 @@ def mission_control_dashboard(etapa, eficiencia, tp_h, tnpi_h, tnp_h, total_real
         margin-top: 20px;
     }}
     .kpi-card {{
-        background: rgba(255,255,255,0.05);
-        border: 1px solid rgba(255,255,255,0.08);
+        background: {card_bg};
+        border: 1px solid {card_border};
         border-radius: 12px;
         padding: 16px;
         text-align: center;
         transition: all 0.3s ease;
     }}
     .kpi-card:hover {{
-        background: rgba(255,255,255,0.1);
-        border-color: rgba(0, 136, 255, 0.3);
+        background: {card_hover_bg};
+        border-color: {hover_border};
         transform: translateY(-2px);
     }}
     .kpi-value {{
         font-size: 28px;
         font-weight: 800;
         margin: 8px 0;
-        color: #fff;
+        color: {text_main};
         font-family: 'Courier New', monospace;
     }}
     .kpi-label {{
         font-size: 12px;
-        color: rgba(255,255,255,0.7);
+        color: {text_muted};
         text-transform: uppercase;
         letter-spacing: 1px;
     }}
@@ -448,7 +484,7 @@ def mission_control_dashboard(etapa, eficiencia, tp_h, tnpi_h, tnp_h, total_real
     }}
     .mission-title {{
         font-size: 12px;
-        color: rgba(255,255,255,0.7);
+        color: {text_muted};
         text-transform: uppercase;
         letter-spacing: 1px;
     }}
@@ -461,7 +497,7 @@ def mission_control_dashboard(etapa, eficiencia, tp_h, tnpi_h, tnp_h, total_real
         -webkit-text-fill-color: transparent;
     }}
     .efficiency-badge {{
-        background: rgba(255,255,255,0.05);
+        background: {badge_bg};
         border: 1px solid {status_color};
         border-radius: 20px;
         padding: 8px 16px;
@@ -476,12 +512,12 @@ def mission_control_dashboard(etapa, eficiencia, tp_h, tnpi_h, tnp_h, total_real
     }}
     .efficiency-label {{
         font-size: 12px;
-        color: rgba(255,255,255,0.7);
+        color: {text_muted};
         margin-top: 2px;
     }}
     .progress-bar {{
         height: 6px;
-        background: rgba(255,255,255,0.1);
+        background: {progress_bg};
         border-radius: 3px;
         margin-top: 8px;
         overflow: hidden;
@@ -545,8 +581,8 @@ def mission_control_dashboard(etapa, eficiencia, tp_h, tnpi_h, tnp_h, total_real
             </div>
         </div>
         
-        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.08);">
-            <div style="display: flex; justify-content: space-between; font-size: 11px; color: rgba(255,255,255,0.6);">
+        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid {divider};">
+            <div style="display: flex; justify-content: space-between; font-size: 11px; color: {text_muted};">
                 <div>📊 <b>Estado:</b> {status_text}</div>
                 <div>⏱️ <b>Actualizado:</b> {datetime.now().strftime('%H:%M:%S')}</div>
                 <div>📍 <b>Etapa:</b> {etapa}</div>
@@ -835,96 +871,151 @@ TNPI_CSV_PATH = r"C:\Users\l.brito_rogii\Downloads\DrillingOP_APP\Detalles causa
 # ------------------------------
 # ESTILO GLOBAL (HEADER PRO + UTILIDADES)
 # ------------------------------
+_light_mode_hdr = False
+try:
+    _ui_mode_hdr = st.session_state.get("ui_mode")
+    if _ui_mode_hdr in ("Diurno", "Nocturno"):
+        _light_mode_hdr = _ui_mode_hdr == "Diurno"
+except Exception:
+    _light_mode_hdr = False
+if not _light_mode_hdr:
+    try:
+        _base_hdr = st.get_option("theme.base")
+        _light_mode_hdr = str(_base_hdr).lower() == "light"
+    except Exception:
+        _light_mode_hdr = False
+
+if _light_mode_hdr:
+    _hdr_bg = "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,247,251,0.98))"
+    _hdr_border = "rgba(15,23,42,0.10)"
+    _hdr_shadow = "0 18px 40px rgba(15,23,42,0.12)"
+    _hdr_title = "#0f172a"
+    _hdr_sub = "#475569"
+    _hdr_status_bg = "rgba(15,23,42,0.04)"
+    _hdr_status_border = "rgba(15,23,42,0.12)"
+    _hdr_status_text = "#0f172a"
+    _hdr_logo_bg = "rgba(15,23,42,0.04)"
+    _hdr_logo_border = "rgba(15,23,42,0.10)"
+    _hdr_logo_shadow = "inset 0 0 0 1px rgba(15,23,42,0.04)"
+    _hdr_chip_border = "rgba(15,23,42,0.12)"
+    _hdr_chip_shadow = "0 8px 16px rgba(15,23,42,0.12)"
+else:
+    _hdr_bg = "radial-gradient(1200px 240px at 20% -20%, rgba(40,180,99,0.22), transparent 60%), radial-gradient(1200px 240px at 80% 0%, rgba(46,134,193,0.22), transparent 55%), linear-gradient(180deg, rgba(18,18,20,0.95), rgba(8,8,10,0.96))"
+    _hdr_border = "rgba(255,255,255,0.08)"
+    _hdr_shadow = "0 18px 50px rgba(0,0,0,0.40)"
+    _hdr_title = "rgba(255,255,255,0.95)"
+    _hdr_sub = "rgba(255,255,255,0.72)"
+    _hdr_status_bg = "rgba(255,255,255,0.06)"
+    _hdr_status_border = "rgba(255,255,255,0.10)"
+    _hdr_status_text = "rgba(255,255,255,0.88)"
+    _hdr_logo_bg = "rgba(255,255,255,0.04)"
+    _hdr_logo_border = "rgba(255,255,255,0.08)"
+    _hdr_logo_shadow = "inset 0 0 0 1px rgba(255,255,255,0.02)"
+    _hdr_chip_border = "rgba(255,255,255,0.10)"
+    _hdr_chip_shadow = "0 8px 16px rgba(0,0,0,0.35)"
+
 st.markdown(
     """
     <style>
       /* Quita margen arriba del main */
-      .block-container { padding-top: 1.1rem; }
+      .block-container {{ padding-top: 1.1rem; }}
 
       /* Header card */
-      .ds-header {
+      .ds-header {{
         border-radius: 22px;
         padding: 18px 20px;
-        background: radial-gradient(1200px 240px at 20% -20%, rgba(40,180,99,0.22), transparent 60%),
-                    radial-gradient(1200px 240px at 80% 0%, rgba(46,134,193,0.22), transparent 55%),
-                    linear-gradient(180deg, rgba(18,18,20,0.95), rgba(8,8,10,0.96));
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 18px 50px rgba(0,0,0,0.40);
+        background: {hdr_bg};
+        border: 1px solid {hdr_border};
+        box-shadow: {hdr_shadow};
         display:flex;
         gap: 16px;
         align-items:center;
-      }
-      .ds-logo-wrap{
+      }}
+      .ds-logo-wrap{{
         width:64px;height:64px;border-radius:18px;
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(255,255,255,0.08);
+        background: {hdr_logo_bg};
+        border: 1px solid {hdr_logo_border};
         display:flex;align-items:center;justify-content:center;
-        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);
+        box-shadow: {hdr_logo_shadow};
         overflow:hidden;
-      }
-      .ds-logo {
+      }}
+      .ds-logo {{
   width: 90px;
   height: auto;
   max-height: 70px;
   margin-right: 16px;
-}
+}}
 
-.ds-logo.no-float {
+.ds-logo.no-float {{
   animation: none !important;
-}
+}}
 
-      @keyframes dsFloat{
-        0%{ transform: translateY(0px) scale(1.00); }
-        50%{ transform: translateY(-3px) scale(1.03); }
-        100%{ transform: translateY(0px) scale(1.00); }
-      }
-      .ds-title{
+      @keyframes dsFloat{{
+        0%{{ transform: translateY(0px) scale(1.00); }}
+        50%{{ transform: translateY(-3px) scale(1.03); }}
+        100%{{ transform: translateY(0px) scale(1.00); }}
+      }}
+      .ds-title{{
         font-size: 34px;
         font-weight: 900;
         line-height: 1.05;
         margin: 0;
-        color: rgba(255,255,255,0.95);
+        color: {hdr_title};
         letter-spacing: 0.2px;
-      }
-      .ds-sub{
+      }}
+      .ds-sub{{
         margin-top: 6px;
-        color: rgba(255,255,255,0.72);
+        color: {hdr_sub};
         font-size: 14px;
         font-weight: 600;
-      }
+      }}
 
       /* Estado del día (pill) + glow dinámico por eficiencia */
-      .ds-header { position: relative; overflow: hidden; }
-      .ds-header::after{
+      .ds-header {{ position: relative; overflow: hidden; }}
+      .ds-header::after{{
         content:"";
         position:absolute; inset:-2px;
         background: radial-gradient(700px 260px at 12% 0%, var(--ds-glow, rgba(46,134,193,0.18)), transparent 60%),
                     radial-gradient(900px 260px at 88% 10%, var(--ds-glow2, rgba(40,180,99,0.18)), transparent 55%);
         pointer-events:none;
-      }
-      .ds-header[data-status="ok"]{ --ds-glow: rgba(40,180,99,0.22); --ds-glow2: rgba(46,134,193,0.18); }
-      .ds-header[data-status="warn"]{ --ds-glow: rgba(241,196,15,0.22); --ds-glow2: rgba(46,134,193,0.14); }
-      .ds-header[data-status="crit"]{ --ds-glow: rgba(231,76,60,0.28); --ds-glow2: rgba(241,196,15,0.12); }
+      }}
+      .ds-header[data-status="ok"]{{ --ds-glow: rgba(40,180,99,0.22); --ds-glow2: rgba(46,134,193,0.18); }}
+      .ds-header[data-status="warn"]{{ --ds-glow: rgba(241,196,15,0.22); --ds-glow2: rgba(46,134,193,0.14); }}
+      .ds-header[data-status="crit"]{{ --ds-glow: rgba(231,76,60,0.28); --ds-glow2: rgba(241,196,15,0.12); }}
 
-      .ds-status{
+      .ds-status{{
         display:inline-flex; align-items:center; gap:8px;
         padding: 6px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(255,255,255,0.10);
-        background: rgba(255,255,255,0.06);
-        color: rgba(255,255,255,0.88);
+        border: 1px solid {hdr_status_border};
+        background: {hdr_status_bg};
+        color: {hdr_status_text};
         font-weight: 800;
         font-size: 12px;
         letter-spacing: 0.2px;
-      }
-      .ds-status b{ font-weight: 950; }
-      .ds-status .chip{
+      }}
+      .ds-status b{{ font-weight: 950; }}
+      .ds-status .chip{{
         width:10px;height:10px;border-radius:999px;
-        border: 2px solid rgba(255,255,255,0.10);
-        box-shadow: 0 8px 16px rgba(0,0,0,0.35);
-      }
+        border: 2px solid {hdr_chip_border};
+        box-shadow: {hdr_chip_shadow};
+      }}
     </style>
-    """,
+    """.format(
+        hdr_bg=_hdr_bg,
+        hdr_border=_hdr_border,
+        hdr_shadow=_hdr_shadow,
+        hdr_title=_hdr_title,
+        hdr_sub=_hdr_sub,
+        hdr_status_bg=_hdr_status_bg,
+        hdr_status_border=_hdr_status_border,
+        hdr_status_text=_hdr_status_text,
+        hdr_logo_bg=_hdr_logo_bg,
+        hdr_logo_border=_hdr_logo_border,
+        hdr_logo_shadow=_hdr_logo_shadow,
+        hdr_chip_border=_hdr_chip_border,
+        hdr_chip_shadow=_hdr_chip_shadow,
+    ),
     unsafe_allow_html=True,
 )
 
@@ -1335,235 +1426,283 @@ def render_export_diario_calendario():
                     "Eficiencia del día": f"{eff:.0f}%",
                 }
 
-                charts_d = {}
-                # Pie tiempos
-                if "Tipo" in df_day.columns and "Horas_Reales" in df_day.columns:
-                    df_t = df_day.groupby("Tipo", as_index=False)["Horas_Reales"].sum()
-                    if not df_t.empty:
-                        charts_d["TP vs TNPI vs TNP (Diario)"] = px.pie(df_t, names="Tipo", values="Horas_Reales", hole=0.55, title=f"TP vs TNPI vs TNP - {dia_exp.isoformat()}")
-                # Pie actividades
-                if "Actividad" in df_day.columns and "Horas_Reales" in df_day.columns:
-                    df_a = df_day.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(10)
-                    if not df_a.empty:
-                        charts_d["Top actividades (Diario)"] = px.pie(df_a, names="Actividad", values="Horas_Reales", hole=0.35, title=f"Top actividades - {dia_exp.isoformat()}")
-                # BHA (Arma/Desarma) - diario
-                df_bha_all = st.session_state.get("df_bha", pd.DataFrame()).copy()
-                if not df_bha_all.empty and "Fecha" in df_bha_all.columns:
-                    df_bha_all["Fecha"] = df_bha_all["Fecha"].astype(str)
-                    df_bha_d = df_bha_all[df_bha_all["Fecha"] == str(dia_exp)].copy()
-                    if scope_rep.startswith("Por etapa") and meta_d.get("etapa"):
-                        if "Etapa" in df_bha_d.columns:
-                            df_bha_d = df_bha_d[df_bha_d["Etapa"] == str(meta_d.get("etapa"))].copy()
-                    if not df_bha_d.empty:
-                        df_long_bha = df_bha_d.melt(
-                            id_vars=[c for c in ["BHA_Tipo", "Accion"] if c in df_bha_d.columns],
-                            value_vars=[c for c in ["Estandar_h", "Real_h"] if c in df_bha_d.columns],
-                            var_name="Serie",
-                            value_name="Horas",
-                        )
-                        if not df_long_bha.empty:
-                            fig_bha_d = px.bar(
-                                df_long_bha,
-                                x="BHA_Tipo" if "BHA_Tipo" in df_long_bha.columns else "Accion",
-                                y="Horas",
-                                color="Serie",
-                                barmode="group",
-                                title=f"BHA - {dia_exp.isoformat()}",
-                                color_discrete_sequence=EXPORT_COLORWAY,
-                            )
-                            charts_d["BHA (Estándar vs Real)"] = fig_bha_d
+                sig_day = f"{dia_exp.isoformat()}|{scope_rep}|{meta_d.get('etapa','')}|{len(df_day)}|{total:.2f}|{tp:.2f}|{tnpi:.2f}|{tnp:.2f}"
+                if st.session_state.get("exp_day_sig") != sig_day:
+                    st.session_state["exp_day_sig"] = sig_day
+                    st.session_state.pop("exp_day_pdf", None)
+                    st.session_state.pop("exp_day_ppt", None)
+                    st.session_state.pop("exp_day_csv", None)
 
-                # ROP diario (Día vs Noche): por etapa o consolidado por pozo
-                if modo_reporte == "Perforación":
-                    rop_prog_d = 0.0
-                    rop_rd = 0.0
-                    rop_rn = 0.0
-                    por_etapa = st.session_state.drill_day.get("por_etapa", {})
-                    if scope_rep.startswith("Por etapa") and meta_d.get("etapa"):
-                        etapa_key = str(meta_d.get("etapa"))
-                        etapa_data_rop_d = por_etapa.get(etapa_key, {})
-                        _prog_map = etapa_data_rop_d.get("rop_prog_by_date", {}) or {}
-                        _rd_map = etapa_data_rop_d.get("rop_real_dia_by_date", {}) or {}
-                        _rn_map = etapa_data_rop_d.get("rop_real_noche_by_date", {}) or {}
-                        _p_entry = _prog_map.get(str(dia_exp), {})
-                        rop_prog_d = _safe_float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
-                        rop_rd = _safe_float(_rd_map.get(str(dia_exp), 0.0) or 0.0)
-                        rop_rn = _safe_float(_rn_map.get(str(dia_exp), 0.0) or 0.0)
-                    else:
-                        # Consolidado por pozo: sumar por etapa si hay datos diarios
-                        for _, etapa_data_rop_d in (por_etapa or {}).items():
-                            _prog_map = etapa_data_rop_d.get("rop_prog_by_date", {}) or {}
-                            _rd_map = etapa_data_rop_d.get("rop_real_dia_by_date", {}) or {}
-                            _rn_map = etapa_data_rop_d.get("rop_real_noche_by_date", {}) or {}
-                            _p_entry = _prog_map.get(str(dia_exp), {})
-                            rop_prog_d += _safe_float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
-                            rop_rd += _safe_float(_rd_map.get(str(dia_exp), 0.0) or 0.0)
-                            rop_rn += _safe_float(_rn_map.get(str(dia_exp), 0.0) or 0.0)
-                    if (rop_prog_d + rop_rd + rop_rn) > 0:
-                        df_rop_d = pd.DataFrame(
-                            [
-                                {"Turno": "Día ☀️", "Programado (m/h)": rop_prog_d, "Real (m/h)": rop_rd},
-                                {"Turno": "Noche 🌙", "Programado (m/h)": rop_prog_d, "Real (m/h)": rop_rn},
-                            ]
-                        )
-                        fig_rop_d = px.bar(
-                            df_rop_d,
-                            x="Turno",
-                            y=["Programado (m/h)", "Real (m/h)"],
-                            barmode="group",
-                            text_auto=True,
-                            title=f"ROP - {dia_exp.isoformat()}",
-                            color_discrete_sequence=EXPORT_COLORWAY,
-                        )
-                        charts_d["ROP (Diario)"] = fig_rop_d
+                if st.session_state.get("exp_day_pdf") is None or st.session_state.get("exp_day_ppt") is None:
+                    st.caption("Para acelerar la interfaz, genera los archivos bajo demanda.")
+                    if st.button("Preparar exportables (Día)", use_container_width=True, key="exp_day_prepare"):
+                        with st.spinner("Generando exportables del día..."):
+                            prog = st.progress(0)
+                            prog_msg = st.empty()
+                            prog_msg.caption("Iniciando...")
+                            charts_d = {}
+                            # Pie tiempos
+                            if "Tipo" in df_day.columns and "Horas_Reales" in df_day.columns:
+                                df_t = df_day.groupby("Tipo", as_index=False)["Horas_Reales"].sum()
+                                if not df_t.empty:
+                                    charts_d["TP vs TNPI vs TNP (Diario)"] = px.pie(
+                                        df_t,
+                                        names="Tipo",
+                                        values="Horas_Reales",
+                                        hole=0.55,
+                                        title=f"TP vs TNPI vs TNP - {dia_exp.isoformat()}",
+                                    )
+                            prog.progress(12)
+                            prog_msg.caption("Graficas de tiempos listas.")
+                            # Pie actividades
+                            if "Actividad" in df_day.columns and "Horas_Reales" in df_day.columns:
+                                df_a = df_day.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(10)
+                                if not df_a.empty:
+                                    charts_d["Top actividades (Diario)"] = px.pie(
+                                        df_a,
+                                        names="Actividad",
+                                        values="Horas_Reales",
+                                        hole=0.35,
+                                        title=f"Top actividades - {dia_exp.isoformat()}",
+                                    )
+                            prog.progress(24)
+                            prog_msg.caption("Graficas de actividades listas.")
+                            # BHA (Arma/Desarma) - diario
+                            df_bha_all = st.session_state.get("df_bha", pd.DataFrame()).copy()
+                            if not df_bha_all.empty and "Fecha" in df_bha_all.columns:
+                                df_bha_all["Fecha"] = df_bha_all["Fecha"].astype(str)
+                                df_bha_d = df_bha_all[df_bha_all["Fecha"] == str(dia_exp)].copy()
+                                if scope_rep.startswith("Por etapa") and meta_d.get("etapa"):
+                                    if "Etapa" in df_bha_d.columns:
+                                        df_bha_d = df_bha_d[df_bha_d["Etapa"] == str(meta_d.get("etapa"))].copy()
+                                if not df_bha_d.empty:
+                                    df_long_bha = df_bha_d.melt(
+                                        id_vars=[c for c in ["BHA_Tipo", "Accion"] if c in df_bha_d.columns],
+                                        value_vars=[c for c in ["Estandar_h", "Real_h"] if c in df_bha_d.columns],
+                                        var_name="Serie",
+                                        value_name="Horas",
+                                    )
+                                    if not df_long_bha.empty:
+                                        fig_bha_d = px.bar(
+                                            df_long_bha,
+                                            x="BHA_Tipo" if "BHA_Tipo" in df_long_bha.columns else "Accion",
+                                            y="Horas",
+                                            color="Serie",
+                                            barmode="group",
+                                            title=f"BHA - {dia_exp.isoformat()}",
+                                            color_discrete_sequence=EXPORT_COLORWAY,
+                                        )
+                                        charts_d["BHA (Estándar vs Real)"] = fig_bha_d
+                            prog.progress(38)
+                            prog_msg.caption("Graficas BHA listas.")
 
-                # Metros perforados diarios (Real vs Programado): por etapa o consolidado
-                if modo_reporte == "Perforación":
-                    mp_d = 0.0
-                    mr_d = 0.0
-                    mr_n = 0.0
-                    por_etapa = st.session_state.drill_day.get("por_etapa", {})
-                    if scope_rep.startswith("Por etapa") and meta_d.get("etapa"):
-                        etapa_key = str(meta_d.get("etapa"))
-                        etapa_data_m = por_etapa.get(etapa_key, {})
-                        _mp_map = etapa_data_m.get("metros_prog_by_date", {}) or {}
-                        _md_map = etapa_data_m.get("metros_real_dia_by_date", {}) or {}
-                        _mn_map = etapa_data_m.get("metros_real_noche_by_date", {}) or {}
-                        _mp_entry = _mp_map.get(str(dia_exp), {})
-                        mp_d = _safe_float(_mp_entry.get("metros_prog") if isinstance(_mp_entry, dict) else (_mp_entry or 0.0))
-                        mr_d = _safe_float(_md_map.get(str(dia_exp), 0.0) or 0.0)
-                        mr_n = _safe_float(_mn_map.get(str(dia_exp), 0.0) or 0.0)
-                    else:
-                        for _, etapa_data_m in (por_etapa or {}).items():
-                            _mp_map = etapa_data_m.get("metros_prog_by_date", {}) or {}
-                            _md_map = etapa_data_m.get("metros_real_dia_by_date", {}) or {}
-                            _mn_map = etapa_data_m.get("metros_real_noche_by_date", {}) or {}
-                            _mp_entry = _mp_map.get(str(dia_exp), {})
-                            mp_d += _safe_float(_mp_entry.get("metros_prog") if isinstance(_mp_entry, dict) else (_mp_entry or 0.0))
-                            mr_d += _safe_float(_md_map.get(str(dia_exp), 0.0) or 0.0)
-                            mr_n += _safe_float(_mn_map.get(str(dia_exp), 0.0) or 0.0)
-                    mr_t = mr_d + mr_n
-                    if (mp_d + mr_d + mr_n) > 0:
-                        df_m_d = pd.DataFrame(
-                            [
-                                {"Tipo": "Programado (total)", "Metros (m)": mp_d},
-                                {"Tipo": "Real Día ☀️", "Metros (m)": mr_d},
-                                {"Tipo": "Real Noche 🌙", "Metros (m)": mr_n},
-                                {"Tipo": "Real Total", "Metros (m)": mr_t},
-                            ]
-                        )
-                        fig_m_d = px.bar(
-                            df_m_d,
-                            x="Tipo",
-                            y="Metros (m)",
-                            text_auto=True,
-                            title=f"Metros - {dia_exp.isoformat()}",
-                            color="Tipo",
-                            color_discrete_map={
-                                "Programado (total)": "#6B7280",
-                                "Real Día ☀️": "#F59E0B",
-                                "Real Noche 🌙": "#1D4ED8",
-                                "Real Total": "#22C55E",
-                            },
-                        )
-                        charts_d["Metros perforados (Diario)"] = fig_m_d
+                            # ROP diario (Día vs Noche): por etapa o consolidado por pozo
+                            if modo_reporte == "Perforación":
+                                rop_prog_d = 0.0
+                                rop_rd = 0.0
+                                rop_rn = 0.0
+                                por_etapa = st.session_state.drill_day.get("por_etapa", {})
+                                if scope_rep.startswith("Por etapa") and meta_d.get("etapa"):
+                                    etapa_key = str(meta_d.get("etapa"))
+                                    etapa_data_rop_d = por_etapa.get(etapa_key, {})
+                                    _prog_map = etapa_data_rop_d.get("rop_prog_by_date", {}) or {}
+                                    _rd_map = etapa_data_rop_d.get("rop_real_dia_by_date", {}) or {}
+                                    _rn_map = etapa_data_rop_d.get("rop_real_noche_by_date", {}) or {}
+                                    _p_entry = _prog_map.get(str(dia_exp), {})
+                                    rop_prog_d = _safe_float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
+                                    rop_rd = _safe_float(_rd_map.get(str(dia_exp), 0.0) or 0.0)
+                                    rop_rn = _safe_float(_rn_map.get(str(dia_exp), 0.0) or 0.0)
+                                else:
+                                    # Consolidado por pozo: sumar por etapa si hay datos diarios
+                                    for _, etapa_data_rop_d in (por_etapa or {}).items():
+                                        _prog_map = etapa_data_rop_d.get("rop_prog_by_date", {}) or {}
+                                        _rd_map = etapa_data_rop_d.get("rop_real_dia_by_date", {}) or {}
+                                        _rn_map = etapa_data_rop_d.get("rop_real_noche_by_date", {}) or {}
+                                        _p_entry = _prog_map.get(str(dia_exp), {})
+                                        rop_prog_d += _safe_float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
+                                        rop_rd += _safe_float(_rd_map.get(str(dia_exp), 0.0) or 0.0)
+                                        rop_rn += _safe_float(_rn_map.get(str(dia_exp), 0.0) or 0.0)
+                                if (rop_prog_d + rop_rd + rop_rn) > 0:
+                                    df_rop_d = pd.DataFrame(
+                                        [
+                                            {"Turno": "Día ☀️", "Programado (m/h)": rop_prog_d, "Real (m/h)": rop_rd},
+                                            {"Turno": "Noche 🌙", "Programado (m/h)": rop_prog_d, "Real (m/h)": rop_rn},
+                                        ]
+                                    )
+                                    fig_rop_d = px.bar(
+                                        df_rop_d,
+                                        x="Turno",
+                                        y=["Programado (m/h)", "Real (m/h)"],
+                                        barmode="group",
+                                        text_auto=True,
+                                        title=f"ROP - {dia_exp.isoformat()}",
+                                        color_discrete_sequence=EXPORT_COLORWAY,
+                                    )
+                                    charts_d["ROP (Diario)"] = fig_rop_d
+                            prog.progress(52)
+                            prog_msg.caption("Graficas ROP listas.")
 
-                # Conexiones perforando (diario)
-                df_conn_all = st.session_state.get("df_conn", pd.DataFrame()).copy()
-                if not df_conn_all.empty and "Fecha" in df_conn_all.columns:
-                    df_conn_all["Fecha"] = df_conn_all["Fecha"].astype(str)
-                    df_conn_d = df_conn_all[df_conn_all["Fecha"] == str(dia_exp)].copy()
-                    if scope_rep.startswith("Por etapa") and meta_d.get("etapa") and "Etapa" in df_conn_d.columns:
-                        df_conn_d = df_conn_d[df_conn_d["Etapa"] == str(meta_d.get("etapa"))].copy()
-                    if not df_conn_d.empty and {"Componente", "Minutos_Reales"}.issubset(df_conn_d.columns):
-                        df_conn_sum = df_conn_d.groupby("Componente", as_index=False)["Minutos_Reales"].sum()
-                        df_conn_sum["Componente"] = pd.Categorical(df_conn_sum["Componente"], categories=CONN_ORDER, ordered=True)
-                        df_conn_sum = df_conn_sum.sort_values("Componente")
-                        charts_d["Conexiones (Distribución)"] = px.pie(
-                            df_conn_sum,
-                            names="Componente",
-                            values="Minutos_Reales",
-                            hole=0.35,
-                            title=f"Conexiones - {dia_exp.isoformat()}",
-                            color="Componente",
-                            color_discrete_map=CONN_COLOR_MAP,
+                            # Metros perforados diarios (Real vs Programado): por etapa o consolidado
+                            if modo_reporte == "Perforación":
+                                mp_d = 0.0
+                                mr_d = 0.0
+                                mr_n = 0.0
+                                por_etapa = st.session_state.drill_day.get("por_etapa", {})
+                                if scope_rep.startswith("Por etapa") and meta_d.get("etapa"):
+                                    etapa_key = str(meta_d.get("etapa"))
+                                    etapa_data_m = por_etapa.get(etapa_key, {})
+                                    _mp_map = etapa_data_m.get("metros_prog_by_date", {}) or {}
+                                    _md_map = etapa_data_m.get("metros_real_dia_by_date", {}) or {}
+                                    _mn_map = etapa_data_m.get("metros_real_noche_by_date", {}) or {}
+                                    _mp_entry = _mp_map.get(str(dia_exp), {})
+                                    mp_d = _safe_float(_mp_entry.get("metros_prog") if isinstance(_mp_entry, dict) else (_mp_entry or 0.0))
+                                    mr_d = _safe_float(_md_map.get(str(dia_exp), 0.0) or 0.0)
+                                    mr_n = _safe_float(_mn_map.get(str(dia_exp), 0.0) or 0.0)
+                                else:
+                                    for _, etapa_data_m in (por_etapa or {}).items():
+                                        _mp_map = etapa_data_m.get("metros_prog_by_date", {}) or {}
+                                        _md_map = etapa_data_m.get("metros_real_dia_by_date", {}) or {}
+                                        _mn_map = etapa_data_m.get("metros_real_noche_by_date", {}) or {}
+                                        _mp_entry = _mp_map.get(str(dia_exp), {})
+                                        mp_d += _safe_float(_mp_entry.get("metros_prog") if isinstance(_mp_entry, dict) else (_mp_entry or 0.0))
+                                        mr_d += _safe_float(_md_map.get(str(dia_exp), 0.0) or 0.0)
+                                        mr_n += _safe_float(_mn_map.get(str(dia_exp), 0.0) or 0.0)
+                                mr_t = mr_d + mr_n
+                                if (mp_d + mr_d + mr_n) > 0:
+                                    df_m_d = pd.DataFrame(
+                                        [
+                                            {"Tipo": "Programado (total)", "Metros (m)": mp_d},
+                                            {"Tipo": "Real Día ☀️", "Metros (m)": mr_d},
+                                            {"Tipo": "Real Noche 🌙", "Metros (m)": mr_n},
+                                            {"Tipo": "Real Total", "Metros (m)": mr_t},
+                                        ]
+                                    )
+                                    fig_m_d = px.bar(
+                                        df_m_d,
+                                        x="Tipo",
+                                        y="Metros (m)",
+                                        text_auto=True,
+                                        title=f"Metros - {dia_exp.isoformat()}",
+                                        color="Tipo",
+                                        color_discrete_map={
+                                            "Programado (total)": "#6B7280",
+                                            "Real Día ☀️": "#F59E0B",
+                                            "Real Noche 🌙": "#1D4ED8",
+                                            "Real Total": "#22C55E",
+                                        },
+                                    )
+                                    charts_d["Metros perforados (Diario)"] = fig_m_d
+                            prog.progress(66)
+                            prog_msg.caption("Graficas de metros listas.")
+
+                            # Conexiones perforando (diario)
+                            df_conn_all = st.session_state.get("df_conn", pd.DataFrame()).copy()
+                            if not df_conn_all.empty and "Fecha" in df_conn_all.columns:
+                                df_conn_all["Fecha"] = df_conn_all["Fecha"].astype(str)
+                                df_conn_d = df_conn_all[df_conn_all["Fecha"] == str(dia_exp)].copy()
+                                if scope_rep.startswith("Por etapa") and meta_d.get("etapa") and "Etapa" in df_conn_d.columns:
+                                    df_conn_d = df_conn_d[df_conn_d["Etapa"] == str(meta_d.get("etapa"))].copy()
+                                if not df_conn_d.empty and {"Componente", "Minutos_Reales"}.issubset(df_conn_d.columns):
+                                    df_conn_sum = df_conn_d.groupby("Componente", as_index=False)["Minutos_Reales"].sum()
+                                    df_conn_sum["Componente"] = pd.Categorical(df_conn_sum["Componente"], categories=CONN_ORDER, ordered=True)
+                                    df_conn_sum = df_conn_sum.sort_values("Componente")
+                                    charts_d["Conexiones (Distribución)"] = px.pie(
+                                        df_conn_sum,
+                                        names="Componente",
+                                        values="Minutos_Reales",
+                                        hole=0.35,
+                                        title=f"Conexiones - {dia_exp.isoformat()}",
+                                        color="Componente",
+                                        color_discrete_map=CONN_COLOR_MAP,
+                                    )
+
+                                    df_stack = df_conn_d.copy()
+                                    df_stack["Conn_Label"] = df_stack["Profundidad_m"].fillna(df_stack["Conn_No"]).astype(float).astype(int).astype(str)
+                                    df_stack["Componente"] = pd.Categorical(df_stack["Componente"], categories=CONN_ORDER, ordered=True)
+                                    df_stack_g = df_stack.groupby(["Conn_Label", "Componente"], as_index=False)["Minutos_Reales"].sum().sort_values(["Conn_Label", "Componente"])
+                                    fig_conn_stack = px.bar(
+                                        df_stack_g,
+                                        x="Conn_Label",
+                                        y="Minutos_Reales",
+                                        color="Componente",
+                                        category_orders={"Componente": CONN_ORDER},
+                                        color_discrete_map=CONN_COLOR_MAP,
+                                        barmode="stack",
+                                        title=f"Conexiones perforando - {dia_exp.isoformat()}",
+                                        labels={"Conn_Label": "Profundidad (m)", "Minutos_Reales": "Tiempo (min)"},
+                                    )
+                                    charts_d["Conexiones perforando (Stack)"] = fig_conn_stack
+                            prog.progress(78)
+                            prog_msg.caption("Graficas de conexiones listas.")
+
+                            # Viajes (si existen datos por hora)
+                            viajes_store = st.session_state.get("viajes_hourly_store", {})
+                            if isinstance(viajes_store, dict) and len(viajes_store) > 0:
+                                for v_name, v_obj in viajes_store.items():
+                                    hourly_df = v_obj.get("hourly") if isinstance(v_obj, dict) else None
+                                    if isinstance(hourly_df, pd.DataFrame) and not hourly_df.empty:
+                                        df_plot = hourly_df.copy().sort_values("hour").reset_index(drop=True)
+                                        df_plot["hour_str"] = df_plot["hour"].astype(int)
+                                        fig_v = px.bar(
+                                            df_plot,
+                                            x="hour_str",
+                                            y="speed_mh",
+                                            labels={"hour_str": "Hora", "speed_mh": "m/h"},
+                                            title=f"Viaje – {v_name}",
+                                        )
+                                        fig_v.update_traces(marker_color=EXPORT_COLORWAY[0])
+                                        charts_d[f"Viaje – Velocidad ({v_name})"] = fig_v
+                                        fig_c = px.bar(
+                                            df_plot,
+                                            x="hour_str",
+                                            y="conn_min",
+                                            labels={"hour_str": "Hora", "conn_min": "min"},
+                                            title=f"Viaje – Conexiones ({v_name})",
+                                        )
+                                        fig_c.update_traces(marker_color=EXPORT_COLORWAY[1] if len(EXPORT_COLORWAY) > 1 else EXPORT_COLORWAY[0])
+                                        charts_d[f"Viaje – Conexiones ({v_name})"] = fig_c
+                            prog.progress(86)
+                            prog_msg.caption("Graficas de viajes listas.")
+
+                            st.session_state["exp_day_pdf"] = build_pdf(meta_d, kpis_d, charts=charts_d)
+                            prog.progress(93)
+                            prog_msg.caption("PDF listo.")
+                            st.session_state["exp_day_ppt"] = build_pptx(meta_d, kpis_d, charts=charts_d)
+                            prog.progress(98)
+                            prog_msg.caption("PowerPoint listo.")
+                            st.session_state["exp_day_csv"] = df_day.to_csv(index=False).encode("utf-8")
+                            prog.progress(100)
+                            prog_msg.caption("CSV listo.")
+
+                if st.session_state.get("exp_day_pdf") is not None:
+                    colx1, colx2, colx3 = st.columns(3)
+                    with colx1:
+                        st.download_button(
+                            "Descargar PDF (Día)",
+                            data=st.session_state.get("exp_day_pdf"),
+                            file_name=f"Reporte_Diario_{meta_d['pozo']}_{dia_exp.isoformat()}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key="dl_pdf_day",
                         )
-
-                        df_stack = df_conn_d.copy()
-                        df_stack["Conn_Label"] = df_stack["Profundidad_m"].fillna(df_stack["Conn_No"]).astype(float).astype(int).astype(str)
-                        df_stack["Componente"] = pd.Categorical(df_stack["Componente"], categories=CONN_ORDER, ordered=True)
-                        df_stack_g = df_stack.groupby(["Conn_Label", "Componente"], as_index=False)["Minutos_Reales"].sum().sort_values(["Conn_Label", "Componente"])
-                        fig_conn_stack = px.bar(
-                            df_stack_g,
-                            x="Conn_Label",
-                            y="Minutos_Reales",
-                            color="Componente",
-                            category_orders={"Componente": CONN_ORDER},
-                            color_discrete_map=CONN_COLOR_MAP,
-                            barmode="stack",
-                            title=f"Conexiones perforando - {dia_exp.isoformat()}",
-                            labels={"Conn_Label": "Profundidad (m)", "Minutos_Reales": "Tiempo (min)"},
+                    with colx2:
+                        st.download_button(
+                            "Descargar PPTX (Día)",
+                            data=st.session_state.get("exp_day_ppt"),
+                            file_name=f"Reporte_Diario_{meta_d['pozo']}_{dia_exp.isoformat()}.pptx",
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            use_container_width=True,
+                            key="dl_ppt_day",
                         )
-                        charts_d["Conexiones perforando (Stack)"] = fig_conn_stack
-
-                # Viajes (si existen datos por hora)
-                viajes_store = st.session_state.get("viajes_hourly_store", {})
-                if isinstance(viajes_store, dict) and len(viajes_store) > 0:
-                    for v_name, v_obj in viajes_store.items():
-                        hourly_df = v_obj.get("hourly") if isinstance(v_obj, dict) else None
-                        if isinstance(hourly_df, pd.DataFrame) and not hourly_df.empty:
-                            df_plot = hourly_df.copy().sort_values("hour").reset_index(drop=True)
-                            df_plot["hour_str"] = df_plot["hour"].astype(int)
-                            fig_v = px.bar(
-                                df_plot,
-                                x="hour_str",
-                                y="speed_mh",
-                                labels={"hour_str": "Hora", "speed_mh": "m/h"},
-                                title=f"Viaje – {v_name}",
-                            )
-                            fig_v.update_traces(marker_color=EXPORT_COLORWAY[0])
-                            charts_d[f"Viaje – Velocidad ({v_name})"] = fig_v
-                            fig_c = px.bar(
-                                df_plot,
-                                x="hour_str",
-                                y="conn_min",
-                                labels={"hour_str": "Hora", "conn_min": "min"},
-                                title=f"Viaje – Conexiones ({v_name})",
-                            )
-                            fig_c.update_traces(marker_color=EXPORT_COLORWAY[1] if len(EXPORT_COLORWAY) > 1 else EXPORT_COLORWAY[0])
-                            charts_d[f"Viaje – Conexiones ({v_name})"] = fig_c
-
-                colx1, colx2, colx3 = st.columns(3)
-                with colx1:
-                    pdf_b = build_pdf(meta_d, kpis_d, charts=charts_d)
-                    st.download_button(
-                        "Descargar PDF (Día)",
-                        data=pdf_b,
-                        file_name=f"Reporte_Diario_{meta_d['pozo']}_{dia_exp.isoformat()}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                        key="dl_pdf_day",
-                    )
-                with colx2:
-                    ppt_b = build_pptx(meta_d, kpis_d, charts_d)
-                    st.download_button(
-                        "Descargar PPTX (Día)",
-                        data=ppt_b,
-                        file_name=f"Reporte_Diario_{meta_d['pozo']}_{dia_exp.isoformat()}.pptx",
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        use_container_width=True,
-                        key="dl_ppt_day",
-                    )
-                with colx3:
-                    csv_bytes = df_day.to_csv(index=False).encode("utf-8")
-                    st.download_button(
-                        "Descargar CSV (Día)",
-                        data=csv_bytes,
-                        file_name=f"Datos_Diarios_{meta_d['pozo']}_{dia_exp.isoformat()}.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                        key="dl_csv_day",
-                    )
+                    with colx3:
+                        st.download_button(
+                            "Descargar CSV (Día)",
+                            data=st.session_state.get("exp_day_csv"),
+                            file_name=f"Datos_Diarios_{meta_d['pozo']}_{dia_exp.isoformat()}.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                            key="dl_csv_day",
+                        )
 
                 with st.expander("Vista previa (tabla del día)", expanded=False):
                     st.dataframe(df_day, use_container_width=True, height=260)
@@ -1577,12 +1716,27 @@ def style_for_export(fig):
         template="plotly_white",
         paper_bgcolor="white",
         plot_bgcolor="white",
-        font=dict(color="black", size=14),
+        font=dict(color="black", size=18),
         margin=dict(l=40, r=40, t=70, b=40),
-        legend=dict(bgcolor="rgba(255,255,255,0.85)", borderwidth=0),
+        legend=dict(bgcolor="rgba(255,255,255,0.85)", borderwidth=0, font=dict(size=24)),
         title=dict(x=0.02),
         colorway=EXPORT_COLORWAY,
+        uniformtext=dict(minsize=16, mode="show"),
     )
+    f.update_xaxes(tickfont=dict(size=24), title_font=dict(size=24), automargin=True)
+    f.update_yaxes(tickfont=dict(size=24), title_font=dict(size=24), automargin=True)
+    f.update_traces(
+        textfont=dict(size=24),
+        insidetextfont=dict(size=26),
+        outsidetextfont=dict(size=24),
+        selector=dict(type="pie"),
+    )
+    legend_items = {t.name for t in f.data if getattr(t, "name", None)}
+    if len(legend_items) >= 6:
+        f.update_layout(
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5, font=dict(size=24)),
+            margin=dict(l=40, r=40, t=70, b=130),
+        )
     return f
 
 def plotly_to_png_bytes(fig) -> bytes | None:
@@ -1590,7 +1744,7 @@ def plotly_to_png_bytes(fig) -> bytes | None:
         return None
     try:
         fig_export = style_for_export(fig)
-        png = pio.to_image(fig_export, format="png", width=1400, height=800, scale=2)
+        png = pio.to_image(fig_export, format="png", width=1800, height=1000, scale=2)
         im = Image.open(BytesIO(png)).convert("RGBA")
         bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
         bg.paste(im, (0, 0), im)
@@ -1606,17 +1760,17 @@ def build_pdf(meta: dict, kpis: dict, charts: dict) -> bytes:
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
 
-    def write_text(txt, y, size=10, bold=False):
+    def write_text(txt, y, size=12, bold=False):
         c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
         c.drawString(0.75 * inch, y, txt)
-        return y - 0.22 * inch
+        return y - 0.26 * inch
 
     def write_chart(fig, y, title):
         img_bytes = plotly_to_png_bytes(fig)
         if img_bytes is None:
-            y = write_text(f"{title} (gráfica no disponible: instala kaleido)", y, size=9, bold=False)
+            y = write_text(f"{title} (gráfica no disponible: instala kaleido)", y, size=10, bold=False)
             return y
-        y = write_text(title, y, bold=True)
+        y = write_text(title, y, size=12, bold=True)
         img_h = 3.1 * inch
         img_w = width - 1.5 * inch
         y_img = y - img_h
@@ -1640,16 +1794,16 @@ def build_pdf(meta: dict, kpis: dict, charts: dict) -> bytes:
         return y_img - 0.25 * inch
 
     y = height - 0.75 * inch
-    y = write_text("Reporte DrillSpot / ROGII", y, size=14, bold=True)
+    y = write_text("Reporte DrillSpot / ROGII", y, size=18, bold=True)
     y = write_text(f"Equipo: {meta.get('equipo','')}", y)
     y = write_text(f"Pozo: {meta.get('pozo','')}", y)
     y = write_text(f"Etapa: {meta.get('etapa','')}", y)
     y = write_text(f"Fecha: {meta.get('fecha','')}", y)
     y -= 0.1 * inch
 
-    y = write_text("KPIs", y, bold=True)
+    y = write_text("KPIs", y, size=14, bold=True)
     for k, v in kpis.items():
-        y = write_text(f"- {k}: {v}", y, size=9)
+        y = write_text(f"- {k}: {v}", y, size=11)
         if y < 1.0 * inch:
             c.showPage()
             y = height - 0.75 * inch
@@ -1713,6 +1867,9 @@ def build_pptx(meta: dict, kpis: dict, charts: dict) -> bytes:
 def build_gauge(title: str, value_0_100: float):
     if not PLOTLY_IMG_OK:
         return None
+    light_mode = _is_light_theme()
+    text_color = "#0f172a" if light_mode else "white"
+    tick_color = "rgba(15,23,42,0.35)" if light_mode else "rgba(255,255,255,0.35)"
     v = clamp_0_100(value_0_100)
     # Color dinámico por rango (pro look)
     if v >= 85:
@@ -1729,7 +1886,7 @@ def build_gauge(title: str, value_0_100: float):
         go.Indicator(
             mode="gauge+number+delta",
             value=v,
-            number={"suffix": "%", "font": {"size": 58, "family": "Arial Black", "color": "white"}},
+            number={"suffix": "%", "font": {"size": 58, "family": "Arial Black", "color": text_color}},
             delta={
                 "reference": 85,
                 "increasing": {"color": delta_color},
@@ -1739,12 +1896,12 @@ def build_gauge(title: str, value_0_100: float):
                 "prefix": "Δ ",
                 "suffix": " vs 85%",
             },
-            title={"text": title.upper(), "font": {"size": 20, "family": "Arial Black"}},
+            title={"text": title.upper(), "font": {"size": 20, "family": "Arial Black", "color": text_color}},
             gauge={
                 "axis": {
                     "range": [0, 100],
                     "tickwidth": 1,
-                    "tickcolor": "rgba(255,255,255,0.35)",
+                    "tickcolor": tick_color,
                     "tickvals": [0, 50, 100],
                     "ticktext": ["0", "50", "100"],
                 },
@@ -1762,7 +1919,7 @@ def build_gauge(title: str, value_0_100: float):
         height=360,
         margin=dict(l=20, r=20, t=60, b=10),
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="white"),
+        font=dict(color=text_color),
     )
     fig.add_annotation(
         text=f"<b>{status_label}</b>",
@@ -1849,6 +2006,13 @@ def _pro_iframe_css(light: bool = False) -> str:
         padding: 18px 18px 14px 18px;
         box-shadow: var(--shadow);
       }}
+      .ds-card {{
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 18px 18px 14px 18px;
+        box-shadow: var(--shadow);
+      }}
       .title {{
         font-size: 28px;
         font-weight: 800;
@@ -1922,6 +2086,18 @@ def _pro_iframe_css(light: bool = False) -> str:
         height: 100%;
         border-radius: 999px;
       }}
+      .barwrap {{
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+      }}
+      .pct {{
+        min-width: 40px;
+        text-align: right;
+        color: var(--muted);
+        font-weight: 700;
+      }}
     </style>
     """
 def kpi_table_html(rows: list[dict]) -> str:
@@ -1949,7 +2125,7 @@ def kpi_table_html(rows: list[dict]) -> str:
     return f"""
     {_pro_iframe_css(light=_is_light_theme())}
     <div class="ds-card">
-      <div style="font-size:26px;font-weight:900;color:rgba(255,255,255,0.95);margin:2px 0 10px 0;">
+      <div style="font-size:26px;font-weight:900;color:var(--text);margin:2px 0 10px 0;">
         Indicador de desempeño
       </div>
       <table class="ds-t">
@@ -1964,7 +2140,7 @@ def kpi_table_html(rows: list[dict]) -> str:
         </thead>
         <tbody>{tr}</tbody>
       </table>
-      <div style="margin-top:10px;color:rgba(255,255,255,0.70);font-size:13px;font-weight:700;display:flex;gap:18px;align-items:center;">
+      <div style="margin-top:10px;color:var(--muted);font-size:13px;font-weight:700;display:flex;gap:18px;align-items:center;">
         <span><span class="dot" style="background:#E74C3C;"></span> &nbsp;&lt; 75%</span>
         <span><span class="dot" style="background:#F1C40F;"></span> &nbsp;75–85%</span>
         <span><span class="dot" style="background:#2ECC71;"></span> &nbsp;&ge; 85%</span>
@@ -2010,7 +2186,7 @@ def indicators_table_html(title: str, rows: list[dict], kind: str = "actividad")
     return f"""
     {_pro_iframe_css(light=_is_light_theme())}
     <div class="ds-card">
-      <div style="font-size:34px;font-weight:950;color:rgba(255,255,255,0.95);margin:4px 0 12px 0;">
+      <div style="font-size:34px;font-weight:950;color:var(--text);margin:4px 0 12px 0;">
         {title}
       </div>
       <table class="ds-t">
@@ -4539,7 +4715,15 @@ with tab_resumen:
 
     with col_filtro1:
         # Obtener todas las etapas disponibles
-        etapas_disponibles = sorted(df["Etapa"].unique().tolist()) if not df.empty else ["Sin datos"]
+        etapas_set = set()
+        if not df.empty and "Etapa" in df.columns:
+            etapas_set.update([str(x).strip() for x in df["Etapa"].unique().tolist()])
+        etapas_set.update([str(x).strip() for x in (st.session_state.drill_day.get("por_etapa", {}) or {}).keys()])
+        if isinstance(etapa, str) and etapa.strip():
+            etapas_set.add(etapa.strip())
+        etapas_disponibles = sorted([e for e in etapas_set if e and e.lower() != "nan"])
+        if not etapas_disponibles:
+            etapas_disponibles = ["Sin datos"]
 
         # Selector de etapa para el resumen
         etapa_resumen = st.selectbox(
@@ -4639,11 +4823,24 @@ with tab_resumen:
     
     # Mostrar indicador claro de qué etapa estamos viendo
     with col_filtro2:
+        light_mode = _is_light_theme()
+        if light_mode:
+            etapa_bg = "rgba(37, 99, 235, 0.08)"
+            etapa_border = "4px solid #1d4ed8"
+            etapa_label = "#1d4ed8"
+            etapa_value = "#0f172a"
+            etapa_sub = "#475569"
+        else:
+            etapa_bg = "rgba(46, 134, 193, 0.1)"
+            etapa_border = "4px solid #2E86C1"
+            etapa_label = "#2E86C1"
+            etapa_value = "white"
+            etapa_sub = "rgba(255,255,255,0.7)"
         st.markdown(f"""
-            <div style='background: rgba(46, 134, 193, 0.1); padding: 10px; border-radius: 10px; border-left: 4px solid #2E86C1; margin-top: 10px;'>
-                <div style='font-size: 14px; color: #2E86C1; font-weight: bold;'>Etapa seleccionada:</div>
-                <div style='font-size: 18px; color: white; font-weight: bold;'>{etapa_resumen}</div>
-                <div style='font-size: 12px; color: rgba(255,255,255,0.7); margin-top: 5px;'>
+            <div style='background: {etapa_bg}; padding: 10px; border-radius: 10px; border-left: {etapa_border}; margin-top: 10px;'>
+                <div style='font-size: 14px; color: {etapa_label}; font-weight: bold;'>Etapa seleccionada:</div>
+                <div style='font-size: 18px; color: {etapa_value}; font-weight: bold;'>{etapa_resumen}</div>
+                <div style='font-size: 12px; color: {etapa_sub}; margin-top: 5px;'>
                     {len(df_resumen_filtrado)} actividades | {len(df_conn_filtrado)} conexiones
                 </div>
             </div>
@@ -4685,36 +4882,70 @@ with tab_resumen:
             chip_bg = "rgba(10, 35, 24, 0.9)"
             chip_border = "rgba(0, 255, 136, 0.65)"
             chip_fg = "#c7ffe6"
+            if _is_light_theme():
+                chip_bg = "rgba(0, 255, 136, 0.12)"
+                chip_border = "rgba(0, 255, 136, 0.55)"
+                chip_fg = "#065f46"
         elif avance >= 0.70:
             bar_grad = "linear-gradient(90deg, #f59e0b, #fbbf24 60%, #fb7185)"
             glow_color = "rgba(245, 158, 11, 0.35)"
             chip_bg = "rgba(35, 25, 8, 0.9)"
             chip_border = "rgba(245, 158, 11, 0.75)"
             chip_fg = "#ffe6b0"
+            if _is_light_theme():
+                chip_bg = "rgba(245, 158, 11, 0.12)"
+                chip_border = "rgba(245, 158, 11, 0.55)"
+                chip_fg = "#92400e"
         else:
             bar_grad = "linear-gradient(90deg, #ef4444, #f97316 60%, #f59e0b)"
             glow_color = "rgba(239, 68, 68, 0.35)"
             chip_bg = "rgba(40, 10, 10, 0.9)"
             chip_border = "rgba(239, 68, 68, 0.75)"
             chip_fg = "#ffd3d3"
+            if _is_light_theme():
+                chip_bg = "rgba(239, 68, 68, 0.12)"
+                chip_border = "rgba(239, 68, 68, 0.55)"
+                chip_fg = "#991b1b"
+
+        light_mode = _is_light_theme()
+        if light_mode:
+            prog_wrap_bg = "linear-gradient(180deg, rgba(255,255,255,0.98), rgba(244,247,251,0.98))"
+            prog_border = "rgba(15,23,42,0.10)"
+            prog_shadow = "0 10px 24px rgba(15,23,42,0.10)"
+            prog_head = "#475569"
+            prog_bar_bg = "rgba(15,23,42,0.08)"
+            prog_ticks = "rgba(15,23,42,0.45)"
+            prog_glow = "radial-gradient(120px 20px at 20% 50%, rgba(0,255,136,0.18), transparent 60%)"
+            chip_shadow = "0 8px 18px rgba(15,23,42,0.12), 0 0 12px {glow_color}"
+            chip_arrow_shadow = "drop-shadow(0 2px 4px rgba(15,23,42,0.15))"
+        else:
+            prog_wrap_bg = "linear-gradient(180deg, rgba(18,18,22,0.92), rgba(10,10,14,0.95))"
+            prog_border = "rgba(255,255,255,0.08)"
+            prog_shadow = "0 10px 28px rgba(0,0,0,0.45)"
+            prog_head = "rgba(255,255,255,0.8)"
+            prog_bar_bg = "rgba(255,255,255,0.08)"
+            prog_ticks = "rgba(255,255,255,0.55)"
+            prog_glow = "radial-gradient(120px 20px at 20% 50%, rgba(0,255,136,0.25), transparent 60%)"
+            chip_shadow = "0 8px 18px rgba(0,0,0,0.45), 0 0 12px {glow_color}"
+            chip_arrow_shadow = "drop-shadow(0 2px 4px rgba(0,0,0,0.35))"
 
         progress_html = f"""
         <style>
           .ds-progress-wrap {{
             border-radius: 16px;
             padding: 14px 16px;
-            background: linear-gradient(180deg, rgba(18,18,22,0.92), rgba(10,10,14,0.95));
-            border: 1px solid rgba(255,255,255,0.08);
-            box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+            background: {prog_wrap_bg};
+            border: 1px solid {prog_border};
+            box-shadow: {prog_shadow};
           }}
           .ds-progress-head {{
             display:flex; align-items:center; justify-content:space-between;
-            color: rgba(255,255,255,0.8); font-size:12px; font-weight:700;
+            color: {prog_head}; font-size:12px; font-weight:700;
             letter-spacing:0.4px; text-transform:uppercase;
           }}
           .ds-progress-bar {{
             position: relative; height: 14px; border-radius: 999px;
-            background: rgba(255,255,255,0.08);
+            background: {prog_bar_bg};
             overflow: hidden; margin-top: 10px;
           }}
           .ds-progress-fill {{
@@ -4734,12 +4965,12 @@ with tab_resumen:
           }}
           .ds-progress-glow {{
             position:absolute; inset:0;
-            background: radial-gradient(120px 20px at 20% 50%, rgba(0,255,136,0.25), transparent 60%);
+            background: {prog_glow};
             mix-blend-mode: screen;
           }}
           .ds-progress-ticks {{
             display:flex; justify-content:space-between; margin-top:8px;
-            font-size:11px; color: rgba(255,255,255,0.55);
+            font-size:11px; color: {prog_ticks};
           }}
           .ds-progress-chip {{
             position:absolute; top:-28px;
@@ -4753,7 +4984,7 @@ with tab_resumen:
             font-size: 11px;
             font-weight: 800;
             letter-spacing: 0.2px;
-            box-shadow: 0 8px 18px rgba(0,0,0,0.45), 0 0 12px {glow_color};
+            box-shadow: {chip_shadow};
             backdrop-filter: blur(6px);
             white-space: nowrap;
             animation: chipPulse 2.4s ease-in-out infinite;
@@ -4766,7 +4997,7 @@ with tab_resumen:
             border-left: 5px solid transparent;
             border-right: 5px solid transparent;
             border-top: 6px solid {chip_border};
-            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.35));
+            filter: {chip_arrow_shadow};
           }}
           @keyframes chipPulse {{
             0% {{ transform: translateX(-50%) scale(1); opacity: 1; }}
@@ -5268,6 +5499,57 @@ with tab_top:
         if modo_sel != "Todos" and "Modo_Reporte" in df_f.columns:
             df_f = df_f[df_f["Modo_Reporte"].astype(str) == str(modo_sel)].copy()
 
+        # KPIs rápidos (chips)
+        total_h_f = float(df_f["Horas_Reales"].sum()) if not df_f.empty and "Horas_Reales" in df_f.columns else 0.0
+        tp_h_f = float(df_f[df_f["Tipo"] == "TP"]["Horas_Reales"].sum()) if "Tipo" in df_f.columns else 0.0
+        tnpi_h_f = float(df_f[df_f["Tipo"] == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in df_f.columns else 0.0
+        tnp_h_f = float(df_f[df_f["Tipo"] == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_f.columns else 0.0
+        eff_f = clamp_0_100(safe_pct(tp_h_f, total_h_f)) if total_h_f > 0 else 0.0
+        tone_eff = "green" if eff_f >= 85 else ("amber" if eff_f >= 70 else "red")
+        render_chip_row([
+            {"label": "Horas total", "value": f"{total_h_f:.1f} h", "tone": "gray"},
+            {"label": "TP", "value": f"{tp_h_f:.1f} h", "tone": "green"},
+            {"label": "TNPI", "value": f"{tnpi_h_f:.1f} h", "tone": "amber"},
+            {"label": "TNP", "value": f"{tnp_h_f:.1f} h", "tone": "red"},
+            {"label": "Eficiencia", "value": f"{eff_f:.0f}%", "tone": tone_eff},
+        ], use_iframe=True, height=110)
+
+        # Chips con flechas: comparativo vs dia anterior disponible
+        prev_day = None
+        if fecha_sel != "Todas":
+            try:
+                fecha_dt_sel = datetime.strptime(str(fecha_sel), "%Y-%m-%d").date()
+            except Exception:
+                fecha_dt_sel = pd.to_datetime(str(fecha_sel), errors="coerce").date()
+            days_all = _available_days(df_top)
+            prevs = [d for d in days_all if d < fecha_dt_sel]
+            prev_day = prevs[-1] if prevs else None
+
+        if prev_day:
+            df_prev = df_top.copy()
+            if etapa_sel != "Todas" and "Etapa" in df_prev.columns:
+                df_prev = df_prev[df_prev["Etapa"].astype(str) == str(etapa_sel)].copy()
+            if modo_sel != "Todos" and "Modo_Reporte" in df_prev.columns:
+                df_prev = df_prev[df_prev["Modo_Reporte"].astype(str) == str(modo_sel)].copy()
+            if "Fecha" in df_prev.columns:
+                df_prev["_Fecha_dt"] = pd.to_datetime(df_prev["Fecha"], errors="coerce").dt.date
+                df_prev = df_prev[df_prev["_Fecha_dt"] == prev_day].copy()
+                df_prev.drop(columns=["_Fecha_dt"], inplace=True, errors="ignore")
+
+            total_prev = float(df_prev["Horas_Reales"].sum()) if not df_prev.empty and "Horas_Reales" in df_prev.columns else 0.0
+            tp_prev = float(df_prev[df_prev["Tipo"] == "TP"]["Horas_Reales"].sum()) if "Tipo" in df_prev.columns else 0.0
+            tnpi_prev = float(df_prev[df_prev["Tipo"] == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in df_prev.columns else 0.0
+            tnp_prev = float(df_prev[df_prev["Tipo"] == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_prev.columns else 0.0
+            eff_prev = clamp_0_100(safe_pct(tp_prev, total_prev)) if total_prev > 0 else 0.0
+
+            st.caption(f"Comparativo vs {prev_day.isoformat()}")
+            render_chip_row([
+                build_delta_chip_item("Δ Eficiencia", real=eff_f, prog=eff_prev, unit="%", higher_is_better=True, precision=0),
+                build_delta_chip_item("Δ TNPI", real=tnpi_h_f, prog=tnpi_prev, unit="h", higher_is_better=False, precision=2),
+                build_delta_chip_item("Δ TNP", real=tnp_h_f, prog=tnp_prev, unit="h", higher_is_better=False, precision=2),
+                build_delta_chip_item("Δ Horas", real=total_h_f, prog=total_prev, unit="h", higher_is_better=False, precision=2),
+            ], use_iframe=True, height=110)
+
         def _top_actividades(df_in: pd.DataFrame, tipo: str) -> pd.DataFrame:
             if df_in.empty or "Tipo" not in df_in.columns or "Actividad" not in df_in.columns:
                 return pd.DataFrame()
@@ -5287,6 +5569,10 @@ with tab_top:
             if top_tnpi.empty:
                 st.info("No hay TNPI para los filtros seleccionados.")
             else:
+                total_tnpi = float(top_tnpi["Horas_Reales"].sum())
+                top_tnpi = top_tnpi.copy()
+                top_tnpi["%"] = top_tnpi["Horas_Reales"].apply(lambda v: (float(v) / total_tnpi * 100.0) if total_tnpi > 0 else 0.0)
+                top_tnpi["Semáforo"] = top_tnpi["%"].apply(semaforo_dot)
                 fig_tnpi = px.bar(
                     top_tnpi.sort_values("Horas_Reales"),
                     x="Horas_Reales",
@@ -5302,6 +5588,10 @@ with tab_top:
             if top_tnp.empty:
                 st.info("No hay TNP para los filtros seleccionados.")
             else:
+                total_tnp = float(top_tnp["Horas_Reales"].sum())
+                top_tnp = top_tnp.copy()
+                top_tnp["%"] = top_tnp["Horas_Reales"].apply(lambda v: (float(v) / total_tnp * 100.0) if total_tnp > 0 else 0.0)
+                top_tnp["Semáforo"] = top_tnp["%"].apply(semaforo_dot)
                 fig_tnp = px.bar(
                     top_tnp.sort_values("Horas_Reales"),
                     x="Horas_Reales",
@@ -9068,22 +9358,47 @@ with tab_export:
             if figs.get(key) is not None:
                 charts_export[label] = figs[key]
 
-    col_pdf, col_ppt = st.columns(2)
-    with col_pdf:
-        pdf_bytes = build_pdf(meta, kpis_export, charts=charts_export)
-        fname_pdf = f"Reporte_DrillSpot_{pozo}_{etapa}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
-        st.download_button("Descargar PDF", data=pdf_bytes, file_name=fname_pdf, mime="application/pdf", use_container_width=True)
+    sig_main = f"{pozo}|{etapa}|{fecha}|{modo_reporte}|{repr(kpis_export)}|{list(charts_export.keys())}"
+    if st.session_state.get("exp_main_sig") != sig_main:
+        st.session_state["exp_main_sig"] = sig_main
+        st.session_state.pop("exp_main_pdf", None)
+        st.session_state.pop("exp_main_ppt", None)
 
-    with col_ppt:
-        pptx_bytes = build_pptx(meta, kpis_export, charts_export)
-        fname_pptx = f"Reporte_DrillSpot_{pozo}_{etapa}_{datetime.now().strftime('%Y%m%d_%H%M')}.pptx"
-        st.download_button(
-            "Descargar PowerPoint",
-            data=pptx_bytes,
-            file_name=fname_pptx,
-            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            use_container_width=True,
-        )
+    if st.session_state.get("exp_main_pdf") is None or st.session_state.get("exp_main_ppt") is None:
+        st.caption("Para acelerar la interfaz, genera el PDF/PPTX bajo demanda.")
+        if st.button("Preparar exportables", use_container_width=True, key="exp_main_prepare"):
+            with st.spinner("Generando exportables..."):
+                prog_main = st.progress(0)
+                prog_main_msg = st.empty()
+                prog_main_msg.caption("Iniciando...")
+                st.session_state["exp_main_pdf"] = build_pdf(meta, kpis_export, charts=charts_export)
+                prog_main.progress(55)
+                prog_main_msg.caption("PDF listo.")
+                st.session_state["exp_main_ppt"] = build_pptx(meta, kpis_export, charts_export)
+                prog_main.progress(100)
+                prog_main_msg.caption("PowerPoint listo.")
+
+    if st.session_state.get("exp_main_pdf") is not None:
+        col_pdf, col_ppt = st.columns(2)
+        with col_pdf:
+            fname_pdf = f"Reporte_DrillSpot_{pozo}_{etapa}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+            st.download_button(
+                "Descargar PDF",
+                data=st.session_state.get("exp_main_pdf"),
+                file_name=fname_pdf,
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
+        with col_ppt:
+            fname_pptx = f"Reporte_DrillSpot_{pozo}_{etapa}_{datetime.now().strftime('%Y%m%d_%H%M')}.pptx"
+            st.download_button(
+                "Descargar PowerPoint",
+                data=st.session_state.get("exp_main_ppt"),
+                file_name=fname_pptx,
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                use_container_width=True,
+            )
 
     if not PLOTLY_IMG_OK:
         st.caption("Para exportar gráficas como imágenes instala: `pip install -U kaleido`.")
