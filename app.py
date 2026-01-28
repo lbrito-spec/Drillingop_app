@@ -2443,6 +2443,105 @@ def save_jornada_json(path_out: str) -> None:
     with open(path_out, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
+def _normalize_df_for_hash(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    for c in out.columns:
+        if pd.api.types.is_numeric_dtype(out[c]):
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(6)
+        out[c] = out[c].fillna("")
+        out[c] = out[c].astype(str)
+    return out
+
+def _merge_df_rows(base: pd.DataFrame, incoming: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    if incoming is None or incoming.empty:
+        return base, 0
+    if base is None or base.empty:
+        return incoming.copy(), len(incoming)
+    incoming = incoming.reindex(columns=base.columns)
+    base_norm = _normalize_df_for_hash(base)
+    inc_norm = _normalize_df_for_hash(incoming)
+    base_hash = pd.util.hash_pandas_object(base_norm, index=False)
+    inc_hash = pd.util.hash_pandas_object(inc_norm, index=False)
+    keep_mask = ~inc_hash.isin(set(base_hash))
+    added = int(keep_mask.sum())
+    if added > 0:
+        base = pd.concat([base, incoming.loc[keep_mask].copy()], ignore_index=True)
+    return base, added
+
+def _merge_dict_no_overwrite(base: dict, incoming: dict) -> dict:
+    if not isinstance(base, dict):
+        base = {}
+    if not isinstance(incoming, dict):
+        return base
+    for k, v in incoming.items():
+        if k not in base:
+            base[k] = v
+        elif isinstance(base.get(k), dict) and isinstance(v, dict):
+            base[k] = _merge_dict_no_overwrite(base.get(k, {}), v)
+    return base
+
+def _filter_df_by_date(df: pd.DataFrame, fecha_sel) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if "Fecha" not in df.columns:
+        return pd.DataFrame()
+    fecha_str = str(fecha_sel)
+    df_local = df.copy()
+    df_local["Fecha"] = df_local["Fecha"].astype(str)
+    return df_local[df_local["Fecha"] == fecha_str].copy()
+
+def _build_day_payload(fecha_sel, autor: str = "") -> dict:
+    meta = {
+        "equipo": st.session_state.get("equipo_val", ""),
+        "pozo": st.session_state.get("pozo_val", ""),
+        "fecha": str(fecha_sel),
+        "equipo_tipo": st.session_state.get("equipo_tipo_val", ""),
+        "etapa": st.session_state.get("etapa_sel", ""),
+        "autor": autor or "",
+    }
+    df_day = _filter_df_by_date(st.session_state.df, fecha_sel)
+    df_conn_day = _filter_df_by_date(st.session_state.df_conn, fecha_sel)
+    df_bha_day = _filter_df_by_date(st.session_state.df_bha, fecha_sel)
+
+    drill_day_in = st.session_state.get("drill_day", {}) or {}
+    drill_day_out = {"meta": drill_day_in.get("meta", {})}
+    por_etapa_out = {}
+    fecha_str = str(fecha_sel)
+    for etapa_k, etapa_data in (drill_day_in.get("por_etapa", {}) or {}).items():
+        if not isinstance(etapa_data, dict):
+            continue
+        data_out = {}
+        for key in [
+            "rop_prog_by_date", "rop_real_dia_by_date", "rop_real_noche_by_date",
+            "metros_prog_by_date", "metros_real_dia_by_date", "metros_real_noche_by_date",
+        ]:
+            m = etapa_data.get(key, {})
+            if isinstance(m, dict) and fecha_str in m:
+                data_out[key] = {fecha_str: m.get(fecha_str)}
+        for key in [
+            "pt_programada_m", "prof_actual_m", "metros_prog_total",
+            "metros_real_dia", "metros_real_noche", "rop_prog_total",
+            "rop_real_dia", "rop_real_noche",
+        ]:
+            if key in etapa_data:
+                data_out[key] = etapa_data.get(key)
+        if data_out:
+            por_etapa_out[str(etapa_k)] = data_out
+    if por_etapa_out:
+        drill_day_out["por_etapa"] = por_etapa_out
+
+    return {
+        "version": "1.0-day",
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "meta": meta,
+        "df": df_day.to_dict(orient="records"),
+        "df_conn": df_conn_day.to_dict(orient="records"),
+        "df_bha": df_bha_day.to_dict(orient="records"),
+        "drill_day": drill_day_out,
+    }
+
 def load_jornada_json(path_in: str) -> bool:
     if not path_in or not os.path.exists(path_in):
         return False
@@ -2538,6 +2637,55 @@ with st.sidebar.container(border=True):
         etapa = st.sidebar.selectbox("Etapa", SECCIONES_DEFAULT, index=_idx, key="etapa_select")
         st.session_state["etapa_sel"] = etapa
     fecha = st.sidebar.date_input("Fecha", value=st.session_state.get("fecha_val", datetime.today().date()), key="fecha_val")
+
+    # Progreso de carga del dia (horas reales vs 24h)
+    try:
+        _df_day = st.session_state.get("df", pd.DataFrame())
+        if isinstance(_df_day, pd.DataFrame) and (not _df_day.empty) and ("Fecha" in _df_day.columns):
+            _df_day_local = _df_day.copy()
+            _df_day_local["Fecha"] = _df_day_local["Fecha"].astype(str)
+            _df_day_local = _df_day_local[_df_day_local["Fecha"] == str(fecha)]
+        else:
+            _df_day_local = pd.DataFrame()
+        _hrs_day = float(pd.to_numeric(_df_day_local.get("Horas_Reales", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+    except Exception:
+        _hrs_day = 0.0
+    _pct_day = clamp_0_100(safe_pct(_hrs_day, 24.0)) if _hrs_day >= 0 else 0.0
+    _rest_day = max(0.0, 24.0 - _hrs_day)
+    st.sidebar.markdown("**Avance del dia (24h)**")
+    st.sidebar.progress(_pct_day / 100.0)
+    st.sidebar.caption(f"{_hrs_day:.2f} h cargadas · faltan {_rest_day:.2f} h")
+
+    # Avance por turno (Diurno/Nocturno) - 12h cada uno
+    _turno_col = _df_day_local.get("Turno", pd.Series(dtype=str)).fillna("").astype(str)
+    _turno_norm = _turno_col.str.lower()
+    _is_day_turno = _turno_norm.str.contains("diurno") | _turno_norm.str.contains("dia") | _turno_norm.str.contains("día") | _turno_norm.str.contains("day") | _turno_norm.str.contains("☀")
+    _is_night_turno = _turno_norm.str.contains("nocturno") | _turno_norm.str.contains("noche") | _turno_norm.str.contains("night") | _turno_norm.str.contains("🌙")
+    _hrs_day_turno = float(pd.to_numeric(_df_day_local.loc[_is_day_turno, "Horas_Reales"], errors="coerce").fillna(0).sum()) if not _df_day_local.empty else 0.0
+    _hrs_night_turno = float(pd.to_numeric(_df_day_local.loc[_is_night_turno, "Horas_Reales"], errors="coerce").fillna(0).sum()) if not _df_day_local.empty else 0.0
+    _pct_day_turno = clamp_0_100(safe_pct(_hrs_day_turno, 12.0)) if _hrs_day_turno >= 0 else 0.0
+    _pct_night_turno = clamp_0_100(safe_pct(_hrs_night_turno, 12.0)) if _hrs_night_turno >= 0 else 0.0
+
+    st.sidebar.markdown("**Avance por turno**")
+    _bar_tpl = """
+    <div style="margin: 6px 0 4px 0;">
+      <div style="font-size: 0.88rem; font-weight: 600; color: #111827; display:flex; align-items:center; gap:6px;">
+        <span>{icon}</span><span>{label}</span><span style="color:#6b7280;">{pct:.0f}%</span>
+      </div>
+      <div style="height:10px; background:#e5e7eb; border-radius:999px; overflow:hidden; border:1px solid #e5e7eb;">
+        <div style="height:100%; width:{pct:.2f}%; background:{bar_color}; border-radius:999px;"></div>
+      </div>
+      <div style="font-size: 0.8rem; color:#6b7280; margin-top:2px;">{hrs:.2f} h / 12 h</div>
+    </div>
+    """
+    st.sidebar.markdown(
+        _bar_tpl.format(icon="☀️", label="Diurno", pct=_pct_day_turno, bar_color="#F59E0B", hrs=_hrs_day_turno),
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown(
+        _bar_tpl.format(icon="🌙", label="Nocturno", pct=_pct_night_turno, bar_color="#2563EB", hrs=_hrs_night_turno),
+        unsafe_allow_html=True,
+    )
     
 # --- Sync contexto actual a drill_day/meta (para que el JSON siempre quede completo) ---
 _meta_now = {
@@ -2667,6 +2815,69 @@ with st.sidebar.container(border=True):
                 st.rerun()
             except Exception as e:
                 st.sidebar.error(f"No se pudo aplicar la jornada: {e}")
+
+with st.sidebar.container(border=True):
+    st.sidebar.markdown("### Carga colaborativa (por dia)")
+    st.sidebar.caption("Cada persona exporta su dia y luego se hace merge sin sobreescribir.")
+    colab_name = st.sidebar.text_input("Colaborador", value=st.session_state.get("colab_name", ""), key="colab_name")
+
+    _safe = lambda s: re.sub(r"[^A-Za-z0-9_-]+", "_", str(s)).strip("_")
+    _colab_tag = f"_{_safe(colab_name)}" if colab_name else ""
+    _day_fname = f"dia_{_safe(pozo)}_{_safe(str(fecha))}{_colab_tag}.json"
+    _day_payload = _build_day_payload(fecha, colab_name)
+    _day_payload_str = json.dumps(_day_payload, ensure_ascii=False, indent=2)
+
+    st.sidebar.download_button(
+        label="Exportar dia (colaborativo)",
+        data=_day_payload_str,
+        file_name=_day_fname,
+        mime="application/json",
+        use_container_width=True,
+    )
+
+    st.sidebar.divider()
+
+    up_days = st.sidebar.file_uploader(
+        "Importar dias (merge)",
+        type=["json"],
+        accept_multiple_files=True,
+        key="merge_days_uploader",
+        help="Sube uno o varios JSON diarios para unir sin sobreescribir registros existentes.",
+    )
+
+    if st.sidebar.button("Aplicar merge (dias)", use_container_width=True, disabled=not up_days):
+        added_df = 0
+        added_conn = 0
+        added_bha = 0
+        merged_files = 0
+        for f in up_days or []:
+            try:
+                payload = json.loads(f.getvalue().decode("utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            inc_df = pd.DataFrame(payload.get("df", []), columns=st.session_state.df.columns)
+            inc_df_conn = pd.DataFrame(payload.get("df_conn", []), columns=st.session_state.df_conn.columns)
+            inc_df_bha = pd.DataFrame(payload.get("df_bha", []), columns=st.session_state.df_bha.columns)
+
+            st.session_state.df, _a = _merge_df_rows(st.session_state.df, inc_df)
+            added_df += _a
+            st.session_state.df_conn, _b = _merge_df_rows(st.session_state.df_conn, inc_df_conn)
+            added_conn += _b
+            st.session_state.df_bha, _c = _merge_df_rows(st.session_state.df_bha, inc_df_bha)
+            added_bha += _c
+
+            st.session_state.drill_day = _merge_dict_no_overwrite(
+                st.session_state.drill_day, payload.get("drill_day", {})
+            )
+            merged_files += 1
+
+        st.sidebar.success(
+            f"Merge listo: {merged_files} archivos. "
+            f"Filas nuevas -> actividades: {added_df}, conexiones: {added_conn}, BHA: {added_bha}"
+        )
+        st.rerun()
 
 with st.sidebar.container(border=True):
     st.sidebar.markdown("### Modo")
