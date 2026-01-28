@@ -191,6 +191,9 @@ PLOTLY_IMG_OK = True
 try:
     import plotly.io as pio
     import plotly.graph_objects as go
+    import importlib.util
+    if importlib.util.find_spec("kaleido") is None:
+        PLOTLY_IMG_OK = False
 except Exception:
     PLOTLY_IMG_OK = False
 
@@ -1271,6 +1274,14 @@ def render_export_diario_calendario():
     # -----------------------------------------------------------------
     # EXPORT AUTOMÁTICO DIARIO (por calendario) - PDF / PPTX / CSV
     # -----------------------------------------------------------------
+    def _safe_float(v, default=0.0) -> float:
+        try:
+            if v is None:
+                return float(default)
+            return float(v)
+        except Exception:
+            return float(default)
+
     with st.expander("Export automático diario (calendario)", expanded=False):
         df_base = st.session_state.get("df", pd.DataFrame()).copy()
         days_all = _available_days(df_base)
@@ -1335,6 +1346,192 @@ def render_export_diario_calendario():
                     df_a = df_day.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(10)
                     if not df_a.empty:
                         charts_d["Top actividades (Diario)"] = px.pie(df_a, names="Actividad", values="Horas_Reales", hole=0.35, title=f"Top actividades - {dia_exp.isoformat()}")
+                # BHA (Arma/Desarma) - diario
+                df_bha_all = st.session_state.get("df_bha", pd.DataFrame()).copy()
+                if not df_bha_all.empty and "Fecha" in df_bha_all.columns:
+                    df_bha_all["Fecha"] = df_bha_all["Fecha"].astype(str)
+                    df_bha_d = df_bha_all[df_bha_all["Fecha"] == str(dia_exp)].copy()
+                    if scope_rep.startswith("Por etapa") and meta_d.get("etapa"):
+                        if "Etapa" in df_bha_d.columns:
+                            df_bha_d = df_bha_d[df_bha_d["Etapa"] == str(meta_d.get("etapa"))].copy()
+                    if not df_bha_d.empty:
+                        df_long_bha = df_bha_d.melt(
+                            id_vars=[c for c in ["BHA_Tipo", "Accion"] if c in df_bha_d.columns],
+                            value_vars=[c for c in ["Estandar_h", "Real_h"] if c in df_bha_d.columns],
+                            var_name="Serie",
+                            value_name="Horas",
+                        )
+                        if not df_long_bha.empty:
+                            fig_bha_d = px.bar(
+                                df_long_bha,
+                                x="BHA_Tipo" if "BHA_Tipo" in df_long_bha.columns else "Accion",
+                                y="Horas",
+                                color="Serie",
+                                barmode="group",
+                                title=f"BHA - {dia_exp.isoformat()}",
+                                color_discrete_sequence=EXPORT_COLORWAY,
+                            )
+                            charts_d["BHA (Estándar vs Real)"] = fig_bha_d
+
+                # ROP diario (Día vs Noche): por etapa o consolidado por pozo
+                if modo_reporte == "Perforación":
+                    rop_prog_d = 0.0
+                    rop_rd = 0.0
+                    rop_rn = 0.0
+                    por_etapa = st.session_state.drill_day.get("por_etapa", {})
+                    if scope_rep.startswith("Por etapa") and meta_d.get("etapa"):
+                        etapa_key = str(meta_d.get("etapa"))
+                        etapa_data_rop_d = por_etapa.get(etapa_key, {})
+                        _prog_map = etapa_data_rop_d.get("rop_prog_by_date", {}) or {}
+                        _rd_map = etapa_data_rop_d.get("rop_real_dia_by_date", {}) or {}
+                        _rn_map = etapa_data_rop_d.get("rop_real_noche_by_date", {}) or {}
+                        _p_entry = _prog_map.get(str(dia_exp), {})
+                        rop_prog_d = _safe_float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
+                        rop_rd = _safe_float(_rd_map.get(str(dia_exp), 0.0) or 0.0)
+                        rop_rn = _safe_float(_rn_map.get(str(dia_exp), 0.0) or 0.0)
+                    else:
+                        # Consolidado por pozo: sumar por etapa si hay datos diarios
+                        for _, etapa_data_rop_d in (por_etapa or {}).items():
+                            _prog_map = etapa_data_rop_d.get("rop_prog_by_date", {}) or {}
+                            _rd_map = etapa_data_rop_d.get("rop_real_dia_by_date", {}) or {}
+                            _rn_map = etapa_data_rop_d.get("rop_real_noche_by_date", {}) or {}
+                            _p_entry = _prog_map.get(str(dia_exp), {})
+                            rop_prog_d += _safe_float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
+                            rop_rd += _safe_float(_rd_map.get(str(dia_exp), 0.0) or 0.0)
+                            rop_rn += _safe_float(_rn_map.get(str(dia_exp), 0.0) or 0.0)
+                    if (rop_prog_d + rop_rd + rop_rn) > 0:
+                        df_rop_d = pd.DataFrame(
+                            [
+                                {"Turno": "Día ☀️", "Programado (m/h)": rop_prog_d, "Real (m/h)": rop_rd},
+                                {"Turno": "Noche 🌙", "Programado (m/h)": rop_prog_d, "Real (m/h)": rop_rn},
+                            ]
+                        )
+                        fig_rop_d = px.bar(
+                            df_rop_d,
+                            x="Turno",
+                            y=["Programado (m/h)", "Real (m/h)"],
+                            barmode="group",
+                            text_auto=True,
+                            title=f"ROP - {dia_exp.isoformat()}",
+                            color_discrete_sequence=EXPORT_COLORWAY,
+                        )
+                        charts_d["ROP (Diario)"] = fig_rop_d
+
+                # Metros perforados diarios (Real vs Programado): por etapa o consolidado
+                if modo_reporte == "Perforación":
+                    mp_d = 0.0
+                    mr_d = 0.0
+                    mr_n = 0.0
+                    por_etapa = st.session_state.drill_day.get("por_etapa", {})
+                    if scope_rep.startswith("Por etapa") and meta_d.get("etapa"):
+                        etapa_key = str(meta_d.get("etapa"))
+                        etapa_data_m = por_etapa.get(etapa_key, {})
+                        _mp_map = etapa_data_m.get("metros_prog_by_date", {}) or {}
+                        _md_map = etapa_data_m.get("metros_real_dia_by_date", {}) or {}
+                        _mn_map = etapa_data_m.get("metros_real_noche_by_date", {}) or {}
+                        _mp_entry = _mp_map.get(str(dia_exp), {})
+                        mp_d = _safe_float(_mp_entry.get("metros_prog") if isinstance(_mp_entry, dict) else (_mp_entry or 0.0))
+                        mr_d = _safe_float(_md_map.get(str(dia_exp), 0.0) or 0.0)
+                        mr_n = _safe_float(_mn_map.get(str(dia_exp), 0.0) or 0.0)
+                    else:
+                        for _, etapa_data_m in (por_etapa or {}).items():
+                            _mp_map = etapa_data_m.get("metros_prog_by_date", {}) or {}
+                            _md_map = etapa_data_m.get("metros_real_dia_by_date", {}) or {}
+                            _mn_map = etapa_data_m.get("metros_real_noche_by_date", {}) or {}
+                            _mp_entry = _mp_map.get(str(dia_exp), {})
+                            mp_d += _safe_float(_mp_entry.get("metros_prog") if isinstance(_mp_entry, dict) else (_mp_entry or 0.0))
+                            mr_d += _safe_float(_md_map.get(str(dia_exp), 0.0) or 0.0)
+                            mr_n += _safe_float(_mn_map.get(str(dia_exp), 0.0) or 0.0)
+                    mr_t = mr_d + mr_n
+                    if (mp_d + mr_d + mr_n) > 0:
+                        df_m_d = pd.DataFrame(
+                            [
+                                {"Tipo": "Programado (total)", "Metros (m)": mp_d},
+                                {"Tipo": "Real Día ☀️", "Metros (m)": mr_d},
+                                {"Tipo": "Real Noche 🌙", "Metros (m)": mr_n},
+                                {"Tipo": "Real Total", "Metros (m)": mr_t},
+                            ]
+                        )
+                        fig_m_d = px.bar(
+                            df_m_d,
+                            x="Tipo",
+                            y="Metros (m)",
+                            text_auto=True,
+                            title=f"Metros - {dia_exp.isoformat()}",
+                            color="Tipo",
+                            color_discrete_map={
+                                "Programado (total)": "#6B7280",
+                                "Real Día ☀️": "#F59E0B",
+                                "Real Noche 🌙": "#1D4ED8",
+                                "Real Total": "#22C55E",
+                            },
+                        )
+                        charts_d["Metros perforados (Diario)"] = fig_m_d
+
+                # Conexiones perforando (diario)
+                df_conn_all = st.session_state.get("df_conn", pd.DataFrame()).copy()
+                if not df_conn_all.empty and "Fecha" in df_conn_all.columns:
+                    df_conn_all["Fecha"] = df_conn_all["Fecha"].astype(str)
+                    df_conn_d = df_conn_all[df_conn_all["Fecha"] == str(dia_exp)].copy()
+                    if scope_rep.startswith("Por etapa") and meta_d.get("etapa") and "Etapa" in df_conn_d.columns:
+                        df_conn_d = df_conn_d[df_conn_d["Etapa"] == str(meta_d.get("etapa"))].copy()
+                    if not df_conn_d.empty and {"Componente", "Minutos_Reales"}.issubset(df_conn_d.columns):
+                        df_conn_sum = df_conn_d.groupby("Componente", as_index=False)["Minutos_Reales"].sum()
+                        df_conn_sum["Componente"] = pd.Categorical(df_conn_sum["Componente"], categories=CONN_ORDER, ordered=True)
+                        df_conn_sum = df_conn_sum.sort_values("Componente")
+                        charts_d["Conexiones (Distribución)"] = px.pie(
+                            df_conn_sum,
+                            names="Componente",
+                            values="Minutos_Reales",
+                            hole=0.35,
+                            title=f"Conexiones - {dia_exp.isoformat()}",
+                            color="Componente",
+                            color_discrete_map=CONN_COLOR_MAP,
+                        )
+
+                        df_stack = df_conn_d.copy()
+                        df_stack["Conn_Label"] = df_stack["Profundidad_m"].fillna(df_stack["Conn_No"]).astype(float).astype(int).astype(str)
+                        df_stack["Componente"] = pd.Categorical(df_stack["Componente"], categories=CONN_ORDER, ordered=True)
+                        df_stack_g = df_stack.groupby(["Conn_Label", "Componente"], as_index=False)["Minutos_Reales"].sum().sort_values(["Conn_Label", "Componente"])
+                        fig_conn_stack = px.bar(
+                            df_stack_g,
+                            x="Conn_Label",
+                            y="Minutos_Reales",
+                            color="Componente",
+                            category_orders={"Componente": CONN_ORDER},
+                            color_discrete_map=CONN_COLOR_MAP,
+                            barmode="stack",
+                            title=f"Conexiones perforando - {dia_exp.isoformat()}",
+                            labels={"Conn_Label": "Profundidad (m)", "Minutos_Reales": "Tiempo (min)"},
+                        )
+                        charts_d["Conexiones perforando (Stack)"] = fig_conn_stack
+
+                # Viajes (si existen datos por hora)
+                viajes_store = st.session_state.get("viajes_hourly_store", {})
+                if isinstance(viajes_store, dict) and len(viajes_store) > 0:
+                    for v_name, v_obj in viajes_store.items():
+                        hourly_df = v_obj.get("hourly") if isinstance(v_obj, dict) else None
+                        if isinstance(hourly_df, pd.DataFrame) and not hourly_df.empty:
+                            df_plot = hourly_df.copy().sort_values("hour").reset_index(drop=True)
+                            df_plot["hour_str"] = df_plot["hour"].astype(int)
+                            fig_v = px.bar(
+                                df_plot,
+                                x="hour_str",
+                                y="speed_mh",
+                                labels={"hour_str": "Hora", "speed_mh": "m/h"},
+                                title=f"Viaje – {v_name}",
+                            )
+                            fig_v.update_traces(marker_color=EXPORT_COLORWAY[0])
+                            charts_d[f"Viaje – Velocidad ({v_name})"] = fig_v
+                            fig_c = px.bar(
+                                df_plot,
+                                x="hour_str",
+                                y="conn_min",
+                                labels={"hour_str": "Hora", "conn_min": "min"},
+                                title=f"Viaje – Conexiones ({v_name})",
+                            )
+                            fig_c.update_traces(marker_color=EXPORT_COLORWAY[1] if len(EXPORT_COLORWAY) > 1 else EXPORT_COLORWAY[0])
+                            charts_d[f"Viaje – Conexiones ({v_name})"] = fig_c
 
                 colx1, colx2, colx3 = st.columns(3)
                 with colx1:
@@ -1417,6 +1614,7 @@ def build_pdf(meta: dict, kpis: dict, charts: dict) -> bytes:
     def write_chart(fig, y, title):
         img_bytes = plotly_to_png_bytes(fig)
         if img_bytes is None:
+            y = write_text(f"{title} (gráfica no disponible: instala kaleido)", y, size=9, bold=False)
             return y
         y = write_text(title, y, bold=True)
         img_h = 3.1 * inch
@@ -4222,7 +4420,7 @@ tab_labels = []
 if show_bitacora_tab:
     tab_labels.append("Bitácora por horas")
 tab_labels += [
-    "Resumen", "Indicadores (Actividades)", "Conexiones", "Viajes y conexiones",
+    "Resumen", "Indicadores (Actividades)", "Top TNPI/TNP", "Conexiones", "Viajes y conexiones",
     "BHA (Arma/Desarma)", "ROP", "Metros", "Detalle", "Comparativa de Etapas",
     "Estadísticas CE", "Estadísticas por Etapa", "Estadísticas por Corrida", "Estadísticas DrillSpot",
     "Reporte General del Pozo", "Ejecutivo", "Exportar"
@@ -4231,11 +4429,11 @@ tab_labels += [
 _tabs = st.tabs(tab_labels)
 if show_bitacora_tab:
     tab_bitacora = _tabs[0]
-    (tab_resumen, tab_act, tab_conn, tab_viajes, tab_bha, tab_rop, tab_metros, tab_detalle, tab_comp,
+    (tab_resumen, tab_act, tab_top, tab_conn, tab_viajes, tab_bha, tab_rop, tab_metros, tab_detalle, tab_comp,
      tab_ce, tab_estadisticas, tab_corridas, tab_drillspot, tab_general, tab_ejecutivo, tab_export) = _tabs[1:]
 else:
     tab_bitacora = None
-    (tab_resumen, tab_act, tab_conn, tab_viajes, tab_bha, tab_rop, tab_metros, tab_detalle, tab_comp,
+    (tab_resumen, tab_act, tab_top, tab_conn, tab_viajes, tab_bha, tab_rop, tab_metros, tab_detalle, tab_comp,
      tab_ce, tab_estadisticas, tab_corridas, tab_drillspot, tab_general, tab_ejecutivo, tab_export) = _tabs
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: BITÁCORA (ACTIVIDADES)
@@ -5017,6 +5215,103 @@ with tab_act:
         components.html(indicators_table_html("Indicador de desempeño por actividades", rows_act, kind="actividad"), height=520, scrolling=True)
     else:
         st.info("Aún no hay datos suficientes para indicador por actividades.")
+
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+# TAB: TOP TNPI/TNP
+# == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
+with tab_top:
+    st.subheader("Top 5 actividades – TNPI / TNP")
+
+    df_top = st.session_state.get("df", pd.DataFrame()).copy()
+    if df_top.empty:
+        st.info("Aún no hay datos para calcular el top de TNPI/TNP.")
+    else:
+        df_top["Horas_Reales"] = pd.to_numeric(df_top.get("Horas_Reales", 0.0), errors="coerce").fillna(0.0)
+
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            days = _available_days(df_top)
+            fecha_opts = ["Todas"] + [d.isoformat() for d in days]
+            fecha_sel = st.selectbox(
+                "Fecha",
+                options=fecha_opts,
+                index=(len(fecha_opts) - 1 if len(fecha_opts) > 1 else 0),
+                key="top_tnpi_fecha",
+            )
+        with col_f2:
+            etapas = sorted([str(x) for x in df_top.get("Etapa", pd.Series(dtype=str)).fillna("").unique().tolist() if str(x).strip() != ""])
+            etapa_sel = st.selectbox(
+                "Etapa",
+                options=["Todas"] + etapas,
+                index=0,
+                key="top_tnpi_etapa",
+            )
+        with col_f3:
+            modo_opts = ["Todos"]
+            if "Modo_Reporte" in df_top.columns:
+                modos = sorted([str(x) for x in df_top["Modo_Reporte"].dropna().unique().tolist() if str(x).strip() != ""])
+                modo_opts += modos
+            modo_sel = st.selectbox("Modo de reporte", options=modo_opts, index=0, key="top_tnpi_modo")
+
+        # Aplicar filtros
+        df_f = df_top.copy()
+        if fecha_sel != "Todas" and "Fecha" in df_f.columns:
+            try:
+                fecha_dt = datetime.strptime(str(fecha_sel), "%Y-%m-%d").date()
+            except Exception:
+                fecha_dt = pd.to_datetime(str(fecha_sel), errors="coerce").date()
+            df_f["_Fecha_dt"] = pd.to_datetime(df_f["Fecha"], errors="coerce").dt.date
+            df_f = df_f[df_f["_Fecha_dt"] == fecha_dt].copy()
+            df_f.drop(columns=["_Fecha_dt"], inplace=True, errors="ignore")
+        if etapa_sel != "Todas" and "Etapa" in df_f.columns:
+            df_f = df_f[df_f["Etapa"].astype(str) == str(etapa_sel)].copy()
+        if modo_sel != "Todos" and "Modo_Reporte" in df_f.columns:
+            df_f = df_f[df_f["Modo_Reporte"].astype(str) == str(modo_sel)].copy()
+
+        def _top_actividades(df_in: pd.DataFrame, tipo: str) -> pd.DataFrame:
+            if df_in.empty or "Tipo" not in df_in.columns or "Actividad" not in df_in.columns:
+                return pd.DataFrame()
+            d = df_in[df_in["Tipo"].astype(str) == tipo].copy()
+            if d.empty:
+                return pd.DataFrame()
+            g = d.groupby("Actividad", as_index=False)["Horas_Reales"].sum()
+            g = g.sort_values("Horas_Reales", ascending=False).head(5)
+            return g
+
+        top_tnpi = _top_actividades(df_f, "TNPI")
+        top_tnp = _top_actividades(df_f, "TNP")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("#### TNPI")
+            if top_tnpi.empty:
+                st.info("No hay TNPI para los filtros seleccionados.")
+            else:
+                fig_tnpi = px.bar(
+                    top_tnpi.sort_values("Horas_Reales"),
+                    x="Horas_Reales",
+                    y="Actividad",
+                    orientation="h",
+                    title="Top 5 TNPI (h)",
+                )
+                fig_tnpi.update_traces(marker_color="#EF4444")
+                st.plotly_chart(fig_tnpi, use_container_width=True)
+                st.dataframe(top_tnpi, use_container_width=True, hide_index=True)
+        with c2:
+            st.markdown("#### TNP")
+            if top_tnp.empty:
+                st.info("No hay TNP para los filtros seleccionados.")
+            else:
+                fig_tnp = px.bar(
+                    top_tnp.sort_values("Horas_Reales"),
+                    x="Horas_Reales",
+                    y="Actividad",
+                    orientation="h",
+                    title="Top 5 TNP (h)",
+                )
+                fig_tnp.update_traces(marker_color="#3B82F6")
+                st.plotly_chart(fig_tnp, use_container_width=True)
+                st.dataframe(top_tnp, use_container_width=True, hide_index=True)
 
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: CONEXIONES
@@ -7035,286 +7330,286 @@ with tab_comp:
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 with tab_ce:
     st.markdown("### 🔁 ")
-# --- CE metrics safety defaults ---
-horas_total_ce = 0.0
-tp_ce = 0.0
-tnpi_ce = 0.0
-tnp_ce = 0.0
-eficiencia_ce = 0.0
+    # --- CE metrics safety defaults ---
+    horas_total_ce = 0.0
+    tp_ce = 0.0
+    tnpi_ce = 0.0
+    tnp_ce = 0.0
+    eficiencia_ce = 0.0
 
-st.markdown("### Estadísticas - Cambio de etapa (CE)")
-df_all = st.session_state.df.copy()
+    st.markdown("### Estadísticas - Cambio de etapa (CE)")
+    df_all = st.session_state.df.copy()
 
-if df_all.empty:
-    st.info("Aún no hay actividades registradas. Agrega actividades y vuelve aquí para ver estadísticas.")
-else:
-    # Filtrar CE
-    if "Modo_Reporte" in df_all.columns:
-        df_ce = df_all[df_all["Modo_Reporte"].astype(str) == "Cambio de etapa"].copy()
+    if df_all.empty:
+        st.info("Aún no hay actividades registradas. Agrega actividades y vuelve aquí para ver estadísticas.")
     else:
-        df_ce = df_all.copy()
-
-    if df_ce.empty:
-        st.warning("No hay actividades registradas con Modo de reporte = 'Cambio de etapa'.")
-        st.caption("Tip: cambia el 'Modo reporte' en el panel lateral antes de agregar actividades de CE.")
-    else:
-        # Normalizar columnas mínimas
-        if "Fecha" in df_ce.columns:
-            df_ce["Fecha"] = pd.to_datetime(df_ce["Fecha"], errors="coerce").dt.date
+        # Filtrar CE
+        if "Modo_Reporte" in df_all.columns:
+            df_ce = df_all[df_all["Modo_Reporte"].astype(str) == "Cambio de etapa"].copy()
         else:
-            df_ce["Fecha"] = pd.NaT
-
-        df_ce["Horas_Reales"] = pd.to_numeric(df_ce.get("Horas_Reales", 0), errors="coerce").fillna(0.0)
-
-        # Filtros
-        c1, c2, c3 = st.columns([1, 1, 1])
-        with c1:
-            fechas = [d for d in df_ce["Fecha"].dropna().unique().tolist() if d]
-            if fechas:
-                fmin, fmax = min(fechas), max(fechas)
-            else:
-                fmin = fmax = datetime.today().date()
-            rango = st.date_input("Rango de fechas", value=(fmin, fmax), key="ce_rango")
-            if isinstance(rango, tuple) and len(rango) == 2:
-                f_ini, f_fin = rango
-            else:
-                f_ini, f_fin = fmin, fmax
-        with c2:
-            etapas = sorted([str(x) for x in df_ce.get("Etapa", pd.Series(dtype=str)).fillna("").unique().tolist() if str(x).strip() != ""])
-            etapa_f = st.selectbox("Etapa", options=["(Todas)"] + etapas, index=0, key="ce_etapa")
-        with c3:
-            mostrar_detalle = st.toggle("Ver tabla detalle", value=False, key="ce_det_toggle")
-
-        if "Fecha" in df_ce.columns and f_ini and f_fin:
-            df_ce = df_ce[(df_ce["Fecha"] >= f_ini) & (df_ce["Fecha"] <= f_fin)].copy()
-        if etapa_f != "(Todas)" and "Etapa" in df_ce.columns:
-            df_ce = df_ce[df_ce["Etapa"].astype(str) == str(etapa_f)].copy()
+            df_ce = df_all.copy()
 
         if df_ce.empty:
-            st.warning("No hay datos CE para ese filtro.")
-            st.stop()
-
-        # KPIs
-        total_h = float(df_ce["Horas_Reales"].sum())
-        tp_h = float(df_ce[df_ce.get("Tipo", "") == "TP"]["Horas_Reales"].sum()) if "Tipo" in df_ce.columns else total_h
-        tnpi_h = float(df_ce[df_ce.get("Tipo", "") == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in df_ce.columns else 0.0
-        tnp_h = float(df_ce[df_ce.get("Tipo", "") == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_ce.columns else 0.0
-        eff = (tp_h / total_h * 100.0) if total_h > 0 else 0.0
-
-        # Semáforo (ajustable)
-        warn_below = 75.0
-        crit_below = 60.0
-        if eff >= warn_below:
-            tone = "green"
-            sem_txt = "OK"
-        elif eff >= crit_below:
-            tone = "amber"
-            sem_txt = "ATENCIÓN"
+            st.warning("No hay actividades registradas con Modo de reporte = 'Cambio de etapa'.")
+            st.caption("Tip: cambia el 'Modo reporte' en el panel lateral antes de agregar actividades de CE.")
         else:
-            tone = "red"
-            sem_txt = "CRÍTICO"
+            # Normalizar columnas mínimas
+            if "Fecha" in df_ce.columns:
+                df_ce["Fecha"] = pd.to_datetime(df_ce["Fecha"], errors="coerce").dt.date
+            else:
+                df_ce["Fecha"] = pd.NaT
 
-        # Persistir KPIs CE globales (para otros bloques)
-        horas_total_ce = total_h
-        tp_ce = tp_h
-        tnpi_ce = tnpi_h
-        tnp_ce = tnp_h
-        eficiencia_ce = eff
+            df_ce["Horas_Reales"] = pd.to_numeric(df_ce.get("Horas_Reales", 0), errors="coerce").fillna(0.0)
 
-        # Chips pro (KPIs CE)
-        render_chip_row([
-            {"label": "Horas total (CE)", "value": f"{total_h:.2f} h", "tone": "blue"},
-            {"label": "TP", "value": f"{tp_h:.2f} h", "tone": "green"},
-            {"label": "TNPI", "value": f"{tnpi_h:.2f} h", "tone": "amber"},
-            {"label": "TNP", "value": f"{tnp_h:.2f} h", "tone": "red"},
-            {"label": "Eficiencia", "value": f"{eff:.0f}% · {sem_txt}", "tone": tone},
-        ], use_iframe=True, height=120)
-
-        # Chips adicionales (pro)
-        n_act = int(df_ce["Actividad"].nunique()) if "Actividad" in df_ce.columns else 0
-        n_days = int(df_ce["Fecha"].nunique()) if "Fecha" in df_ce.columns else 0
-        avg_day = (total_h / n_days) if n_days > 0 else 0.0
-        render_chip_row([
-            {"label": "Días con CE", "value": f"{n_days}", "tone": "gray"},
-            {"label": "Actividades", "value": f"{n_act}", "tone": "violet"},
-            {"label": "Promedio diario", "value": f"{avg_day:.2f} h", "tone": "blue"},
-        ], use_iframe=True, height=110)
-
-        st.divider()
-
-        # Gráficas principales
-        g1, g2 = st.columns([1, 1])
-        with g1:
-            if "Tipo" in df_ce.columns:
-                df_tipo = df_ce.groupby("Tipo", as_index=False)["Horas_Reales"].sum()
-                if not df_tipo.empty:
-                    fig = px.pie(df_tipo, names="Tipo", values="Horas_Reales", hole=0.55, title="Distribución TP / TNPI / TNP (CE)")
-                    st.plotly_chart(fig, use_container_width=True)
-        with g2:
-            if "Actividad" in df_ce.columns:
-                df_a = df_ce.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(15)
-                if not df_a.empty:
-                    palette = px.colors.qualitative.Set3 + px.colors.qualitative.Pastel + px.colors.qualitative.Bold
-                    act_names = df_a["Actividad"].tolist()
-                    act_color_map = {a: palette[i % len(palette)] for i, a in enumerate(act_names)}
-                    fig = px.bar(
-                        df_a,
-                        x="Actividad",
-                        y="Horas_Reales",
-                        color="Actividad",
-                        title="Top actividades por horas (CE)",
-                        color_discrete_map=act_color_map,
-                    )
-                    fig.update_layout(xaxis_title="", yaxis_title="Horas", xaxis_tickangle=-35, showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
-
-        # Tendencia por fecha / hora
-        if "Fecha" in df_ce.columns and df_ce["Fecha"].notna().any():
-            st.markdown("### Tendencia (CE)")
-            has_time = ("Hora_Inicio" in df_ce.columns) and df_ce["Hora_Inicio"].astype(str).str.strip().ne("").any()
-            tendencia_mode = st.radio(
-                "Vista",
-                ["Por día", "Por hora"],
-                index=0,
-                horizontal=True,
-                key="ce_tendencia_mode",
-            )
-            if tendencia_mode == "Por hora" and not has_time:
-                st.info("No hay horas registradas. Activa 'Registrar hora' al capturar CE.")
-                tendencia_mode = "Por día"
-
-            if tendencia_mode == "Por hora":
-                df_tmp = df_ce.copy()
-                df_tmp["_Hora"] = pd.to_datetime(df_tmp["Hora_Inicio"], format="%H:%M", errors="coerce").dt.hour
-                df_tmp = df_tmp.dropna(subset=["_Hora"])
-                if df_tmp.empty:
-                    st.info("No hay horas válidas para generar tendencia por hora.")
+            # Filtros
+            c1, c2, c3 = st.columns([1, 1, 1])
+            with c1:
+                fechas = [d for d in df_ce["Fecha"].dropna().unique().tolist() if d]
+                if fechas:
+                    fmin, fmax = min(fechas), max(fechas)
                 else:
-                    g = df_tmp.groupby(["_Hora", "Tipo"], as_index=False)["Horas_Reales"].sum()
-                    piv = g.pivot_table(index="_Hora", columns="Tipo", values="Horas_Reales", fill_value=0.0).reset_index()
-                    for c in ["TP", "TNPI", "TNP"]:
-                        if c not in piv.columns:
-                            piv[c] = 0.0
-                    piv["Total_h"] = piv["TP"] + piv["TNPI"] + piv["TNP"]
-                    piv = piv.sort_values("_Hora")
-                    piv["Eficiencia_pct"] = piv.apply(lambda r: (r["TP"] / r["Total_h"] * 100.0) if r["Total_h"] > 0 else 0.0, axis=1)
-                    piv["Semáforo"] = piv["Eficiencia_pct"].apply(semaforo_dot)
+                    fmin = fmax = datetime.today().date()
+                rango = st.date_input("Rango de fechas", value=(fmin, fmax), key="ce_rango")
+                if isinstance(rango, tuple) and len(rango) == 2:
+                    f_ini, f_fin = rango
+                else:
+                    f_ini, f_fin = fmin, fmax
+            with c2:
+                etapas = sorted([str(x) for x in df_ce.get("Etapa", pd.Series(dtype=str)).fillna("").unique().tolist() if str(x).strip() != ""])
+                etapa_f = st.selectbox("Etapa", options=["(Todas)"] + etapas, index=0, key="ce_etapa")
+            with c3:
+                mostrar_detalle = st.toggle("Ver tabla detalle", value=False, key="ce_det_toggle")
 
-                    # Chips pro
-                    best_row = piv.sort_values("Eficiencia_pct", ascending=False).iloc[0]
-                    worst_row = piv.sort_values("Eficiencia_pct", ascending=True).iloc[0]
-                    avg_eff = float(piv["Eficiencia_pct"].mean()) if len(piv) > 0 else 0.0
-                    render_chip_row([
-                        {"label": "Mejor hora", "value": f"{int(best_row['_Hora']):02d}:00 · {best_row['Eficiencia_pct']:.0f}%", "tone": "green"},
-                        {"label": "Peor hora", "value": f"{int(worst_row['_Hora']):02d}:00 · {worst_row['Eficiencia_pct']:.0f}%", "tone": "red"},
-                        {"label": "Eficiencia promedio", "value": f"{avg_eff:.0f}%", "tone": "blue"},
-                        {"label": "Horas con CE", "value": f"{len(piv)}", "tone": "gray"},
-                    ], use_iframe=True, height=120)
+            if "Fecha" in df_ce.columns and f_ini and f_fin:
+                df_ce = df_ce[(df_ce["Fecha"] >= f_ini) & (df_ce["Fecha"] <= f_fin)].copy()
+            if etapa_f != "(Todas)" and "Etapa" in df_ce.columns:
+                df_ce = df_ce[df_ce["Etapa"].astype(str) == str(etapa_f)].copy()
 
-                    df_long = piv.melt(
-                        id_vars=["_Hora"],
-                        value_vars=["Total_h", "TP", "TNPI", "TNP"],
+            if df_ce.empty:
+                st.warning("No hay datos CE para ese filtro.")
+                st.stop()
+
+            # KPIs
+            total_h = float(df_ce["Horas_Reales"].sum())
+            tp_h = float(df_ce[df_ce.get("Tipo", "") == "TP"]["Horas_Reales"].sum()) if "Tipo" in df_ce.columns else total_h
+            tnpi_h = float(df_ce[df_ce.get("Tipo", "") == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in df_ce.columns else 0.0
+            tnp_h = float(df_ce[df_ce.get("Tipo", "") == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_ce.columns else 0.0
+            eff = (tp_h / total_h * 100.0) if total_h > 0 else 0.0
+
+            # Semáforo (ajustable)
+            warn_below = 75.0
+            crit_below = 60.0
+            if eff >= warn_below:
+                tone = "green"
+                sem_txt = "OK"
+            elif eff >= crit_below:
+                tone = "amber"
+                sem_txt = "ATENCIÓN"
+            else:
+                tone = "red"
+                sem_txt = "CRÍTICO"
+
+            # Persistir KPIs CE globales (para otros bloques)
+            horas_total_ce = total_h
+            tp_ce = tp_h
+            tnpi_ce = tnpi_h
+            tnp_ce = tnp_h
+            eficiencia_ce = eff
+
+            # Chips pro (KPIs CE)
+            render_chip_row([
+                {"label": "Horas total (CE)", "value": f"{total_h:.2f} h", "tone": "blue"},
+                {"label": "TP", "value": f"{tp_h:.2f} h", "tone": "green"},
+                {"label": "TNPI", "value": f"{tnpi_h:.2f} h", "tone": "amber"},
+                {"label": "TNP", "value": f"{tnp_h:.2f} h", "tone": "red"},
+                {"label": "Eficiencia", "value": f"{eff:.0f}% · {sem_txt}", "tone": tone},
+            ], use_iframe=True, height=120)
+
+            # Chips adicionales (pro)
+            n_act = int(df_ce["Actividad"].nunique()) if "Actividad" in df_ce.columns else 0
+            n_days = int(df_ce["Fecha"].nunique()) if "Fecha" in df_ce.columns else 0
+            avg_day = (total_h / n_days) if n_days > 0 else 0.0
+            render_chip_row([
+                {"label": "Días con CE", "value": f"{n_days}", "tone": "gray"},
+                {"label": "Actividades", "value": f"{n_act}", "tone": "violet"},
+                {"label": "Promedio diario", "value": f"{avg_day:.2f} h", "tone": "blue"},
+            ], use_iframe=True, height=110)
+
+            st.divider()
+
+            # Gráficas principales
+            g1, g2 = st.columns([1, 1])
+            with g1:
+                if "Tipo" in df_ce.columns:
+                    df_tipo = df_ce.groupby("Tipo", as_index=False)["Horas_Reales"].sum()
+                    if not df_tipo.empty:
+                        fig = px.pie(df_tipo, names="Tipo", values="Horas_Reales", hole=0.55, title="Distribución TP / TNPI / TNP (CE)")
+                        st.plotly_chart(fig, use_container_width=True)
+            with g2:
+                if "Actividad" in df_ce.columns:
+                    df_a = df_ce.groupby("Actividad", as_index=False)["Horas_Reales"].sum().sort_values("Horas_Reales", ascending=False).head(15)
+                    if not df_a.empty:
+                        palette = px.colors.qualitative.Set3 + px.colors.qualitative.Pastel + px.colors.qualitative.Bold
+                        act_names = df_a["Actividad"].tolist()
+                        act_color_map = {a: palette[i % len(palette)] for i, a in enumerate(act_names)}
+                        fig = px.bar(
+                            df_a,
+                            x="Actividad",
+                            y="Horas_Reales",
+                            color="Actividad",
+                            title="Top actividades por horas (CE)",
+                            color_discrete_map=act_color_map,
+                        )
+                        fig.update_layout(xaxis_title="", yaxis_title="Horas", xaxis_tickangle=-35, showlegend=False)
+                        st.plotly_chart(fig, use_container_width=True)
+
+            # Tendencia por fecha / hora
+            if "Fecha" in df_ce.columns and df_ce["Fecha"].notna().any():
+                st.markdown("### Tendencia (CE)")
+                has_time = ("Hora_Inicio" in df_ce.columns) and df_ce["Hora_Inicio"].astype(str).str.strip().ne("").any()
+                tendencia_mode = st.radio(
+                    "Vista",
+                    ["Por día", "Por hora"],
+                    index=0,
+                    horizontal=True,
+                    key="ce_tendencia_mode",
+                )
+                if tendencia_mode == "Por hora" and not has_time:
+                    st.info("No hay horas registradas. Activa 'Registrar hora' al capturar CE.")
+                    tendencia_mode = "Por día"
+
+                if tendencia_mode == "Por hora":
+                    df_tmp = df_ce.copy()
+                    df_tmp["_Hora"] = pd.to_datetime(df_tmp["Hora_Inicio"], format="%H:%M", errors="coerce").dt.hour
+                    df_tmp = df_tmp.dropna(subset=["_Hora"])
+                    if df_tmp.empty:
+                        st.info("No hay horas válidas para generar tendencia por hora.")
+                    else:
+                        g = df_tmp.groupby(["_Hora", "Tipo"], as_index=False)["Horas_Reales"].sum()
+                        piv = g.pivot_table(index="_Hora", columns="Tipo", values="Horas_Reales", fill_value=0.0).reset_index()
+                        for c in ["TP", "TNPI", "TNP"]:
+                            if c not in piv.columns:
+                                piv[c] = 0.0
+                        piv["Total_h"] = piv["TP"] + piv["TNPI"] + piv["TNP"]
+                        piv = piv.sort_values("_Hora")
+                        piv["Eficiencia_pct"] = piv.apply(lambda r: (r["TP"] / r["Total_h"] * 100.0) if r["Total_h"] > 0 else 0.0, axis=1)
+                        piv["Semáforo"] = piv["Eficiencia_pct"].apply(semaforo_dot)
+
+                        # Chips pro
+                        best_row = piv.sort_values("Eficiencia_pct", ascending=False).iloc[0]
+                        worst_row = piv.sort_values("Eficiencia_pct", ascending=True).iloc[0]
+                        avg_eff = float(piv["Eficiencia_pct"].mean()) if len(piv) > 0 else 0.0
+                        render_chip_row([
+                            {"label": "Mejor hora", "value": f"{int(best_row['_Hora']):02d}:00 · {best_row['Eficiencia_pct']:.0f}%", "tone": "green"},
+                            {"label": "Peor hora", "value": f"{int(worst_row['_Hora']):02d}:00 · {worst_row['Eficiencia_pct']:.0f}%", "tone": "red"},
+                            {"label": "Eficiencia promedio", "value": f"{avg_eff:.0f}%", "tone": "blue"},
+                            {"label": "Horas con CE", "value": f"{len(piv)}", "tone": "gray"},
+                        ], use_iframe=True, height=120)
+
+                        df_long = piv.melt(
+                            id_vars=["_Hora"],
+                            value_vars=["Total_h", "TP", "TNPI", "TNP"],
+                            var_name="Serie",
+                            value_name="Horas",
+                        )
+                        fig = px.line(
+                            df_long,
+                            x="_Hora",
+                            y="Horas",
+                            color="Serie",
+                            markers=True,
+                            title="Tendencia por hora (CE)",
+                        )
+                        fig.update_layout(xaxis_title="Hora", yaxis_title="Horas")
+                        fig.update_xaxes(dtick=1)
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        st.markdown("#### Semáforo por hora (CE)")
+                        st.dataframe(
+                            piv[["_Hora", "Total_h", "TP", "TNPI", "TNP", "Eficiencia_pct", "Semáforo"]],
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                else:
+                    df_d = df_ce.groupby("Fecha", as_index=False).agg(
+                        Total_h=("Horas_Reales", "sum"),
+                        TP_h=("Horas_Reales", lambda s: float(s[df_ce.loc[s.index, "Tipo"].astype(str) == "TP"].sum()) if "Tipo" in df_ce.columns else float(s.sum())),
+                        TNPI_h=("Horas_Reales", lambda s: float(s[df_ce.loc[s.index, "Tipo"].astype(str) == "TNPI"].sum()) if "Tipo" in df_ce.columns else 0.0),
+                        TNP_h=("Horas_Reales", lambda s: float(s[df_ce.loc[s.index, "Tipo"].astype(str) == "TNP"].sum()) if "Tipo" in df_ce.columns else 0.0),
+                    ).sort_values("Fecha")
+
+                    df_d["Eficiencia_pct"] = df_d.apply(lambda r: (r["TP_h"]/r["Total_h"]*100.0) if r["Total_h"]>0 else 0.0, axis=1)
+                    df_d["Semáforo"] = df_d["Eficiencia_pct"].apply(semaforo_dot)
+                    df_d["Fecha"] = pd.to_datetime(df_d["Fecha"], errors="coerce")
+
+                    # Chips pro arriba de la tendencia
+                    if not df_d.empty:
+                        best_row = df_d.sort_values("Eficiencia_pct", ascending=False).iloc[0]
+                        worst_row = df_d.sort_values("Eficiencia_pct", ascending=True).iloc[0]
+                        avg_eff = float(df_d["Eficiencia_pct"].mean()) if len(df_d) > 0 else 0.0
+                        best_day = best_row["Fecha"].date().isoformat() if pd.notna(best_row["Fecha"]) else "-"
+                        worst_day = worst_row["Fecha"].date().isoformat() if pd.notna(worst_row["Fecha"]) else "-"
+                        render_chip_row([
+                            {"label": "Mejor día", "value": f"{best_day} · {best_row['Eficiencia_pct']:.0f}%", "tone": "green"},
+                            {"label": "Peor día", "value": f"{worst_day} · {worst_row['Eficiencia_pct']:.0f}%", "tone": "red"},
+                            {"label": "Eficiencia promedio", "value": f"{avg_eff:.0f}%", "tone": "blue"},
+                            {"label": "Días", "value": f"{len(df_d)}", "tone": "gray"},
+                        ], use_iframe=True, height=120)
+
+                    df_long = df_d.melt(
+                        id_vars=["Fecha"],
+                        value_vars=["Total_h", "TP_h", "TNPI_h", "TNP_h"],
                         var_name="Serie",
                         value_name="Horas",
                     )
                     fig = px.line(
                         df_long,
-                        x="_Hora",
+                        x="Fecha",
                         y="Horas",
                         color="Serie",
                         markers=True,
-                        title="Tendencia por hora (CE)",
+                        title="Tendencia por fecha (CE)",
                     )
-                    fig.update_layout(xaxis_title="Hora", yaxis_title="Horas")
-                    fig.update_xaxes(dtick=1)
+                    fig.update_layout(xaxis_title="", yaxis_title="Horas")
+                    fig.update_xaxes(dtick="D1", tickformat="%Y-%m-%d")
                     st.plotly_chart(fig, use_container_width=True)
 
-                    st.markdown("#### Semáforo por hora (CE)")
+                    # Semáforos por fecha (tabla + chips)
+                    st.markdown("#### Semáforo por fecha (CE)")
                     st.dataframe(
-                        piv[["_Hora", "Total_h", "TP", "TNPI", "TNP", "Eficiencia_pct", "Semáforo"]],
+                        df_d[["Fecha", "Total_h", "TP_h", "TNPI_h", "TNP_h", "Eficiencia_pct", "Semáforo"]],
                         use_container_width=True,
                         hide_index=True,
                     )
-            else:
-                df_d = df_ce.groupby("Fecha", as_index=False).agg(
-                    Total_h=("Horas_Reales", "sum"),
-                    TP_h=("Horas_Reales", lambda s: float(s[df_ce.loc[s.index, "Tipo"].astype(str) == "TP"].sum()) if "Tipo" in df_ce.columns else float(s.sum())),
-                    TNPI_h=("Horas_Reales", lambda s: float(s[df_ce.loc[s.index, "Tipo"].astype(str) == "TNPI"].sum()) if "Tipo" in df_ce.columns else 0.0),
-                    TNP_h=("Horas_Reales", lambda s: float(s[df_ce.loc[s.index, "Tipo"].astype(str) == "TNP"].sum()) if "Tipo" in df_ce.columns else 0.0),
-                ).sort_values("Fecha")
 
-                df_d["Eficiencia_pct"] = df_d.apply(lambda r: (r["TP_h"]/r["Total_h"]*100.0) if r["Total_h"]>0 else 0.0, axis=1)
-                df_d["Semáforo"] = df_d["Eficiencia_pct"].apply(semaforo_dot)
-                df_d["Fecha"] = pd.to_datetime(df_d["Fecha"], errors="coerce")
+            # Tabla resumen por actividad
+            if "Actividad" in df_ce.columns:
+                if "Tipo" in df_ce.columns:
+                    piv = df_ce.pivot_table(index="Actividad", columns="Tipo", values="Horas_Reales", aggfunc="sum", fill_value=0.0)
+                    for c in ["TP","TNPI","TNP"]:
+                        if c not in piv.columns:
+                            piv[c]=0.0
+                    piv["Total"] = piv[["TP","TNPI","TNP"]].sum(axis=1)
+                    piv["Eficiencia_%"] = piv.apply(lambda r: (r["TP"]/r["Total"]*100.0) if r["Total"]>0 else 0.0, axis=1)
+                    piv["Semáforo"] = piv["Eficiencia_%"].apply(semaforo_dot)
+                    piv = piv.sort_values("Total", ascending=False).reset_index()
+                else:
+                    piv = df_ce.groupby("Actividad", as_index=False)["Horas_Reales"].sum().rename(columns={"Horas_Reales":"Total"})
+                    piv["TP"]=piv["Total"]; piv["TNPI"]=0.0; piv["TNP"]=0.0; piv["Eficiencia_%"]=100.0
+                    piv["Semáforo"] = piv["Eficiencia_%"].apply(semaforo_dot)
 
-                # Chips pro arriba de la tendencia
-                if not df_d.empty:
-                    best_row = df_d.sort_values("Eficiencia_pct", ascending=False).iloc[0]
-                    worst_row = df_d.sort_values("Eficiencia_pct", ascending=True).iloc[0]
-                    avg_eff = float(df_d["Eficiencia_pct"].mean()) if len(df_d) > 0 else 0.0
-                    best_day = best_row["Fecha"].date().isoformat() if pd.notna(best_row["Fecha"]) else "-"
-                    worst_day = worst_row["Fecha"].date().isoformat() if pd.notna(worst_row["Fecha"]) else "-"
-                    render_chip_row([
-                        {"label": "Mejor día", "value": f"{best_day} · {best_row['Eficiencia_pct']:.0f}%", "tone": "green"},
-                        {"label": "Peor día", "value": f"{worst_day} · {worst_row['Eficiencia_pct']:.0f}%", "tone": "red"},
-                        {"label": "Eficiencia promedio", "value": f"{avg_eff:.0f}%", "tone": "blue"},
-                        {"label": "Días", "value": f"{len(df_d)}", "tone": "gray"},
-                    ], use_iframe=True, height=120)
+                st.markdown("#### Resumen por actividad (CE)")
+                st.dataframe(piv, use_container_width=True, hide_index=True)
 
-                df_long = df_d.melt(
-                    id_vars=["Fecha"],
-                    value_vars=["Total_h", "TP_h", "TNPI_h", "TNP_h"],
-                    var_name="Serie",
-                    value_name="Horas",
-                )
-                fig = px.line(
-                    df_long,
-                    x="Fecha",
-                    y="Horas",
-                    color="Serie",
-                    markers=True,
-                    title="Tendencia por fecha (CE)",
-                )
-                fig.update_layout(xaxis_title="", yaxis_title="Horas")
-                fig.update_xaxes(dtick="D1", tickformat="%Y-%m-%d")
-                st.plotly_chart(fig, use_container_width=True)
-
-                # Semáforos por fecha (tabla + chips)
-                st.markdown("#### Semáforo por fecha (CE)")
+            if mostrar_detalle:
+                st.markdown("#### Detalle (CE)")
                 st.dataframe(
-                    df_d[["Fecha", "Total_h", "TP_h", "TNPI_h", "TNP_h", "Eficiencia_pct", "Semáforo"]],
+                    _decorate_turno_df(df_ce.sort_values(["Fecha", "Turno"], ascending=[True, True])),
                     use_container_width=True,
-                    hide_index=True,
+                    hide_index=True
                 )
 
-        # Tabla resumen por actividad
-        if "Actividad" in df_ce.columns:
-            if "Tipo" in df_ce.columns:
-                piv = df_ce.pivot_table(index="Actividad", columns="Tipo", values="Horas_Reales", aggfunc="sum", fill_value=0.0)
-                for c in ["TP","TNPI","TNP"]:
-                    if c not in piv.columns:
-                        piv[c]=0.0
-                piv["Total"] = piv[["TP","TNPI","TNP"]].sum(axis=1)
-                piv["Eficiencia_%"] = piv.apply(lambda r: (r["TP"]/r["Total"]*100.0) if r["Total"]>0 else 0.0, axis=1)
-                piv["Semáforo"] = piv["Eficiencia_%"].apply(semaforo_dot)
-                piv = piv.sort_values("Total", ascending=False).reset_index()
-            else:
-                piv = df_ce.groupby("Actividad", as_index=False)["Horas_Reales"].sum().rename(columns={"Horas_Reales":"Total"})
-                piv["TP"]=piv["Total"]; piv["TNPI"]=0.0; piv["TNP"]=0.0; piv["Eficiencia_%"]=100.0
-                piv["Semáforo"] = piv["Eficiencia_%"].apply(semaforo_dot)
-
-            st.markdown("#### Resumen por actividad (CE)")
-            st.dataframe(piv, use_container_width=True, hide_index=True)
-
-        if mostrar_detalle:
-            st.markdown("#### Detalle (CE)")
-            st.dataframe(
-                _decorate_turno_df(df_ce.sort_values(["Fecha", "Turno"], ascending=[True, True])),
-                use_container_width=True,
-                hide_index=True
-            )
-
-        st.caption("Recomendación: usa CE para capturar tiempos de transición (cambio de herramienta/etapa, cementación, WOC, etc.). Esto permite separar desempeño de perforación vs tiempos de cambio de etapa.")
+            st.caption("Recomendación: usa CE para capturar tiempos de transición (cambio de herramienta/etapa, cementación, WOC, etc.). Esto permite separar desempeño de perforación vs tiempos de cambio de etapa.")
 
 
 with tab_estadisticas:
