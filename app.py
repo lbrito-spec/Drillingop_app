@@ -1053,7 +1053,9 @@ EXPORT_COLORWAY = ["#2E86C1", "#28B463", "#E74C3C", "#F1C40F", "#8E44AD", "#16A0
 EQUIPO_TIPO = ["3000HP / AE", "2000HP"]
 MODO_REPORTE_OPTS = ["Perforación", "Cambio de etapa"]
 TIPO_AGUJERO = ["Entubado", "Descubierto"]
-SECCIONES_DEFAULT = ['36"', '26"', '18 1/2"', '13 3/8"', '12 1/4"', '8 1/2"', '6 1/8"']
+# Listas separadas: BNA = barrenas, Casing = etapas
+BARRERAS_DEFAULT = ['36"', '26"', '18 1/2"', '17 1/2"', '16"', '14 1/2"', '13 1/2"', '12 1/4"', '10 5/8"', '8 1/2"', '6 1/4"']
+SECCIONES_DEFAULT = ['30"', '20"', '16"', '13 3/8"', '11 3/4"', '9 5/8"', '7"', '5"']
 TURNOS = ["Diurno", "Nocturno"]
 
 ACTIVIDADES = [
@@ -2626,15 +2628,17 @@ with st.sidebar.container(border=True):
     equipo = st.sidebar.text_input("Equipo", value=st.session_state.get("equipo_val","PM 2402"), key="equipo_val")
     equipo_tipo = st.sidebar.selectbox("Tipo de equipo", options=EQUIPO_TIPO, index=EQUIPO_TIPO.index(st.session_state.get("equipo_tipo_val", EQUIPO_TIPO[0])) if st.session_state.get("equipo_tipo_val", EQUIPO_TIPO[0]) in EQUIPO_TIPO else 0, key="equipo_tipo_val")
     pozo = st.sidebar.text_input("Pozo", value=st.session_state.get("pozo_val","OME 1 EXP"), key="pozo_val")
-    # Etapa (sección) - lista + opción manual (para casos especiales)
-    etapa_manual = st.sidebar.checkbox("Etapa manual", value=bool(st.session_state.get("etapa_manual_chk", False)), key="etapa_manual_chk", help="Actívalo si necesitas escribir una etapa que no esté en la lista.")
-    if etapa_manual:
-        etapa = st.sidebar.text_input("Etapa (manual)", value=st.session_state.get("etapa_manual_val", SECCIONES_DEFAULT[2]), key="etapa_manual_input")
+    # Etapa (sección) - lista + opción manual
+    _default_etapa = st.session_state.get("etapa_sel", SECCIONES_DEFAULT[2])
+    _opts_etapa = SECCIONES_DEFAULT + ["Otra (manual)"]
+    _idx = _opts_etapa.index(_default_etapa) if _default_etapa in _opts_etapa else 2
+    etapa_pick = st.sidebar.selectbox("Etapa", _opts_etapa, index=_idx, key="etapa_select")
+    if etapa_pick == "Otra (manual)":
+        etapa = st.sidebar.text_input("Etapa (manual)", value=st.session_state.get("etapa_manual_val", ""), key="etapa_manual_input")
         st.session_state["etapa_manual_val"] = etapa
+        st.session_state["etapa_sel"] = etapa
     else:
-        _default_etapa = st.session_state.get("etapa_sel", SECCIONES_DEFAULT[2])
-        _idx = SECCIONES_DEFAULT.index(_default_etapa) if _default_etapa in SECCIONES_DEFAULT else 2
-        etapa = st.sidebar.selectbox("Etapa", SECCIONES_DEFAULT, index=_idx, key="etapa_select")
+        etapa = etapa_pick
         st.session_state["etapa_sel"] = etapa
     fecha = st.sidebar.date_input("Fecha", value=st.session_state.get("fecha_val", datetime.today().date()), key="fecha_val")
 
@@ -2693,7 +2697,7 @@ _meta_now = {
     "pozo": st.session_state.get("pozo_val", ""),
     "fecha": str(fecha),
     "equipo_tipo": st.session_state.get("equipo_tipo_val", ""),
-    "etapa_manual": bool(etapa_manual),
+    "etapa_manual": bool(st.session_state.get("etapa_manual_val", "")),
     "etapa": etapa,
     "etapa_manual_val": st.session_state.get("etapa_manual_val", ""),
     "modo_reporte": st.session_state.get("modo_reporte", ""),
@@ -3093,6 +3097,17 @@ with st.sidebar.container(border=True):
             <div style='font-size: 16px; color: white; font-weight: bold;'>{etapa}</div>
         </div>
     """, unsafe_allow_html=True)
+
+    # Barrena (BNA) global
+    _bna_default = st.session_state.get("barrena_global", BARRERAS_DEFAULT[0])
+    _bna_opts = BARRERAS_DEFAULT + ["Otra (manual)"]
+    _bna_idx = _bna_opts.index(_bna_default) if _bna_default in _bna_opts else 0
+    barrena_pick = st.sidebar.selectbox("Barrena (BNA)", options=_bna_opts, index=_bna_idx, key="barrena_global_sel")
+    if barrena_pick == "Otra (manual)":
+        barrena_global = st.sidebar.text_input("Barrena (manual)", value=st.session_state.get("barrena_manual", ""), key="barrena_manual").strip()
+    else:
+        barrena_global = barrena_pick
+    st.session_state["barrena_global"] = barrena_global
     
     # Indicador de qué datos se están capturando
     if modo_reporte == "Perforación":
@@ -3768,16 +3783,7 @@ with st.sidebar.container(border=True):
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 if modo_reporte == "Perforación" and actividad == "Conexión perforando":
     with st.sidebar.expander("Conexión perforando (captura)", expanded=True):
-        # Asegurar que se use la etapa seleccionada en el sidebar principal
-        etapa_conn = st.selectbox(
-            "Etapa para conexión", 
-            options=SECCIONES_DEFAULT,
-            index=SECCIONES_DEFAULT.index(etapa) if etapa in SECCIONES_DEFAULT else 0,
-            key="etapa_conn"
-        )
-        corrida_c = st.text_input("Corrida (Run) – conexiones", "Run 1", key="run_conn")
-        tipo_agujero_c = st.radio("Tipo de agujero – conexiones", TIPO_AGUJERO, horizontal=True, key="hole_conn")
-        turno_c = st.radio("Turno – conexiones", TURNOS, horizontal=True, key="turno_conn")
+        # Usa los inputs globales (etapa, corrida, tipo de agujero, turno)
         profundidad_m = st.number_input("Profundidad (m)", 0.0, step=1.0, key="prof_conn")
         
         conn_tipo = st.selectbox("Tipo de conexión", CONN_TYPE_OPTS, key="conn_tipo")
@@ -3787,7 +3793,16 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
         mins_real = {}
         for comp in CONN_COMPONENTS:
             mins_real[comp] = st.number_input(comp, min_value=0.0, step=0.1, value=0.0, key=f"min_{comp}")
-        
+
+        # Estándares (min) según tipo de conexión / ángulo
+        std_map = CONN_STDS.get((conn_tipo, ang_bucket), {})
+        std_pre = float(std_map.get("Preconexión", 0))
+        std_conn = float(std_map.get("Conexión", 0))
+        std_post = float(std_map.get("Postconexión", 0))
+        std_total_line = float(std_map.get("TOTAL", std_pre + std_conn + std_post))
+        total_real_min_ui = float(sum(mins_real.values())) if mins_real else 0.0
+        st.caption(f"Total real: {total_real_min_ui:.1f} min")
+
         tipo_tiempo_conn = st.radio("Tipo de tiempo (Conexión)", options=["TP", "TNP"], horizontal=True, key="tipo_tiempo_conn")
 
         # Catálogo TNP (mismo archivo que TNPI)
@@ -3795,40 +3810,44 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
         if not cat_list_tnp:
             cat_list_tnp = ["-"]
 
+        cat_tnpi_conn, det_tnpi_conn = "-", "-"
+        cat_tnp_conn, det_tnp_conn = "-", "-"
         if tipo_tiempo_conn == "TP":
-            st.markdown("**Exceso (Real > Estándar)**")
-            exceso_policy_conn = st.radio(
-                "¿Cómo registrar el exceso?",
-                options=["TNPI", "TNP"],
-                horizontal=True,
-                key="conn_exceso_policy",
-                help="Si Real supera el estándar, el exceso puede registrarse como TNPI (no productivo/improductivo) o como TNP (no planeado).",
-            )
+            if total_real_min_ui > std_total_line:
+                st.markdown("**Exceso (Real > Estándar)**")
+                exceso_policy_conn = st.radio(
+                    "¿Cómo registrar el exceso?",
+                    options=["TNPI", "TNP"],
+                    horizontal=True,
+                    key="conn_exceso_policy",
+                    help="Si Real supera el estándar, el exceso puede registrarse como TNPI (no productivo/improductivo) o como TNP (no planeado).",
+                )
 
-            if exceso_policy_conn == "TNPI":
-                st.markdown("**Causa TNPI (solo para el exceso)**")
-                cat_tnpi_conn = st.selectbox("Categoría TNPI (exceso)", options=cat_list, key="conn_cat_tnpi")
-                det_all = df_tnpi_cat[df_tnpi_cat["Categoria_TNPI"] == cat_tnpi_conn]["Detalle_TNPI"].tolist()
-                q2 = (st.text_input("Buscar detalle TNPI (exceso)", value="", key="q_conn_tnpi") or "").strip().lower()
-                det_filtered = [d for d in det_all if q2 in str(d).lower()] if q2 else det_all
-                det_tnpi_conn = st.selectbox(
-                    "Detalle TNPI (exceso)",
-                    options=det_filtered if det_filtered else det_all,
-                    key="det_conn_tnpi",
-                )
-                cat_tnp_conn, det_tnp_conn = "-", "-"
+                if exceso_policy_conn == "TNPI":
+                    st.markdown("**Causa TNPI (solo para el exceso)**")
+                    cat_tnpi_conn = st.selectbox("Categoría TNPI (exceso)", options=cat_list, key="conn_cat_tnpi")
+                    det_all = df_tnpi_cat[df_tnpi_cat["Categoria_TNPI"] == cat_tnpi_conn]["Detalle_TNPI"].tolist()
+                    q2 = (st.text_input("Buscar detalle TNPI (exceso)", value="", key="q_conn_tnpi") or "").strip().lower()
+                    det_filtered = [d for d in det_all if q2 in str(d).lower()] if q2 else det_all
+                    det_tnpi_conn = st.selectbox(
+                        "Detalle TNPI (exceso)",
+                        options=det_filtered if det_filtered else det_all,
+                        key="det_conn_tnpi",
+                    )
+                else:
+                    st.markdown("**Causa TNP (solo para el exceso)**")
+                    cat_tnp_conn = st.selectbox("Categoría TNP (exceso)", options=cat_list_tnp, key="conn_cat_tnp")
+                    det_all = df_tnpi_cat[df_tnpi_cat.get("Categoria_TNP", "") == cat_tnp_conn].get("Detalle_TNP", pd.Series(dtype=str)).tolist()
+                    q2 = (st.text_input("Buscar detalle TNP (exceso)", value="", key="q_conn_tnp") or "").strip().lower()
+                    det_filtered = [d for d in det_all if q2 in str(d).lower()] if q2 else det_all
+                    det_tnp_conn = st.selectbox(
+                        "Detalle TNP (exceso)",
+                        options=det_filtered if det_filtered else det_all if det_all else ["-"],
+                        key="det_conn_tnp",
+                    )
             else:
-                st.markdown("**Causa TNP (solo para el exceso)**")
-                cat_tnp_conn = st.selectbox("Categoría TNP (exceso)", options=cat_list_tnp, key="conn_cat_tnp")
-                det_all = df_tnpi_cat[df_tnpi_cat.get("Categoria_TNP", "") == cat_tnp_conn].get("Detalle_TNP", pd.Series(dtype=str)).tolist()
-                q2 = (st.text_input("Buscar detalle TNP (exceso)", value="", key="q_conn_tnp") or "").strip().lower()
-                det_filtered = [d for d in det_all if q2 in str(d).lower()] if q2 else det_all
-                det_tnp_conn = st.selectbox(
-                    "Detalle TNP (exceso)",
-                    options=det_filtered if det_filtered else det_all if det_all else ["-"],
-                    key="det_conn_tnp",
-                )
-                cat_tnpi_conn, det_tnpi_conn = "-", "-"
+                exceso_policy_conn = "TNPI"
+                st.caption("No hay exceso: Real <= Estándar.")
         else:
             # Toda la conexión se registra como TNP (no hay TNPI automático aquí)
             exceso_policy_conn = "TNP"
@@ -3882,12 +3901,6 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
         if st.button("Agregar conexión", use_container_width=True):
             conn_no = int(st.session_state.df_conn["Conn_No"].max()) + 1 if not st.session_state.df_conn.empty else 1
 
-            
-            std_map = CONN_STDS.get((conn_tipo, ang_bucket), {})
-            std_pre = float(std_map.get("Preconexión", 0))
-            std_conn = float(std_map.get("Conexión", 0))
-            std_post = float(std_map.get("Postconexión", 0))
-            
             rows = []
             for comp in CONN_COMPONENTS:
                 real = float(mins_real.get(comp, 0.0))
@@ -3926,13 +3939,13 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
                     {
                         "Equipo": equipo,
                         "Pozo": pozo,
-                        "Etapa": etapa_conn,  # Usar la etapa específica para conexiones
+                        "Etapa": etapa,
                         "Fecha": str(fecha),
                         "Equipo_Tipo": st.session_state.get("equipo_tipo_val", ""),
-                        "Seccion": etapa_conn,  # También en Seccion
-                        "Corrida": corrida_c,
-                        "Tipo_Agujero": tipo_agujero_c,
-                        "Turno": turno_c,
+                        "Seccion": etapa,  # También en Seccion
+                        "Corrida": corrida,
+                        "Tipo_Agujero": tipo_agujero,
+                        "Turno": turno,
                         "Conn_No": conn_no,
                         "Profundidad_m": float(profundidad_m),
                         "Conn_Tipo": conn_tipo,
@@ -3985,13 +3998,13 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
             base = dict(
                 Equipo=equipo,
                 Pozo=pozo,
-                Etapa=etapa_conn,
+                Etapa=etapa,
                 Fecha=str(fecha),
                 Equipo_Tipo=st.session_state.get("equipo_tipo_val", ""),
                 Modo_Reporte="Perforación",
-                Seccion=etapa_conn,
-                Corrida=corrida_c,
-                Tipo_Agujero=tipo_agujero_c,
+                Seccion=etapa,
+                Corrida=corrida,
+                Tipo_Agujero=tipo_agujero,
                 Operacion="Perforación",
                 Actividad=f"Conexión perforando ({ang_bucket})",
                 Turno=turno,
@@ -4053,7 +4066,7 @@ if actividad == "Arma/Desarma BHA":
         st.session_state["bha_tipo_tiempo"] = bha_tipo_tiempo
 
         bha_turno = st.radio("Turno (BHA)", TURNOS, horizontal=True, key="bha_turno")
-        barrena = st.text_input("Barrena (BNA)", "", key="bha_barrena")
+        barrena = st.session_state.get("barrena_global", "")
         bha_tipo = st.selectbox("Tipo (1–10)", options=list(BHA_TYPES.keys()), index=0, key="bha_tipo")
 
         desc, std_arma, std_desarma = BHA_TYPES[int(bha_tipo)]
@@ -5299,6 +5312,108 @@ with tab_resumen:
                 tnpi_h_d = float(df_diario[df_diario["Tipo"] == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in df_diario.columns else 0.0
                 tnp_h_d = float(df_diario[df_diario["Tipo"] == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_diario.columns else 0.0
                 eff_d = clamp_0_100(safe_pct(tp_h_d, total_real_d)) if total_real_d > 0 else 0.0
+
+                # Mission Control diario (cap 24h)
+                total_cap = min(total_real_d, 24.0)
+                if total_real_d > 24.0:
+                    scale = total_cap / total_real_d if total_real_d > 0 else 0.0
+                    tp_cap = tp_h_d * scale
+                    tnpi_cap = tnpi_h_d * scale
+                    tnp_cap = tnp_h_d * scale
+                else:
+                    tp_cap, tnpi_cap, tnp_cap = tp_h_d, tnpi_h_d, tnp_h_d
+                eff_cap = clamp_0_100(safe_pct(tp_cap, total_cap)) if total_cap > 0 else 0.0
+
+                st.markdown("### 🧭 Mission Control Diario (cap 24h)")
+                render_html(
+                    mission_control_dashboard(
+                        etapa=f"{etapa_resumen} / {fecha_resumen}",
+                        eficiencia=eff_cap,
+                        tp_h=tp_cap,
+                        tnpi_h=tnpi_cap,
+                        tnp_h=tnp_cap,
+                        total_real=total_cap,
+                    ),
+                    height=450,
+                )
+
+                # Perforación + conexiones (diario)
+                st.markdown("### Perforación + conexiones (diario)")
+                include_conn_d = st.toggle("Incluir conexiones perforando", value=True, key="resumen_diario_include_conn")
+                perf_h_d = 0.0
+                if not df_diario.empty and "Actividad" in df_diario.columns:
+                    _act_d = df_diario["Actividad"].astype(str).str.strip().str.lower()
+                    perf_h_d = float(df_diario[_act_d.isin(["perforación", "perforacion"])]["Horas_Reales"].sum())
+                conn_h_d = 0.0
+                conn_tp_h_d = 0.0
+                conn_tnpi_h_d = 0.0
+                conn_tnp_h_d = 0.0
+                if not df_conn_filtrado.empty and "Fecha" in df_conn_filtrado.columns:
+                    _df_conn_d = df_conn_filtrado[df_conn_filtrado["Fecha"].astype(str) == str(fecha_resumen)].copy()
+                    if not _df_conn_d.empty:
+                        conn_real_min = float(_df_conn_d.groupby("Conn_No")["Minutos_Reales"].sum().sum())
+                        conn_tnpi_min = float(_df_conn_d["Minutos_TNPI"].sum()) if "Minutos_TNPI" in _df_conn_d.columns else 0.0
+                        conn_tnp_min = float(_df_conn_d["Minutos_TNP"].sum()) if "Minutos_TNP" in _df_conn_d.columns else 0.0
+                        conn_tp_min = max(0.0, conn_real_min - conn_tnpi_min - conn_tnp_min)
+                        conn_h_d = conn_real_min / 60.0
+                        conn_tp_h_d = conn_tp_min / 60.0
+                        conn_tnpi_h_d = conn_tnpi_min / 60.0
+                        conn_tnp_h_d = conn_tnp_min / 60.0
+
+                col_m1, col_m2, col_m3 = st.columns(3)
+                col_m1.metric("Horas perforación", f"{perf_h_d:.2f} h")
+                col_m2.metric("Horas conexión", f"{conn_h_d:.2f} h")
+                col_m3.metric("Total", f"{(perf_h_d + (conn_h_d if include_conn_d else 0.0)):.2f} h")
+
+                render_chip_row(
+                    [
+                        {"label": "Perforación", "value": f"{perf_h_d:.2f} h", "tone": "blue"},
+                        {"label": "Conexión", "value": f"{conn_h_d:.2f} h", "tone": "amber"},
+                        {"label": "Total", "value": f"{(perf_h_d + (conn_h_d if include_conn_d else 0.0)):.2f} h", "tone": "green"},
+                        {"label": "TNPI", "value": f"{tnpi_h_d:.2f} h", "tone": "orange"},
+                        {"label": "TNP", "value": f"{tnp_h_d:.2f} h", "tone": "red"},
+                    ],
+                    use_iframe=True,
+                    height=90,
+                )
+
+                rows_d = [{"Tipo": "Perforación", "Segmento": "Perforación", "Horas": perf_h_d}]
+                if include_conn_d:
+                    rows_d.extend([
+                        {"Tipo": "Conexión perforando", "Segmento": "TP", "Horas": conn_tp_h_d},
+                        {"Tipo": "Conexión perforando", "Segmento": "TNPI", "Horas": conn_tnpi_h_d},
+                        {"Tipo": "Conexión perforando", "Segmento": "TNP", "Horas": conn_tnp_h_d},
+                    ])
+                df_plot_d = pd.DataFrame(rows_d)
+                if not df_plot_d.empty:
+                    fig_pc_d = px.bar(
+                        df_plot_d,
+                        x="Tipo",
+                        y="Horas",
+                        title="Horas de perforación (con opción de conexiones)",
+                        color="Segmento",
+                        barmode="stack",
+                        color_discrete_map={
+                            "Perforación": "#2563EB",
+                            "TP": "#10B981",
+                            "TNPI": "#F59E0B",
+                            "TNP": "#EF4444",
+                        },
+                    )
+                    fig_pc_d.update_traces(text=None)
+                    totals_d = df_plot_d.groupby("Tipo", as_index=False)["Horas"].sum()
+                    fig_pc_d.add_trace(
+                        go.Scatter(
+                            x=totals_d["Tipo"],
+                            y=totals_d["Horas"],
+                            text=totals_d["Horas"].map(lambda v: f"{v:.2f} h"),
+                            mode="text",
+                            textposition="top center",
+                            showlegend=False,
+                        )
+                    )
+                    fig_pc_d.update_layout(yaxis_title="Horas", xaxis_title="")
+                    st.plotly_chart(fig_pc_d, use_container_width=True)
 
                 c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Horas (Real)", f"{total_real_d:.2f}")
@@ -7276,6 +7391,7 @@ with tab_metros:
     mr_total = float(st.session_state.drill_day.get("metros_real_dia", 0.0)) + float(st.session_state.drill_day.get("metros_real_noche", 0.0))
     eff_m = clamp_0_100(safe_pct(mr_total, float(mp))) if float(mp) > 0 else 0.0
     st.caption(f"📌 Metros reales total: **{mr_total:.2f} m** · Eficiencia metros: **{eff_m:.0f}%**")
+
 
     render_chip_row([
         build_delta_chip_item(
