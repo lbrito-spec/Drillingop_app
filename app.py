@@ -2705,6 +2705,22 @@ _meta_now = {
 }
 st.session_state.drill_day["meta"] = _meta_now
 
+def _json_default(obj):
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, (np.integer, np.floating)):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    try:
+        if isinstance(obj, pd.Timestamp):
+            return obj.isoformat()
+        if pd.isna(obj):
+            return None
+    except Exception:
+        pass
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
 with st.sidebar.container(border=True):
     st.sidebar.markdown("### Jornada (guardar / cargar)")
 
@@ -2740,7 +2756,7 @@ with st.sidebar.container(border=True):
         }
 
     _payload = _build_jornada_payload()
-    _payload_str = json.dumps(_payload, ensure_ascii=False, indent=2)
+    _payload_str = json.dumps(_payload, ensure_ascii=False, indent=2, default=_json_default)
 
     # --- Guardar jornada (DESCARGA) ---
     st.sidebar.download_button(
@@ -2829,7 +2845,7 @@ with st.sidebar.container(border=True):
     _colab_tag = f"_{_safe(colab_name)}" if colab_name else ""
     _day_fname = f"dia_{_safe(pozo)}_{_safe(str(fecha))}{_colab_tag}.json"
     _day_payload = _build_day_payload(fecha, colab_name)
-    _day_payload_str = json.dumps(_day_payload, ensure_ascii=False, indent=2)
+    _day_payload_str = json.dumps(_day_payload, ensure_ascii=False, indent=2, default=_json_default)
 
     st.sidebar.download_button(
         label="Exportar dia (colaborativo)",
