@@ -5664,6 +5664,12 @@ with tab_resumen:
                         .sum()
                         .sort_values(["Conn_Label", "Componente"])
                     )
+                    per_conn = df_stack.groupby("Conn_Label", as_index=False).first()[["Conn_Label", "Conn_Tipo", "Angulo_Bucket"]]
+                    per_conn["Std_Total"] = per_conn.apply(
+                        lambda r: float(CONN_STDS.get((r["Conn_Tipo"], r["Angulo_Bucket"]), {}).get("TOTAL", 0.0)),
+                        axis=1,
+                    )
+                    std_line = float(per_conn["Std_Total"].mean()) if not per_conn.empty else 0.0
                     fig_conn_stack_d = px.bar(
                         df_stack_g,
                         x="Conn_Label",
@@ -5675,6 +5681,15 @@ with tab_resumen:
                         title=f"Conexiones perforando - {fecha_resumen}",
                         labels={"Conn_Label": "Profundidad (m)", "Minutos_Reales": "Tiempo (min)"},
                     )
+                    if std_line > 0:
+                        fig_conn_stack_d.add_hline(
+                            y=std_line,
+                            line_dash="dash",
+                            line_color="#9C640C",
+                            annotation_text=f"{std_line:.1f}",
+                            annotation_position="top left",
+                            annotation_font_color="#9C640C",
+                        )
                     fig_conn_stack_d.update_layout(legend_title_text="", xaxis_tickangle=0, height=320)
                     st.plotly_chart(fig_conn_stack_d, use_container_width=True)
                 else:
@@ -5688,6 +5703,10 @@ with tab_resumen:
                 if isinstance(viajes_store, dict) and len(viajes_store) > 0:
                     viaje_tipo_sel = st.selectbox("Tipo de viaje (resumen diario)", options=sorted(list(viajes_store.keys())))
                     store_v = viajes_store.get(viaje_tipo_sel, {})
+                    vel_std = float(VIAJE_CATALOG.get(viaje_tipo_sel, {}).get("vel_mh", 0.0)) if viaje_tipo_sel else 0.0
+                    tconn_std = float(VIAJE_CATALOG.get(viaje_tipo_sel, {}).get("tconn_min", 0.0)) if viaje_tipo_sel else 0.0
+                    usar_std_variable = bool(st.session_state.get(f"viaje_std_var_{viaje_tipo_sel}", False))
+                    std_hourly_df = store_v.get("std_hourly")
                     hourly_df = store_v.get("hourly")
                     if isinstance(hourly_df, pd.DataFrame) and not hourly_df.empty:
                         df_plot = hourly_df.copy().sort_values("hour").reset_index(drop=True)
@@ -5710,6 +5729,24 @@ with tab_resumen:
                             labels={"hour_str": "Hora", "speed_mh": "m/h", "Turno": "Turno"},
                             title=f"Viaje – {viaje_tipo_sel}",
                         )
+                        if usar_std_variable and isinstance(std_hourly_df, pd.DataFrame) and not std_hourly_df.empty:
+                            _s = std_hourly_df.copy()
+                            _s["hour_str"] = _s["hour"].astype(int)
+                            fig_v.add_scatter(
+                                x=_s["hour_str"],
+                                y=_s["std_speed_mh"],
+                                mode="lines",
+                                name="Estándar",
+                                line=dict(dash="dash", color="red"),
+                            )
+                        elif vel_std > 0:
+                            fig_v.add_hline(
+                                y=vel_std,
+                                line_dash="dash",
+                                line_color="red",
+                                annotation_text=f"Estándar {vel_std:.0f}",
+                                annotation_position="top left",
+                            )
                         fig_v.update_layout(xaxis=dict(dtick=1))
                         st.plotly_chart(fig_v, use_container_width=True)
 
@@ -5722,6 +5759,24 @@ with tab_resumen:
                             labels={"hour_str": "Hora", "conn_min": "min", "Turno": "Turno"},
                             title=f"Conexiones – {viaje_tipo_sel}",
                         )
+                        if usar_std_variable and isinstance(std_hourly_df, pd.DataFrame) and not std_hourly_df.empty:
+                            _s = std_hourly_df.copy()
+                            _s["hour_str"] = _s["hour"].astype(int)
+                            fig_c.add_scatter(
+                                x=_s["hour_str"],
+                                y=_s["std_conn_min"],
+                                mode="lines",
+                                name="Estándar",
+                                line=dict(dash="dash", color="red"),
+                            )
+                        elif tconn_std > 0:
+                            fig_c.add_hline(
+                                y=tconn_std,
+                                line_dash="dash",
+                                line_color="red",
+                                annotation_text=f"Estándar {tconn_std:.1f}",
+                                annotation_position="top left",
+                            )
                         fig_c.update_layout(xaxis=dict(dtick=1))
                         st.plotly_chart(fig_c, use_container_width=True)
                     else:
