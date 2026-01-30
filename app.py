@@ -7879,20 +7879,39 @@ with tab_comp:
 
         st.markdown("### Comparativa de Eficiencia por Etapa")
         if show_charts:
+            col_m1, col_m2, col_m3 = st.columns([1, 1, 2])
+            delta_ab = k_a["Eficiencia"] - k_b["Eficiencia"]
+            meta_obj = 85.0
+            with col_m1:
+                st.metric("Eficiencia A", f"{k_a['Eficiencia']:.1f}%", delta=f"{delta_ab:+.1f}% vs B")
+            with col_m2:
+                st.metric("Eficiencia B", f"{k_b['Eficiencia']:.1f}%")
+            with col_m3:
+                st.metric("Meta objetivo", f"{meta_obj:.0f}%")
+
+            df_eff2 = pd.DataFrame(
+                [
+                    {"Etiqueta": f"Etapa A ({etapa_a})", "Eficiencia": k_a["Eficiencia"], "Etapa": etapa_a},
+                    {"Etiqueta": f"Etapa B ({etapa_b})", "Eficiencia": k_b["Eficiencia"], "Etapa": etapa_b},
+                ]
+            )
             fig_eff2 = px.bar(
-                pd.DataFrame(
-                    [
-                        {"Etapa": etapa_a, "Eficiencia": k_a["Eficiencia"]},
-                        {"Etapa": etapa_b, "Eficiencia": k_b["Eficiencia"]},
-                    ]
-                ),
-                x="Etapa",
-                y="Eficiencia",
+                df_eff2,
+                x="Eficiencia",
+                y="Etiqueta",
+                orientation="h",
                 text_auto=True,
                 title="Eficiencia (%)",
             )
-            fig_eff2.update_traces(marker_color=["#22c55e", "#3b82f6"])
-            fig_eff2.update_layout(yaxis_title="Eficiencia (%)", xaxis_title="Etapa")
+            fig_eff2.update_traces(marker_color=["#22c55e", "#3b82f6"], textposition="outside")
+            fig_eff2.update_layout(
+                xaxis_title="Eficiencia (%)",
+                yaxis_title="",
+                xaxis_range=[0, 100],
+                margin=dict(l=10, r=10, t=40, b=10),
+            )
+            fig_eff2.add_vline(x=meta_obj, line_dash="dash", line_color="#16a34a", annotation_text="Meta 85%", annotation_position="top")
+            fig_eff2.add_vline(x=70, line_dash="dot", line_color="#f59e0b", annotation_text="Alerta 70%", annotation_position="top")
             st.plotly_chart(fig_eff2, use_container_width=True)
 
         render_chip_row([
@@ -7913,12 +7932,35 @@ with tab_comp:
 
         st.divider()
         st.markdown("### Detalle A vs B")
+        def _semaforo_emoji(v):
+            v = clamp_0_100(v)
+            return "🟢" if v >= 85 else ("🟡" if v >= 70 else "🔴")
+
         df_cmp_etapas = pd.DataFrame(
             [
-                {"Etapa": etapa_a, "Horas Totales": k_a["Total"], "TP (h)": k_a["TP"], "TNPI (h)": k_a["TNPI"], "TNP (h)": k_a["TNP"], "Eficiencia %": k_a["Eficiencia"]},
-                {"Etapa": etapa_b, "Horas Totales": k_b["Total"], "TP (h)": k_b["TP"], "TNPI (h)": k_b["TNPI"], "TNP (h)": k_b["TNP"], "Eficiencia %": k_b["Eficiencia"]},
+                {
+                    "Etapa": etapa_a,
+                    "Horas Totales": k_a["Total"],
+                    "TP (h)": k_a["TP"],
+                    "TNPI (h)": k_a["TNPI"],
+                    "TNP (h)": k_a["TNP"],
+                    "Eficiencia %": k_a["Eficiencia"],
+                    "Semáforo": _semaforo_emoji(k_a["Eficiencia"]),
+                    "Gap vs Meta": k_a["Eficiencia"] - meta_obj,
+                },
+                {
+                    "Etapa": etapa_b,
+                    "Horas Totales": k_b["Total"],
+                    "TP (h)": k_b["TP"],
+                    "TNPI (h)": k_b["TNPI"],
+                    "TNP (h)": k_b["TNP"],
+                    "Eficiencia %": k_b["Eficiencia"],
+                    "Semáforo": _semaforo_emoji(k_b["Eficiencia"]),
+                    "Gap vs Meta": k_b["Eficiencia"] - meta_obj,
+                },
             ]
         )
+        df_cmp_etapas["Gap vs Meta"] = df_cmp_etapas["Gap vs Meta"].map(lambda v: f"{v:+.1f}%")
         st.dataframe(df_cmp_etapas, use_container_width=True, hide_index=True)
 
         st.divider()
