@@ -51,6 +51,16 @@ def _calc_eff(prog: float, real: float) -> float:
     return 100.0 if real <= prog else (prog / real) * 100.0
 
 
+# --- Helper seguro para float (evita None/valores inválidos) ---
+def _safe_float(v, default=0.0) -> float:
+    try:
+        if v is None:
+            return float(default)
+        return float(v)
+    except Exception:
+        return float(default)
+
+
 # --- FIX: asegurar RowID por registro (para edición en Detalle) ---
 def _ensure_rowid(df_in: pd.DataFrame) -> pd.DataFrame:
     df = df_in.copy()
@@ -4556,17 +4566,17 @@ rr = 0.0
 eff_rop = 0.0
 
 if modo_reporte == "Perforación":
-    mp = float(st.session_state.drill_day.get("metros_prog_total", 0.0))
-    mr_d = float(st.session_state.drill_day.get("metros_real_dia", 0.0))
-    mr_n = float(st.session_state.drill_day.get("metros_real_noche", 0.0))
+    mp = _safe_float(st.session_state.drill_day.get("metros_prog_total", 0.0))
+    mr_d = _safe_float(st.session_state.drill_day.get("metros_real_dia", 0.0))
+    mr_n = _safe_float(st.session_state.drill_day.get("metros_real_noche", 0.0))
     mr_total = mr_d + mr_n
 
-    tnpi_m_h = float(st.session_state.drill_day.get("tnpi_metros_h", 0.0))
+    tnpi_m_h = _safe_float(st.session_state.drill_day.get("tnpi_metros_h", 0.0))
     eff_m = clamp_0_100(safe_pct(mr_total, mp)) if mp > 0 else 0.0
 
-    rp = float(st.session_state.drill_day.get("rop_prog_total", 0.0))
-    rr_d = float(st.session_state.drill_day.get("rop_real_dia", 0.0))
-    rr_n = float(st.session_state.drill_day.get("rop_real_noche", 0.0))
+    rp = _safe_float(st.session_state.drill_day.get("rop_prog_total", 0.0))
+    rr_d = _safe_float(st.session_state.drill_day.get("rop_real_dia", 0.0))
+    rr_n = _safe_float(st.session_state.drill_day.get("rop_real_noche", 0.0))
     rr = (rr_d + rr_n) / (2 if (rr_d > 0 and rr_n > 0) else 1) if (rr_d > 0 or rr_n > 0) else 0.0
     eff_rop = clamp_0_100(safe_pct(rr, rp)) if rp > 0 else 0.0
 
@@ -5542,9 +5552,9 @@ with tab_resumen:
                 _rd_map = etapa_data_rop_d.get("rop_real_dia_by_date", {}) or {}
                 _rn_map = etapa_data_rop_d.get("rop_real_noche_by_date", {}) or {}
                 _p_entry = _prog_map.get(str(fecha_resumen), {})
-                rop_prog_d = float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
-                rop_rd = float(_rd_map.get(str(fecha_resumen), 0.0) or 0.0)
-                rop_rn = float(_rn_map.get(str(fecha_resumen), 0.0) or 0.0)
+                rop_prog_d = _safe_float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
+                rop_rd = _safe_float(_rd_map.get(str(fecha_resumen), 0.0) or 0.0)
+                rop_rn = _safe_float(_rn_map.get(str(fecha_resumen), 0.0) or 0.0)
                 df_rop_d = pd.DataFrame(
                     [
                         {"Turno": "Día ☀️", "Programado (m/h)": rop_prog_d, "Real (m/h)": rop_rd},
@@ -5572,9 +5582,9 @@ with tab_resumen:
                 _md_map = etapa_data_rop_d.get("metros_real_dia_by_date", {}) or {}
                 _mn_map = etapa_data_rop_d.get("metros_real_noche_by_date", {}) or {}
                 _mp_entry = _mp_map.get(str(fecha_resumen), {})
-                mp_d = float(_mp_entry.get("metros_prog") if isinstance(_mp_entry, dict) else (_mp_entry or 0.0))
-                mr_d = float(_md_map.get(str(fecha_resumen), 0.0) or 0.0)
-                mr_n = float(_mn_map.get(str(fecha_resumen), 0.0) or 0.0)
+                mp_d = _safe_float(_mp_entry.get("metros_prog") if isinstance(_mp_entry, dict) else (_mp_entry or 0.0))
+                mr_d = _safe_float(_md_map.get(str(fecha_resumen), 0.0) or 0.0)
+                mr_n = _safe_float(_mn_map.get(str(fecha_resumen), 0.0) or 0.0)
                 mr_t = mr_d + mr_n
                 df_m_d = pd.DataFrame(
                     [
@@ -7257,12 +7267,12 @@ with tab_rop:
             if _dates:
                 for _d in _dates:
                     _p_entry = _prog_map.get(_d, {})
-                    _prog = float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
-                    _rd = float(_rd_map.get(_d, 0.0) or 0.0)
-                    _rn = float(_rn_map.get(_d, 0.0) or 0.0)
+                    _prog = _safe_float(_p_entry.get("rop_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
+                    _rd = _safe_float(_rd_map.get(_d, 0.0) or 0.0)
+                    _rn = _safe_float(_rn_map.get(_d, 0.0) or 0.0)
 
-                    _md = float(_md_map.get(_d, 0.0) or 0.0)
-                    _mn = float(_mn_map.get(_d, 0.0) or 0.0)
+                    _md = _safe_float(_md_map.get(_d, 0.0) or 0.0)
+                    _mn = _safe_float(_mn_map.get(_d, 0.0) or 0.0)
 
                     # mismo criterio que el KPI diario: ponderado por metros si existen
                     if (_md + _mn) > 0:
@@ -7450,9 +7460,9 @@ with tab_metros:
         etapa_data_rop.setdefault("metros_prog_by_date", {})
         _mp_entry = (etapa_data_rop.get("metros_prog_by_date") or {}).get(fecha_key)
         if isinstance(_mp_entry, dict) and "metros_prog" in _mp_entry:
-            mp_default = float(_mp_entry.get("metros_prog") or 0.0)
+            mp_default = _safe_float(_mp_entry.get("metros_prog") or 0.0)
         else:
-            mp_default = float(etapa_data_rop.get("metros_prog_total", 0.0) or 0.0)
+            mp_default = _safe_float(etapa_data_rop.get("metros_prog_total", 0.0) or 0.0)
 
         mp = st.number_input(
             f"Metros programados (m) - {fecha_key}",
@@ -7553,9 +7563,9 @@ with tab_metros:
     if _dates:
         for _d in _dates:
             _p_entry = _prog_map.get(_d, {})
-            _prog = float(_p_entry.get("metros_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
-            _rd = float(_rd_map.get(_d, 0.0) or 0.0)
-            _rn = float(_rn_map.get(_d, 0.0) or 0.0)
+            _prog = _safe_float(_p_entry.get("metros_prog") if isinstance(_p_entry, dict) else (_p_entry or 0.0))
+            _rd = _safe_float(_rd_map.get(_d, 0.0) or 0.0)
+            _rn = _safe_float(_rn_map.get(_d, 0.0) or 0.0)
             _rt = _rd + _rn
             _eff = clamp_0_100(safe_pct(_rt, _prog)) if _prog > 0 else 0.0
             _sem = "🟢" if _eff >= 85 else ("🟡" if _eff >= 70 else "🔴")
