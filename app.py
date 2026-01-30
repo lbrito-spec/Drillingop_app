@@ -3624,8 +3624,8 @@ with st.sidebar.container(border=True):
                                 add_rows.append({
                                     **base_row,
                                     "Tipo": "TNPI",
-                                    "Categoria_TNPI": categoria_tnpi,
-                                    "Detalle_TNPI": detalle_tnpi,
+                                    "Categoria_TNPI": (act_cat_simple if "act_cat_simple" in locals() else categoria_tnpi),
+                                    "Detalle_TNPI": (act_det_simple if "act_det_simple" in locals() else detalle_tnpi),
                                     "Categoria_TNP": "-",
                                     "Detalle_TNP": "-",
                                     "Horas_Prog": 0.0,
@@ -3724,8 +3724,8 @@ with st.sidebar.container(border=True):
                     add_rows.append({
                         **base,
                         "Tipo": "TNPI",
-                        "Categoria_TNPI": categoria_tnpi,
-                        "Detalle_TNPI": detalle_tnpi,
+                        "Categoria_TNPI": (act_cat_simple if "act_cat_simple" in locals() else categoria_tnpi),
+                        "Detalle_TNPI": (act_det_simple if "act_det_simple" in locals() else detalle_tnpi),
                         "Categoria_TNP": "-",
                         "Detalle_TNP": "-",
                         "Horas_Prog": 0.0,
@@ -5848,7 +5848,7 @@ with tab_act:
 # TAB: TOP TNPI/TNP
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 with tab_top:
-    st.subheader("Top 5 actividades – TNPI / TNP")
+    st.subheader("Top 5 categorías – TNPI / TNP")
 
     df_top = st.session_state.get("df", pd.DataFrame()).copy()
     if df_top.empty:
@@ -5947,18 +5947,55 @@ with tab_top:
                 build_delta_chip_item("Δ Horas", real=total_h_f, prog=total_prev, unit="h", higher_is_better=False, precision=2),
             ], use_iframe=True, height=110)
 
-        def _top_actividades(df_in: pd.DataFrame, tipo: str) -> pd.DataFrame:
-            if df_in.empty or "Tipo" not in df_in.columns or "Actividad" not in df_in.columns:
+        def _top_categorias(df_in: pd.DataFrame, tipo: str) -> pd.DataFrame:
+            if df_in.empty or "Tipo" not in df_in.columns:
                 return pd.DataFrame()
-            d = df_in[df_in["Tipo"].astype(str) == tipo].copy()
+            d = df_in[df_in["Tipo"].astype(str).str.strip() == tipo].copy()
             if d.empty:
                 return pd.DataFrame()
-            g = d.groupby("Actividad", as_index=False)["Horas_Reales"].sum()
+
+            def _pick_categoria_col(df_tipo: pd.DataFrame, tipo_local: str) -> str | None:
+                if tipo_local == "TNPI":
+                    if "Categoria_TNPI" in df_tipo.columns:
+                        return "Categoria_TNPI"
+                    if "Categoria" in df_tipo.columns:
+                        return "Categoria"
+                if tipo_local == "TNP":
+                    if "Categoria_TNP" in df_tipo.columns:
+                        return "Categoria_TNP"
+                    if "Categoria_TNPI" in df_tipo.columns:
+                        return "Categoria_TNPI"
+                    if "Categoria" in df_tipo.columns:
+                        return "Categoria"
+                return None
+
+            cat_col = _pick_categoria_col(d, tipo)
+            if not cat_col:
+                return pd.DataFrame()
+
+            d["_Categoria_view"] = d[cat_col].astype(str)
+            d["_Categoria_view"] = d["_Categoria_view"].replace(
+                {"": "Sin categoría", "nan": "Sin categoría", "None": "Sin categoría", "-": "Sin categoría"}
+            ).fillna("Sin categoría")
+
+            if (
+                tipo == "TNP"
+                and cat_col == "Categoria_TNP"
+                and d["_Categoria_view"].astype(str).str.strip().eq("Sin categoría").all()
+                and "Categoria_TNPI" in d.columns
+            ):
+                d["_Categoria_view"] = d["Categoria_TNPI"].astype(str)
+                d["_Categoria_view"] = d["_Categoria_view"].replace(
+                    {"": "Sin categoría", "nan": "Sin categoría", "None": "Sin categoría", "-": "Sin categoría"}
+                ).fillna("Sin categoría")
+
+            g = d.groupby("_Categoria_view", as_index=False)["Horas_Reales"].sum()
             g = g.sort_values("Horas_Reales", ascending=False).head(5)
+            g = g.rename(columns={"_Categoria_view": "Categoria"})
             return g
 
-        top_tnpi = _top_actividades(df_f, "TNPI")
-        top_tnp = _top_actividades(df_f, "TNP")
+        top_tnpi = _top_categorias(df_f, "TNPI")
+        top_tnp = _top_categorias(df_f, "TNP")
 
         c1, c2 = st.columns(2)
         with c1:
@@ -5973,9 +6010,9 @@ with tab_top:
                 fig_tnpi = px.bar(
                     top_tnpi.sort_values("Horas_Reales"),
                     x="Horas_Reales",
-                    y="Actividad",
+                    y="Categoria",
                     orientation="h",
-                    title="Top 5 TNPI (h)",
+                    title="Top 5 TNPI por categoría (h)",
                 )
                 fig_tnpi.update_traces(marker_color="#EF4444")
                 st.plotly_chart(fig_tnpi, use_container_width=True)
@@ -5992,9 +6029,9 @@ with tab_top:
                 fig_tnp = px.bar(
                     top_tnp.sort_values("Horas_Reales"),
                     x="Horas_Reales",
-                    y="Actividad",
+                    y="Categoria",
                     orientation="h",
-                    title="Top 5 TNP (h)",
+                    title="Top 5 TNP por categoría (h)",
                 )
                 fig_tnp.update_traces(marker_color="#3B82F6")
                 st.plotly_chart(fig_tnp, use_container_width=True)
@@ -8724,6 +8761,7 @@ with tab_corridas:
                     c5.metric("Eficiencia (%)", f"{eff:.1f}")
 
                     st.markdown("### Composición de tiempos (TP/TNPI/TNP)")
+                    tipo_color_map = {"TP": "#22C55E", "TNPI": "#F59E0B", "TNP": "#EF4444"}
                     try:
                         _comp = (
                             d.groupby(["Actividad", "Tipo"], dropna=False)["Horas_Reales"]
@@ -8739,6 +8777,7 @@ with tab_corridas:
                                 x="Horas_Reales",
                                 y="Actividad",
                                 color="Tipo",
+                                color_discrete_map=tipo_color_map,
                                 orientation="h",
                                 title="Horas por actividad (apilado por tipo)",
                             )
@@ -8758,14 +8797,26 @@ with tab_corridas:
                                     values="Horas_Reales",
                                     title="Composición total de tiempos",
                                     hole=0.35,
+                                    color="Tipo",
+                                    color_discrete_map=tipo_color_map,
                                 )
                                 st.plotly_chart(fig_donut, use_container_width=True)
                     except Exception as _e:
                         st.warning(f"No pude generar gráficas combinadas: {_e}")
 
-                    st.markdown("### Distribución TNPI (por horas)")
+                    st.markdown("### Distribución TNPI por categoría")
+                    d_tnpi = d[d["Tipo"] == "TNPI"].copy()
+                    for col, fb in [("Categoria_TNPI", "Sin categoría"), ("Detalle_TNPI", "Sin detalle")]:
+                        if col not in d_tnpi.columns:
+                            d_tnpi[col] = fb
+                        d_tnpi[col] = (
+                            d_tnpi[col]
+                            .astype(str)
+                            .replace({"-": fb, "": fb, "None": fb, "nan": fb})
+                            .fillna(fb)
+                        )
                     pareto = (
-                        d[d["Tipo"] == "TNPI"]
+                        d_tnpi
                         .groupby(["Categoria_TNPI", "Detalle_TNPI", "Categoria_TNP", "Detalle_TNP"], dropna=False)["Horas_Reales"]
                         .sum()
                         .sort_values(ascending=False)
@@ -8776,19 +8827,6 @@ with tab_corridas:
                     # --- Gráficas (pro) TNPI por corrida ---
                     try:
                         if not pareto.empty:
-                            _top = pareto.copy().head(12)
-                            _top["Etiqueta"] = _top["Detalle_TNPI"].astype(str)
-
-                            fig_bar = px.bar(
-                                _top.sort_values("Horas_Reales", ascending=True),
-                                x="Horas_Reales",
-                                y="Etiqueta",
-                                orientation="h",
-                                title="Top TNPI por detalle (h)",
-                            )
-                            fig_bar.update_layout(xaxis_title="Horas", yaxis_title="Detalle TNPI")
-                            st.plotly_chart(fig_bar, use_container_width=True)
-
                             _cat = (
                                 pareto.groupby("Categoria_TNPI", dropna=False)["Horas_Reales"]
                                 .sum()
@@ -8797,19 +8835,47 @@ with tab_corridas:
                             )
                             _cat = _cat[_cat["Horas_Reales"] > 0]
                             if not _cat.empty:
+                                total_tnpi_cat = float(_cat["Horas_Reales"].sum())
+                                top_cat_name = str(_cat.iloc[0]["Categoria_TNPI"])
+                                top_cat_val = float(_cat.iloc[0]["Horas_Reales"])
+                                top_cat_pct = (top_cat_val / total_tnpi_cat * 100.0) if total_tnpi_cat > 0 else 0.0
+                                render_chip_row(
+                                    [
+                                        {"label": "TNPI total", "value": f"{total_tnpi_cat:.2f} h", "tone": "orange"},
+                                        {"label": "Categorías", "value": f"{len(_cat)}", "tone": "gray"},
+                                        {"label": "Top categoría", "value": f"{top_cat_name} · {top_cat_pct:.0f}%", "tone": "blue"},
+                                    ],
+                                    use_iframe=True,
+                                    height=100,
+                                )
+                                _top_cat = _cat.head(5)
+                                fig_bar = px.bar(
+                                    _top_cat.sort_values("Horas_Reales", ascending=True),
+                                    x="Horas_Reales",
+                                    y="Categoria_TNPI",
+                                    color="Categoria_TNPI",
+                                    color_discrete_sequence=px.colors.qualitative.Bold,
+                                    orientation="h",
+                                    title="Top 5 TNPI por categoría (h)",
+                                )
+                                fig_bar.update_layout(xaxis_title="Horas", yaxis_title="Categoría TNPI")
+                                st.plotly_chart(fig_bar, use_container_width=True)
+
                                 fig_pie = px.pie(
                                     _cat,
                                     names="Categoria_TNPI",
                                     values="Horas_Reales",
                                     title="Distribución TNPI por categoría",
                                     hole=0.35,
+                                    color="Categoria_TNPI",
+                                    color_discrete_sequence=px.colors.qualitative.Bold,
                                 )
                                 st.plotly_chart(fig_pie, use_container_width=True)
                     except Exception as _e:
                         st.warning(f"No pude generar gráficas por corrida: {_e}")
 
 
-                st.markdown("### Distribución TNP (por horas)")
+                st.markdown("### Distribución TNP por categoría")
                 try:
                     df_tnp = d[d["Tipo"] == "TNP"].copy() if "d" in locals() else pd.DataFrame()
                     if df_tnp.empty and "d" in locals():
@@ -8818,88 +8884,63 @@ with tab_corridas:
                     if df_tnp.empty:
                         st.info("No hay registros TNP para la corrida seleccionada.")
                     else:
-                        # Tabla: resumen TNP por actividad (o por detalle si existe)
-                        # Fallback: si Detalle_TNP no viene poblado, usar Detalle_TNPI (compatibilidad con versiones viejas)
-                        df_tnp["_Detalle_TNP_view"] = "-"
-                        if "Detalle_TNP" in df_tnp.columns:
-                            df_tnp["_Detalle_TNP_view"] = df_tnp["Detalle_TNP"].astype(str)
-                        if (df_tnp["_Detalle_TNP_view"].astype(str).str.strip().eq("-").all()
-                            and "Detalle_TNPI" in df_tnp.columns):
-                            df_tnp["_Detalle_TNP_view"] = df_tnp["Detalle_TNPI"].astype(str)
-
                         df_tnp["_Categoria_TNP_view"] = "-"
                         if "Categoria_TNP" in df_tnp.columns:
                             df_tnp["_Categoria_TNP_view"] = df_tnp["Categoria_TNP"].astype(str)
                         if (df_tnp["_Categoria_TNP_view"].astype(str).str.strip().eq("-").all()
                             and "Categoria_TNPI" in df_tnp.columns):
                             df_tnp["_Categoria_TNP_view"] = df_tnp["Categoria_TNPI"].astype(str)
+                        df_tnp["_Categoria_TNP_view"] = (
+                            df_tnp["_Categoria_TNP_view"]
+                            .astype(str)
+                            .replace({"-": "Sin categoría", "": "Sin categoría", "None": "Sin categoría", "nan": "Sin categoría"})
+                            .fillna("Sin categoría")
+                        )
 
-                        if df_tnp["_Detalle_TNP_view"].astype(str).str.strip().ne("-").any():
-                            grp_cols = ["_Categoria_TNP_view", "_Detalle_TNP_view"]
-                            label_col = "_Detalle_TNP_view"
-                        else:
-                            grp_cols = ["Actividad"]
-                            label_col = "Actividad"
-
-                        tnp_tbl = (
-                            df_tnp.groupby(grp_cols, dropna=False)["Horas_Reales"]
+                        tnp_cat = (
+                            df_tnp.groupby("_Categoria_TNP_view", dropna=False)["Horas_Reales"]
                             .sum()
                             .sort_values(ascending=False)
                             .reset_index()
                         )
                         
-                        # Mostrar nombres amigables si estamos usando columnas de vista
-                        if "_Detalle_TNP_view" in tnp_tbl.columns:
-                            tnp_tbl = tnp_tbl.rename(columns={
-                                "_Categoria_TNP_view": "Categoria_TNP",
-                                "_Detalle_TNP_view": "Detalle_TNP",
-                            })
-                            if label_col == "_Detalle_TNP_view":
-                                label_col = "Detalle_TNP"
-                        st.dataframe(tnp_tbl, use_container_width=True, hide_index=True)
+                        tnp_cat = tnp_cat.rename(columns={"_Categoria_TNP_view": "Categoria_TNP"})
+                        total_tnp_cat = float(tnp_cat["Horas_Reales"].sum()) if not tnp_cat.empty else 0.0
+                        top_cat_name = str(tnp_cat.iloc[0]["Categoria_TNP"]) if not tnp_cat.empty else "-"
+                        top_cat_val = float(tnp_cat.iloc[0]["Horas_Reales"]) if not tnp_cat.empty else 0.0
+                        top_cat_pct = (top_cat_val / total_tnp_cat * 100.0) if total_tnp_cat > 0 else 0.0
+                        render_chip_row([
+                            {"label": "TNP total", "value": f"{total_tnp_cat:.2f} h", "tone": "red"},
+                            {"label": "Categorías", "value": f"{len(tnp_cat)}", "tone": "gray"},
+                            {"label": "Top categoría", "value": f"{top_cat_name} · {top_cat_pct:.0f}%", "tone": "blue"},
+                        ], use_iframe=True, height=100)
+                        st.dataframe(tnp_cat, use_container_width=True, hide_index=True)
 
-                        # Barras: Top 12
-                        top_tnp = tnp_tbl.head(12).copy()
+                        # Barras: Top 5 por categoría
+                        top_tnp = tnp_cat.head(5).copy()
                         fig_tnp_bar = px.bar(
                             top_tnp.sort_values("Horas_Reales", ascending=True),
                             x="Horas_Reales",
-                            y=label_col,
+                            y="Categoria_TNP",
+                            color="Categoria_TNP",
                             orientation="h",
-                            title="Top TNP (h)",
+                            title="Top 5 TNP por categoría (h)",
+                            color_discrete_sequence=px.colors.qualitative.Bold,
                         )
-                        fig_tnp_bar.update_layout(xaxis_title="Horas", yaxis_title=label_col)
+                        fig_tnp_bar.update_layout(xaxis_title="Horas", yaxis_title="Categoría TNP")
                         st.plotly_chart(fig_tnp_bar, use_container_width=True)
 
-                        # Donut: por categoría si existe, si no, por actividad
-                        if "_Categoria_TNP_view" in df_tnp.columns and df_tnp["_Categoria_TNP_view"].astype(str).str.strip().ne("-").any():
-                            cat_tbl = (
-                                df_tnp.groupby("_Categoria_TNP_view", dropna=False)["Horas_Reales"]
-                                .sum()
-                                .sort_values(ascending=False)
-                                .reset_index()
-                            )
-                            cat_tbl = cat_tbl[cat_tbl["Horas_Reales"] > 0]
-                            if not cat_tbl.empty:
-                                fig_tnp_pie = px.pie(
-                                    cat_tbl,
-                                    names="_Categoria_TNP_view",
-                                    values="Horas_Reales",
-                                    title="Distribución TNP por categoría",
-                                    hole=0.35,
-                                )
-                                st.plotly_chart(fig_tnp_pie, use_container_width=True)
-                        else:
-                            # fallback: distribución por actividad (Top 8 + Otros)
-                            pie_df = tnp_tbl.head(8).copy()
-                            otros = float(tnp_tbl["Horas_Reales"].sum() - pie_df["Horas_Reales"].sum())
-                            if otros > 0:
-                                pie_df = pd.concat([pie_df, pd.DataFrame([{label_col: "Otros", "Horas_Reales": otros}])], ignore_index=True)
+                        # Donut: distribución por categoría
+                        cat_tbl = tnp_cat[tnp_cat["Horas_Reales"] > 0]
+                        if not cat_tbl.empty:
                             fig_tnp_pie = px.pie(
-                                pie_df,
-                                names=label_col,
+                                cat_tbl,
+                                names="Categoria_TNP",
                                 values="Horas_Reales",
-                                title="Distribución TNP",
+                                title="Distribución TNP por categoría",
                                 hole=0.35,
+                                color="Categoria_TNP",
+                                color_discrete_sequence=px.colors.qualitative.Bold,
                             )
                             st.plotly_chart(fig_tnp_pie, use_container_width=True)
                 except Exception as _e:
