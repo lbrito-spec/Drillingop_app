@@ -2235,7 +2235,7 @@ if "df" not in st.session_state:
             "Hora_Inicio", "Hora_Fin",
             "Horas_Prog", "Horas_Reales",
             "ROP_Prog_mh", "ROP_Real_mh",
-            "Comentario", "Origen",
+            "Comentario", "Origen", "BHA_ID", "CONN_ID", "VIAJE_TIPO",
         ]
     )
 
@@ -2246,7 +2246,7 @@ if "df_conn" not in st.session_state:
             "Tipo_Agujero", "Turno", "Conn_No", "Profundidad_m",
             "Conn_Tipo", "Angulo_Bucket",
             "Componente", "Minutos_Reales", "Minutos_Estandar", "Minutos_TNPI",
-            "Categoria_TNPI", "Detalle_TNPI", "Categoria_TNP", "Detalle_TNP", "Comentario",
+            "Categoria_TNPI", "Detalle_TNPI", "Categoria_TNP", "Detalle_TNP", "Comentario", "CONN_ID",
         ]
     )
 
@@ -2254,7 +2254,7 @@ if "df_bha" not in st.session_state:
     st.session_state.df_bha = pd.DataFrame(
         columns=[
             "Equipo", "Pozo", "Etapa", "Fecha", "Turno",
-            "Barrena", "BHA_Tipo", "BHA_Componentes", "Accion",
+            "Barrena", "BHA_Tipo", "BHA_Componentes", "Accion", "BHA_ID",
             "Estandar_h", "Real_h", "TNPI_h", "TNP_h", "Eficiencia_pct"
         ]
     )
@@ -2503,6 +2503,115 @@ def _filter_df_by_date(df: pd.DataFrame, fecha_sel) -> pd.DataFrame:
     df_local = df.copy()
     df_local["Fecha"] = df_local["Fecha"].astype(str)
     return df_local[df_local["Fecha"] == fecha_str].copy()
+
+def _day_used_hours(df: pd.DataFrame, fecha_sel) -> float:
+    """Suma horas reales registradas en un día (según columna Fecha)."""
+    if df is None or df.empty or "Fecha" not in df.columns:
+        return 0.0
+    try:
+        fecha_str = str(fecha_sel)
+        df_local = df.copy()
+        df_local["Fecha"] = df_local["Fecha"].astype(str)
+        df_local = df_local[df_local["Fecha"] == fecha_str]
+        return float(pd.to_numeric(df_local.get("Horas_Reales", 0.0), errors="coerce").fillna(0.0).sum())
+    except Exception:
+        return 0.0
+
+def _remaining_day_hours(df: pd.DataFrame, fecha_sel, day_limit: float = 24.0) -> float:
+    """Horas restantes disponibles para el día (cap en 24h por defecto)."""
+    used = _day_used_hours(df, fecha_sel)
+    try:
+        return max(0.0, float(day_limit) - float(used))
+    except Exception:
+        return 0.0
+
+def _sync_bha_from_df(df_main: pd.DataFrame, df_bha_in: pd.DataFrame) -> pd.DataFrame:
+    """Sincroniza df_bha con las actividades BHA presentes en df principal."""
+    if df_bha_in is None:
+        return df_bha_in
+    if df_main is None or df_main.empty:
+        return df_bha_in.iloc[0:0].copy()
+
+    out = df_bha_in.copy()
+
+    # 1) Si existen IDs de BHA en el df principal, usarlo como fuente de verdad
+    bha_ids = set()
+    if "BHA_ID" in df_main.columns:
+        bha_ids = set(
+            df_main["BHA_ID"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .tolist()
+        )
+        bha_ids = {x for x in bha_ids if x}
+    if bha_ids and "BHA_ID" in out.columns:
+        out["BHA_ID"] = out["BHA_ID"].astype(str)
+        out = out[out["BHA_ID"].isin(bha_ids)]
+        return out
+
+    # 2) Fallback: match por actividad BHA en df principal
+    if "Actividad" not in df_main.columns:
+        return out
+    df_bha_act = df_main[df_main["Actividad"].astype(str).str.contains("Arma/Desarma BHA", case=False, na=False)].copy()
+    if df_bha_act.empty:
+        return out.iloc[0:0].copy()
+
+    def _extract_bha_tipo(act: str) -> str:
+        try:
+            m = re.search(r"Tipo\s*(\d+)", str(act))
+            return m.group(1) if m else ""
+        except Exception:
+            return ""
+
+    df_bha_act["_BHA_Tipo"] = df_bha_act["Actividad"].apply(_extract_bha_tipo)
+    df_bha_act["_Fecha"] = df_bha_act.get("Fecha", "").astype(str)
+    df_bha_act["_Etapa"] = df_bha_act.get("Etapa", "").astype(str)
+    df_bha_act["_Turno"] = df_bha_act.get("Turno", "").astype(str)
+    keys = set(
+        tuple(x)
+        for x in df_bha_act[["_Fecha", "_Etapa", "_Turno", "_BHA_Tipo"]]
+        .dropna()
+        .values.tolist()
+    )
+
+    if not keys:
+        return out
+
+    out["_Fecha"] = out.get("Fecha", "").astype(str)
+    out["_Etapa"] = out.get("Etapa", "").astype(str)
+    out["_Turno"] = out.get("Turno", "").astype(str)
+    out["_BHA_Tipo"] = out.get("BHA_Tipo", "").astype(str)
+    out["_key"] = list(zip(out["_Fecha"], out["_Etapa"], out["_Turno"], out["_BHA_Tipo"]))
+    out = out[out["_key"].isin(keys)].copy()
+    out.drop(columns=["_Fecha", "_Etapa", "_Turno", "_BHA_Tipo", "_key"], inplace=True, errors="ignore")
+    return out
+
+def _sync_conn_from_df(df_main: pd.DataFrame, df_conn_in: pd.DataFrame) -> pd.DataFrame:
+    """Sincroniza df_conn con las conexiones presentes en df principal."""
+    if df_conn_in is None:
+        return df_conn_in
+    if df_main is None or df_main.empty:
+        return df_conn_in.iloc[0:0].copy()
+
+    if "CONN_ID" not in df_main.columns or "CONN_ID" not in df_conn_in.columns:
+        return df_conn_in
+
+    conn_ids = set(
+        df_main["CONN_ID"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .tolist()
+    )
+    conn_ids = {x for x in conn_ids if x}
+    if not conn_ids:
+        return df_conn_in.iloc[0:0].copy()
+
+    out = df_conn_in.copy()
+    out["CONN_ID"] = out["CONN_ID"].astype(str)
+    out = out[out["CONN_ID"].isin(conn_ids)]
+    return out
 
 def _build_day_payload(fecha_sel, autor: str = "") -> dict:
     meta = {
@@ -3508,6 +3617,10 @@ with st.sidebar.container(border=True):
                             "Desglose guardado. Al agregar la actividad se registrarán varias causas TNPI."
                         )
     comentario = st.sidebar.text_input("Comentario", "", key="com_general")
+    # Aviso preventivo: menos de 1 hora disponible en el día
+    _remaining_day = _remaining_day_hours(st.session_state.df, fecha)
+    if 0 < _remaining_day <= 1.0:
+        st.sidebar.warning(f"Queda {float(_remaining_day):.2f} h disponible en el día.")
     disable_general_add = (actividad in ["Conexión perforando", "Arma/Desarma BHA"]) or (actividad_sel == "Otra (especificar)" and not actividad)
     if st.sidebar.button("Agregar actividad", use_container_width=True, disabled=disable_general_add):
         if actividad_sel == "Otra (especificar)" and not actividad:
@@ -3792,6 +3905,16 @@ with st.sidebar.container(border=True):
                 "Origen": "Manual",
             })
 
+        # Validación: no permitir que el día supere 24h
+        new_hours = float(sum([_safe_float(r.get("Horas_Reales", 0.0)) for r in add_rows]))
+        remaining = _remaining_day_hours(st.session_state.df, fecha)
+        if remaining <= 0:
+            st.error("El día ya completó 24h. No se pueden agregar más actividades.")
+            st.stop()
+        if new_hours > remaining + 1e-6:
+            st.error(f"No se puede agregar: quedan {remaining:.2f} h disponibles en el día.")
+            st.stop()
+
         st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame(add_rows)], ignore_index=True)
         
         st.session_state.df = _ensure_rowid(st.session_state.df)
@@ -3809,6 +3932,7 @@ with st.sidebar.container(border=True):
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 if modo_reporte == "Perforación" and actividad == "Conexión perforando":
     with st.sidebar.expander("Conexión perforando (captura)", expanded=True):
+        st.caption(f"Fecha en trabajo: {str(fecha)}")
         # Usa los inputs globales (etapa, corrida, tipo de agujero, turno)
         profundidad_m = st.number_input("Profundidad (m)", 0.0, step=1.0, key="prof_conn")
         
@@ -3925,6 +4049,7 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
         conn_comment = st.text_input("Comentario conexión", "", key="conn_comment")
 
         if st.button("Agregar conexión", use_container_width=True):
+            conn_id = str(uuid.uuid4())
             conn_no = int(st.session_state.df_conn["Conn_No"].max()) + 1 if not st.session_state.df_conn.empty else 1
 
             rows = []
@@ -3986,6 +4111,7 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
                         "Categoria_TNP": (cat_tnp_use if float(minutos_tnp) > 0 else "-"),
                         "Detalle_TNP": (det_tnp_use if float(minutos_tnp) > 0 else "-"),
                         "Comentario": conn_comment,
+                        "CONN_ID": conn_id,
                     }
                 )
             
@@ -4047,6 +4173,7 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
                 ROP_Real_mh=0.0,
                 Comentario=st.session_state.get("comentario_conn", "") or "",
                 Origen="Manual",
+                CONN_ID=conn_id,
                 Eficiencia_pct=float(_calc_eff(std_total_line / 60.0, base_min / 60.0)),
                 Semáforo=_semaforo_text(float(_calc_eff(std_total_line / 60.0, base_min / 60.0))),
             )
@@ -4079,6 +4206,17 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
                         "Eficiencia_pct": 0.0,
                         "Semáforo": _semaforo_text(0.0),
                     })
+
+            # Validación: no permitir que el día supere 24h
+            new_hours = float(sum([_safe_float(r.get("Horas_Reales", 0.0)) for r in add_rows]))
+            remaining = _remaining_day_hours(st.session_state.df, fecha)
+            if remaining <= 0:
+                st.error("El día ya completó 24h. No se pueden agregar más conexiones.")
+                st.stop()
+            if new_hours > remaining + 1e-6:
+                st.error(f"No se puede agregar: quedan {remaining:.2f} h disponibles en el día.")
+                st.stop()
+
             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame(add_rows)], ignore_index=True)
             
         st.session_state.df = _ensure_rowid(st.session_state.df)
@@ -4088,6 +4226,7 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 if actividad == "Arma/Desarma BHA":
     with st.sidebar.expander("Arma/Desarma BHA (captura)", expanded=True):
+        st.caption(f"Fecha en trabajo: {str(fecha)}")
         bha_tipo_tiempo = st.session_state.get("tipo_time_general", "TP")
         st.session_state["bha_tipo_tiempo"] = bha_tipo_tiempo
 
@@ -4414,6 +4553,7 @@ if actividad == "Arma/Desarma BHA":
         bha_comment = st.text_input("Comentario BHA", "", key="bha_comment")
 
         if st.button("Agregar BHA", use_container_width=True):
+            bha_id = str(uuid.uuid4())
             row_bha = {
                 "Equipo": equipo,
                 "Pozo": pozo,
@@ -4424,6 +4564,7 @@ if actividad == "Arma/Desarma BHA":
                 "BHA_Tipo": int(bha_tipo),
                 "BHA_Componentes": desc,
                 "Accion": accion,
+                "BHA_ID": bha_id,
                 "Estandar_h": float(estandar_h),
                 "Real_h": float(real_h),
                 "TNPI_h": float(tnpi_h),
@@ -4451,6 +4592,7 @@ if actividad == "Arma/Desarma BHA":
                 ROP_Real_mh=0.0,
                 Comentario=bha_comment.strip(),
                 Origen="BHA",
+                BHA_ID=bha_id,
             )
 
             add = [
@@ -4529,6 +4671,16 @@ if actividad == "Arma/Desarma BHA":
                             _row["Comentario"] = (str(_row.get("Comentario", "") or "") + f" | {_com}").strip(" |")
                         new_rows.append(_row)
                 add = new_rows
+
+            # Validación: no permitir que el día supere 24h
+            new_hours = float(sum([_safe_float(r.get("Horas_Reales", 0.0)) for r in add]))
+            remaining = _remaining_day_hours(st.session_state.df, fecha)
+            if remaining <= 0:
+                st.error("El día ya completó 24h. No se pueden agregar más actividades.")
+                st.stop()
+            if new_hours > remaining + 1e-6:
+                st.error(f"No se puede agregar: quedan {remaining:.2f} h disponibles en el día.")
+                st.stop()
 
             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame(add)], ignore_index=True)
             st.success("BHA agregado")
@@ -6056,6 +6208,7 @@ with tab_conn:
         st.session_state["_toast_conn"] = False
 
     st.subheader("Conexiones perforando")
+    st.caption(f"Fecha en trabajo: {str(st.session_state.get('fecha_val', ''))}")
 
     if modo_reporte != "Perforación":
         st.info("Cambia a modo **Perforación** para ver conexiones.")
@@ -6190,6 +6343,7 @@ with tab_conn:
 
 with tab_viajes:
     st.subheader("Viajes y conexiones de TP")
+    st.caption(f"Fecha en trabajo: {str(st.session_state.get('fecha_val', ''))}")
 
     # --- FILTRO DE ETAPA (Viajes y conexiones) ---
     _df_main = st.session_state.df
@@ -6920,6 +7074,7 @@ with tab_viajes:
                 "real_speed_mh": _real_speed_mh,
                 "std_conn_min": _std_conn_min,
                 "real_conn_min": _real_conn_min,
+                "VIAJE_TIPO": str(viaje_tipo or "").strip(),
             }
 
             _rows = []
@@ -7001,6 +7156,16 @@ with tab_viajes:
             if not _rows:
                 st.warning("No hay horas para registrar (revisa longitud, velocidades y/o conexiones).")
             else:
+                # Validación: no permitir que el día supere 24h
+                new_hours = float(sum([_safe_float(r.get("Horas_Reales", 0.0)) for r in _rows]))
+                remaining = _remaining_day_hours(st.session_state.df, fecha)
+                if remaining <= 0:
+                    st.error("El día ya completó 24h. No se pueden agregar más actividades.")
+                    st.stop()
+                if new_hours > remaining + 1e-6:
+                    st.error(f"No se puede agregar: quedan {remaining:.2f} h disponibles en el día.")
+                    st.stop()
+
                 nueva = pd.DataFrame(_rows)
                 st.session_state.df = pd.concat([st.session_state.df, nueva], ignore_index=True)
                 st.success(f"Registro agregado: {len(_rows)} fila(s).")
@@ -7009,6 +7174,7 @@ with tab_viajes:
 
 with tab_bha:
     st.subheader("BHA (Arma/Desarma)")
+    st.caption(f"Fecha en trabajo: {str(st.session_state.get('fecha_val', ''))}")
 
     df_bha = st.session_state.df_bha
     # --- FILTRO DE ETAPA (BHA) ---
@@ -7729,6 +7895,50 @@ with tab_detalle:
 
                 master = master.reset_index()
                 st.session_state.df = _ensure_rowid(master)
+                # Sincroniza BHA con lo que queda en actividades
+                try:
+                    st.session_state.df_bha = _sync_bha_from_df(st.session_state.df, st.session_state.df_bha)
+                except Exception:
+                    pass
+                # Sincroniza Conexiones con lo que queda en actividades
+                try:
+                    st.session_state.df_conn = _sync_conn_from_df(st.session_state.df, st.session_state.df_conn)
+                except Exception:
+                    pass
+                # Sincroniza viajes (limpia store si ya no existen en actividades)
+                try:
+                    if "viajes_hourly_store" in st.session_state and "VIAJE_TIPO" in st.session_state.df.columns:
+                        valid = set(
+                            st.session_state.df["VIAJE_TIPO"]
+                            .dropna()
+                            .astype(str)
+                            .str.strip()
+                            .tolist()
+                        )
+                        valid = {v for v in valid if v}
+                        if valid:
+                            st.session_state["viajes_hourly_store"] = {
+                                k: v for k, v in st.session_state["viajes_hourly_store"].items()
+                                if str(k).strip() in valid
+                            }
+                        else:
+                            st.session_state["viajes_hourly_store"] = {}
+                except Exception:
+                    pass
+                # Limpia caches para que estadísticas/figuras se recalculen
+                try:
+                    _make_figs.clear()
+                except Exception:
+                    pass
+                # Invalidar exportables para evitar desalineación con cambios
+                for k in [
+                    "exp_main_sig", "exp_main_pdf", "exp_main_ppt",
+                    "exp_day_sig", "exp_day_pdf", "exp_day_ppt", "exp_day_csv",
+                ]:
+                    try:
+                        st.session_state.pop(k, None)
+                    except Exception:
+                        pass
                 st.success("Cambios guardados. Las gráficas se actualizaron.")
                 st.rerun()
 
