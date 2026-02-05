@@ -39,6 +39,95 @@ legacy_calc_value = 0.0
 mr_etapa_legacy = 0.0  # legacy var (kept to avoid NameError)
 import pandas as pd
 
+# --- Google OAuth + Drive (local) ---
+# Requisitos:
+#   pip install google-auth google-auth-oauthlib google-api-python-client requests
+# Nota: para pruebas locales puede requerir:
+#   export OAUTHLIB_INSECURE_TRANSPORT=1
+try:
+    import requests
+    from google_auth_oauthlib.flow import Flow
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaInMemoryUpload
+except Exception:
+    # Permitimos que el script cargue aunque no estén instaladas las deps;
+    # la UI mostrará un mensaje al usuario cuando intente usar OAuth/Drive.
+    requests = None
+    Flow = None
+    Credentials = None
+    build = None
+    MediaInMemoryUpload = None
+
+GOOGLE_SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/drive.file",
+]
+
+def _google_is_available() -> bool:
+    return all([requests, Flow, Credentials, build, MediaInMemoryUpload])
+
+def _drive_service():
+    if not _google_is_available():
+        return None
+    gc = st.session_state.get("google_creds")
+    if not gc:
+        return None
+    creds = Credentials(
+        token=gc.get("token"),
+        refresh_token=gc.get("refresh_token"),
+        token_uri=gc.get("token_uri"),
+        client_id=gc.get("client_id"),
+        client_secret=gc.get("client_secret"),
+        scopes=gc.get("scopes"),
+    )
+    return build("drive", "v3", credentials=creds)
+
+def _ensure_drive_folder(drive, folder_name: str) -> str:
+    q = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false"
+    res = drive.files().list(q=q, fields="files(id,name)").execute()
+    files = res.get("files", [])
+    if files:
+        return files[0]["id"]
+    meta = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder"}
+    folder = drive.files().create(body=meta, fields="id").execute()
+    return folder["id"]
+
+def _drive_upsert_json(drive, folder_id: str, filename: str, payload: dict) -> str:
+    content = json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default).encode("utf-8")
+    media = MediaInMemoryUpload(content, mimetype="application/json", resumable=False)
+
+    q = f"'{folder_id}' in parents and name='{filename}' and trashed=false"
+    res = drive.files().list(q=q, fields="files(id,name)").execute()
+    existing = (res.get("files") or [])
+
+    if existing:
+        file_id = existing[0]["id"]
+        drive.files().update(fileId=file_id, media_body=media).execute()
+        return file_id
+
+    meta = {"name": filename, "parents": [folder_id]}
+    created = drive.files().create(body=meta, media_body=media, fields="id").execute()
+    return created["id"]
+
+def _drive_list_json(drive, folder_id: str, limit: int = 100):
+    q = f"'{folder_id}' in parents and mimeType='application/json' and trashed=false"
+    res = drive.files().list(
+        q=q,
+        fields="files(id,name,modifiedTime)",
+        orderBy="modifiedTime desc",
+        pageSize=limit,
+    ).execute()
+    return res.get("files", [])
+
+def _drive_download_json(drive, file_id: str) -> dict:
+    data = drive.files().get_media(fileId=file_id).execute()
+    return json.loads(data.decode("utf-8"))
+
+
+
 def _calc_eff(prog: float, real: float) -> float:
     """Eficiencia (%): 100 si real <= programado; si real>prog => (prog/real)*100."""
     try:
@@ -370,6 +459,23 @@ def build_delta_chip_item(
         "tone": tone,
     }
 
+def _conn_exceso_suggestions(total_real_min: float, total_std_min: float, top_comp: str | None) -> list[dict]:
+    """Chips pro con sugerencias cuando conexión supera estándar."""
+    if total_std_min <= 0:
+        return []
+    over_min = max(0.0, float(total_real_min) - float(total_std_min))
+    if over_min <= 0:
+        return []
+    over_pct = (over_min / float(total_std_min)) * 100.0 if total_std_min > 0 else 0.0
+    tone = "red" if over_pct >= 20.0 else "amber"
+    comp_txt = f"· foco en {top_comp}" if top_comp else ""
+    return [
+        {"label": "Exceso conexión", "value": f"{over_min:.1f} min", "tone": tone},
+        {"label": "Sobre estándar", "value": f"{over_pct:.0f}% {comp_txt}".strip(), "tone": tone},
+        {"label": "Sugerencia", "value": "Revisar pre/post y roles", "tone": "blue"},
+        {"label": "Sugerencia", "value": "Checklist y materiales listos", "tone": "violet"},
+    ]
+
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # MISSION CONTROL DASHBOARD (NASA Style)
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
@@ -663,129 +769,82 @@ def add_semaforo_column(df, eff_col="Eficiencia_pct"):
 st.set_page_config(page_title="Dashboard Operativo DrillSpot", layout="wide")
 
 # == == == == == == == == == == == == =
-# Auth (Opción B: usuarios definidos por config)
-# - Producción (Streamlit Cloud): usa st.secrets["users"]
-# - Local: usa users.json en el mismo folder del app.py
-# Formato esperado:
-#   users:
-#     "lenin":
-#       "name": "Lenin Brito"
-#       "password_sha256": "<sha256_hex>"
-#       "photo_url": "https://..."
-#       "role": "admin"
+# Auth (solo Google OAuth)
 # == == == == == == == == == == == == =
-import hashlib
-from pathlib import Path
-try:
-    import bcrypt  # type: ignore
-except Exception:
-    bcrypt = None
 
-def _sha256_hex(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-def _looks_like_sha256(value: str) -> bool:
-    v = (value or "").strip().lower()
-    return len(v) == 64 and all(c in "0123456789abcdef" for c in v)
-
-def _looks_like_bcrypt(value: str) -> bool:
-    v = (value or "").strip()
-    return v.startswith("$2a$") or v.startswith("$2b$") or v.startswith("$2y$")
-
-def _load_users_config() -> dict:
-    # 1) Streamlit secrets (ideal en deploy)
+def _get_user_role(email: str) -> str:
+    """Obtiene el rol desde secrets (por email)."""
     try:
-        if hasattr(st, "secrets") and "users" in st.secrets:
-            # st.secrets puede ser ConfigObj-like
-            users = dict(st.secrets["users"])
-            # Asegurar dict interno
-            out = {}
-            for u, meta in users.items():
-                out[str(u)] = dict(meta)
-            return out
+        roles_map = dict(st.secrets.get("roles", {}))
+        return str(roles_map.get(email, "") or "").strip() or "user"
     except Exception:
-        pass
+        return "user"
 
-    # 2) Fallback local file
+def _active_users_path() -> str:
+    base_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
+    return os.path.join(base_dir, "active_users.json")
+
+def _load_active_users() -> dict:
     try:
-        p = Path(__file__).with_name("users.json")
-        if p.exists():
-            import json
-            with p.open("r", encoding="utf-8") as f:
+        p = _active_users_path()
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            users = data.get("users", {})
-            # Soporta users como dict {"user": {...}} o como lista [{"username": "...", ...}]
-            if isinstance(users, list):
-                out = {}
-                for item in users:
-                    if not isinstance(item, dict):
-                        continue
-                    uname = str(item.get("username", "")).strip()
-                    if not uname:
-                        continue
-                    meta = dict(item)
-                    # Normaliza alias comunes
-                    if "photo_url" not in meta and "photo" in meta:
-                        meta["photo_url"] = meta.get("photo", "")
-                    out[uname] = meta
-                return out
-            if isinstance(users, dict):
-                out = {}
-                for u, meta in users.items():
-                    m = dict(meta) if isinstance(meta, dict) else {}
-                    if "photo_url" not in m and "photo" in m:
-                        m["photo_url"] = m.get("photo", "")
-                    out[str(u)] = m
-                return out
+            return data if isinstance(data, dict) else {}
     except Exception:
         pass
-
     return {}
 
-def _auth_user(username: str, password: str) -> dict | None:
-    users = _load_users_config()
-    u = (username or "").strip()
-    if not u or u not in users:
-        return None
-    meta = users[u]
-    stored_sha = str(meta.get("password_sha256", "")).strip()
-    stored_pw = str(meta.get("password", "")).strip()
-    stored_hash = str(meta.get("password_hash", "")).strip()
-    stored = stored_sha or stored_hash or stored_pw
-    if not stored:
-        return None
+def _save_active_users(data: dict) -> None:
+    try:
+        with open(_active_users_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
-    # 1) SHA256
-    if stored_sha or _looks_like_sha256(stored):
-        if _sha256_hex(password or "") != stored:
-            return None
-    # 2) bcrypt
-    elif _looks_like_bcrypt(stored):
-        if bcrypt is None:
-            st.error("Falta la librería bcrypt. Instala con: pip install bcrypt")
-            return None
+def _cleanup_active_users(data: dict, ttl_minutes: int = 30) -> dict:
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    now = datetime.now()
+    for k, v in data.items():
         try:
-            if not bcrypt.checkpw((password or "").encode("utf-8"), stored.encode("utf-8")):
-                return None
+            last_seen = datetime.fromisoformat(str(v.get("last_seen", "")))
         except Exception:
-            return None
-    # 3) Fallback (texto plano)
-    else:
-        if (password or "") != stored:
-            return None
-    # normalizar campos
-    meta2 = dict(meta)
-    meta2.setdefault("name", u)
-    meta2.setdefault("photo_url", "")
-    meta2.setdefault("role", "user")
-    meta2["username"] = u
-    return meta2
+            last_seen = None
+        if last_seen is None:
+            continue
+        if (now - last_seen).total_seconds() <= ttl_minutes * 60:
+            out[k] = v
+    return out
+
+def _touch_active_user(user_meta: dict) -> None:
+    if not isinstance(user_meta, dict):
+        return
+    key = (user_meta.get("email") or user_meta.get("username") or "").strip().lower()
+    if not key:
+        return
+    data = _load_active_users()
+    data = _cleanup_active_users(data, ttl_minutes=45)
+    data[key] = {
+        "name": user_meta.get("name") or user_meta.get("username") or key,
+        "email": user_meta.get("email") or key,
+        "photo_url": user_meta.get("photo_url") or "",
+        "role": user_meta.get("role") or "user",
+        "last_seen": datetime.now().isoformat(timespec="seconds"),
+    }
+    _save_active_users(data)
 
 def _render_user_badge(user_meta: dict) -> str:
     name = (user_meta.get("name") or user_meta.get("username") or "").strip()
     photo = (user_meta.get("photo_url") or "").strip()
+    role = (user_meta.get("role") or "").strip()
+    initials = "".join([p[:1] for p in name.split() if p]).upper()[:2]
     # Badge fijo arriba derecha (no depende del header)
-    img_html = f'<img src="{photo}" style="width:32px;height:32px;border-radius:999px;object-fit:cover;border:1px solid rgba(255,255,255,.25);" />' if photo else ''
+    if photo:
+        img_html = f'<img src="{photo}" style="width:32px;height:32px;border-radius:999px;object-fit:cover;border:1px solid rgba(255,255,255,.25);" />'
+    else:
+        img_html = f'<div style="width:32px;height:32px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);font-weight:800;font-size:12px;">{initials or "U"}</div>'
     return f"""
     <style>
       .user-badge {{
@@ -814,46 +873,155 @@ def _render_user_badge(user_meta: dict) -> str:
     </style>
     <div class="user-badge">
       {img_html}
-      <div class="name">{name}</div>
+      <div class="name">{name}{f" · {role}" if role else ""}</div>
     </div>
     """
 
-def _login_sidebar():
+
+def _google_oauth_login_sidebar():
     # Estado base
     if "auth_ok" not in st.session_state:
         st.session_state["auth_ok"] = False
     if "auth_user" not in st.session_state:
         st.session_state["auth_user"] = None
+    if "google_creds" not in st.session_state:
+        st.session_state["google_creds"] = None
 
-    with st.sidebar.expander("🔐 Acceso", expanded=not st.session_state["auth_ok"]):
+    with st.sidebar.expander("🔐 Acceso con Google", expanded=not st.session_state["auth_ok"]):
+        if not _google_is_available():
+            st.warning("Faltan dependencias para Google OAuth/Drive. Instala: google-auth, google-auth-oauthlib, google-api-python-client, requests.")
+            return
+
         if st.session_state["auth_ok"] and st.session_state["auth_user"]:
             u = st.session_state["auth_user"]
-            st.success(f"Sesión activa: {u.get('name', u.get('username',''))}")
-            if st.button("Cerrar sesión", key="logout_btn"):
+            st.success(f"Sesión activa: {u.get('name', u.get('email',''))}")
+            if u.get("photo_url"):
+                st.sidebar.image(u["photo_url"], width=48)
+            if st.button("Cerrar sesión", key="logout_btn_google"):
                 st.session_state["auth_ok"] = False
                 st.session_state["auth_user"] = None
+                st.session_state["google_creds"] = None
                 st.rerun()
-        else:
-            st.caption("Ingresa tus credenciales para operar la app.")
-            username = st.text_input("Usuario", key="login_user")
-            password = st.text_input("Contraseña", type="password", key="login_pass")
-            if st.button("Entrar", key="login_btn"):
-                meta = _auth_user(username, password)
-                if meta:
-                    st.session_state["auth_ok"] = True
-                    st.session_state["auth_user"] = meta
-                    st.success("Acceso concedido.")
-                    st.rerun()
-                else:
-                    st.error("Usuario o contraseña inválidos.")
+            return
+
+        # Validación de secrets (local)
+        if "google_oauth" not in st.secrets:
+            st.error("Falta configuración en .streamlit/secrets.toml: [google_oauth].")
+            st.code("""[google_oauth]
+client_id = "..."
+client_secret = "..."
+project_id = "..."
+redirect_uri = "http://localhost:8501"
+allowed_domain = ""  # opcional: "rogii.com"
+""")
+            return
+
+        client_config = {
+            "web": {
+                "client_id": st.secrets["google_oauth"]["client_id"],
+                "project_id": st.secrets["google_oauth"].get("project_id", ""),
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "client_secret": st.secrets["google_oauth"]["client_secret"],
+                "redirect_uris": [st.secrets["google_oauth"]["redirect_uri"]],
+            }
+        }
+
+        flow = Flow.from_client_config(
+            client_config,
+            scopes=GOOGLE_SCOPES,
+            redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
+        )
+
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="consent",
+        )
+
+        st.markdown(f"[➡️ Iniciar sesión con Google]({auth_url})")
+
+        q = st.query_params
+        code = q.get("code", None)
+        if code:
+            try:
+                flow.fetch_token(code=code)
+                creds = flow.credentials
+
+                st.session_state["google_creds"] = {
+                    "token": creds.token,
+                    "refresh_token": creds.refresh_token,
+                    "token_uri": creds.token_uri,
+                    "client_id": creds.client_id,
+                    "client_secret": creds.client_secret,
+                    "scopes": creds.scopes,
+                }
+
+                r = requests.get(
+                    "https://www.googleapis.com/oauth2/v2/userinfo",
+                    headers={"Authorization": f"Bearer {creds.token}"},
+                    timeout=20,
+                )
+                info = r.json() if r is not None else {}
+                if not info.get("picture"):
+                    r2 = requests.get(
+                        "https://www.googleapis.com/oauth2/v3/userinfo",
+                        headers={"Authorization": f"Bearer {creds.token}"},
+                        timeout=20,
+                    )
+                    info2 = r2.json() if r2 is not None else {}
+                    info = {**info2, **info}
+                email = (info.get("email") or "").lower()
+
+                allowed_domain = st.secrets["google_oauth"].get("allowed_domain", "")
+                if allowed_domain:
+                    allowed_domain = allowed_domain.lstrip("@").lower()
+                    if not email.endswith("@" + allowed_domain):
+                        st.error(f"Solo se permite acceso con dominio @{allowed_domain}")
+                        st.session_state["auth_ok"] = False
+                        st.session_state["auth_user"] = None
+                        st.session_state["google_creds"] = None
+                        return
+
+                st.session_state["auth_ok"] = True
+                pic = info.get("picture") or ""
+                if pic:
+                    if "googleusercontent.com" in pic and "=" not in pic:
+                        pic = f"{pic}=s96-c"
+                    if pic.startswith("http://"):
+                        pic = "https://" + pic[len("http://"):]
+                role = _get_user_role(email)
+                st.session_state["auth_user"] = {
+                    "name": info.get("name") or email,
+                    "email": email,
+                    "photo_url": pic,
+                    "role": role,
+                    "username": email,
+                }
+
+                st.query_params.clear()
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"No se pudo completar login: {e}")
+
+
+# (El login legacy por usuario/contraseña fue removido: acceso solo por Google OAuth)
 
 
 # ---------- Gate de acceso ----------
-_login_sidebar()
+_google_oauth_login_sidebar()
 if not st.session_state.get("auth_ok"):
     st.title("Dashboard Diario Operativo – DrillSpot / ROGII")
     st.info("Inicia sesión en el panel lateral para continuar.")
     st.stop()
+
+# Registrar usuario activo (latido simple)
+try:
+    if st.session_state.get("auth_user"):
+        _touch_active_user(st.session_state["auth_user"])
+except Exception:
+    pass
 
 # Badge usuario (foto + nombre)
 try:
@@ -871,6 +1039,25 @@ if "ui_mode" not in st.session_state:
 
 with st.sidebar:
     st.radio("Modo visual", ["Diurno", "Nocturno"], key="ui_mode", horizontal=True)
+
+with st.sidebar.expander("🟢 Usuarios activos", expanded=False):
+    au = _cleanup_active_users(_load_active_users(), ttl_minutes=45)
+    if not au:
+        st.caption("Sin usuarios activos detectados.")
+    else:
+        users_sorted = sorted(au.values(), key=lambda x: str(x.get("last_seen", "")), reverse=True)
+        for u in users_sorted[:12]:
+            name = str(u.get("name") or u.get("email") or "").strip()
+            role = str(u.get("role") or "").strip()
+            last_seen = str(u.get("last_seen", "")).replace("T", " ")
+            photo = str(u.get("photo_url") or "").strip()
+            row = st.container()
+            cols = row.columns([1, 5])
+            if photo:
+                cols[0].image(photo, width=28)
+            else:
+                cols[0].markdown("🧑")
+            cols[1].markdown(f"**{name}**{f' · {role}' if role else ''}  \n`{last_seen}`")
 
 # ------------------------------
 # RUTAS (PC LOCAL)  ✅ AJUSTA ESTO
@@ -2425,6 +2612,107 @@ def _default_jornada_path(equipo: str, pozo: str, fecha_str: str) -> str:
     script_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
     return os.path.join(script_dir, f"jornada_{safe(equipo)}_{safe(pozo)}_{safe(fecha_str)}.json")
 
+def _list_local_jornadas(limit: int = 60) -> list[tuple[str, str]]:
+    script_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
+    try:
+        files = []
+        for f in os.listdir(script_dir):
+            if f.lower().startswith("jornada_") and f.lower().endswith(".json"):
+                full = os.path.join(script_dir, f)
+                try:
+                    mtime = datetime.fromtimestamp(os.path.getmtime(full))
+                except Exception:
+                    mtime = None
+                files.append((full, mtime))
+        files.sort(key=lambda x: x[1] or datetime.min, reverse=True)
+        out = []
+        for full, mtime in files[:limit]:
+            label = os.path.basename(full)
+            if mtime:
+                label = f"{label} · {mtime.strftime('%Y-%m-%d %H:%M')}"
+            out.append((label, full))
+        return out
+    except Exception:
+        return []
+
+def _kpi_summary_from_payload(payload: dict) -> dict:
+    """Calcula KPIs básicos desde un payload de jornada."""
+    try:
+        meta = {}
+        if isinstance(payload, dict):
+            meta = payload.get("meta") or {}
+            if not meta:
+                drill_day = payload.get("drill_day") or {}
+                meta = drill_day.get("meta") or {}
+        rows = payload.get("df", []) if isinstance(payload, dict) else []
+        df_k = pd.DataFrame(rows)
+        if df_k.empty or "Horas_Reales" not in df_k.columns:
+            return {}
+        df_k["Horas_Reales"] = pd.to_numeric(df_k["Horas_Reales"], errors="coerce").fillna(0.0)
+        total_h = float(df_k["Horas_Reales"].sum())
+        tp_h = float(df_k[df_k.get("Tipo", "") == "TP"]["Horas_Reales"].sum()) if "Tipo" in df_k.columns else total_h
+        tnpi_h = float(df_k[df_k.get("Tipo", "") == "TNPI"]["Horas_Reales"].sum()) if "Tipo" in df_k.columns else 0.0
+        tnp_h = float(df_k[df_k.get("Tipo", "") == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_k.columns else 0.0
+        eff = clamp_0_100(safe_pct(tp_h, total_h)) if total_h > 0 else 0.0
+        return {
+            "pozo": str(meta.get("pozo", "") or "").strip(),
+            "etapa": str(meta.get("etapa", "") or meta.get("etapa_manual_val", "") or "").strip(),
+            "fecha": str(meta.get("fecha", "") or "").strip(),
+            "total_h": total_h,
+            "tp_h": tp_h,
+            "tnpi_h": tnpi_h,
+            "tnp_h": tnp_h,
+            "eff": eff,
+        }
+    except Exception:
+        return {}
+
+def _render_kpi_summary(k: dict, title: str = "Resumen KPI") -> None:
+    if not k:
+        st.sidebar.caption("Sin datos para resumen KPI.")
+        return
+    st.sidebar.markdown(f"**{title}**")
+    meta_parts = []
+    if k.get("pozo"):
+        meta_parts.append(f"Pozo: {k['pozo']}")
+    if k.get("etapa"):
+        meta_parts.append(f"Etapa: {k['etapa']}")
+    if k.get("fecha"):
+        meta_parts.append(f"Fecha: {k['fecha']}")
+    if meta_parts:
+        st.sidebar.caption(" · ".join(meta_parts))
+    def _bar(label: str, value: float, max_value: float, color: str) -> str:
+        pct = 0.0 if max_value <= 0 else max(0.0, min(100.0, (value / max_value) * 100.0))
+        return (
+            "<div style='margin:6px 0 8px;'>"
+            f"<div style='font-size:11px;opacity:.75;margin-bottom:4px;'>{label}: {value:.1f} h</div>"
+            "<div style='height:6px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden;'>"
+            f"<div style='height:100%;width:{pct:.1f}%;background:{color};'></div>"
+            "</div>"
+            "</div>"
+        )
+
+    eff = float(k.get("eff", 0.0) or 0.0)
+    eff_color = "#16a34a" if eff >= 70 else "#f59e0b" if eff >= 50 else "#ef4444"
+    total_h = float(k.get("total_h", 0.0) or 0.0)
+    tp_h = float(k.get("tp_h", 0.0) or 0.0)
+    tnpi_h = float(k.get("tnpi_h", 0.0) or 0.0)
+    tnp_h = float(k.get("tnp_h", 0.0) or 0.0)
+
+    st.sidebar.markdown(
+        "<div style='font-size:11px;opacity:.75;margin-top:4px;'>"
+        f"Total: <b>{total_h:.1f} h</b> · Eficiencia: "
+        f"<span style='color:{eff_color};font-weight:700;'>{eff:.0f}%</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown(
+        _bar("TP", tp_h, total_h, "#22c55e")
+        + _bar("TNPI", tnpi_h, total_h, "#f59e0b")
+        + _bar("TNP", tnp_h, total_h, "#ef4444"),
+        unsafe_allow_html=True,
+    )
+
 def save_jornada_json(path_out: str) -> None:
     # Meta/contexto del sidebar (para reconstrucción confiable al cargar)
     meta = {
@@ -2669,52 +2957,59 @@ def load_jornada_json(path_in: str) -> bool:
     with open(path_in, "r", encoding="utf-8") as f:
         payload = json.load(f)
 
-    # Tablas
-    st.session_state.df = pd.DataFrame(payload.get("df", []), columns=st.session_state.df.columns)
-    st.session_state.df_conn = pd.DataFrame(payload.get("df_conn", []), columns=st.session_state.df_conn.columns)
-    st.session_state.df_bha = pd.DataFrame(payload.get("df_bha", []), columns=st.session_state.df_bha.columns)
+    return _apply_jornada_payload(payload)
 
-    # drill_day + meta
-    st.session_state.drill_day = payload.get("drill_day", st.session_state.drill_day) or st.session_state.drill_day
-    meta = payload.get("meta") or st.session_state.drill_day.get("meta") or {}
+def _apply_jornada_payload(payload: dict) -> bool:
+    try:
+        # Tablas
+        st.session_state.df = pd.DataFrame(payload.get("df", []), columns=st.session_state.df.columns)
+        st.session_state.df_conn = pd.DataFrame(payload.get("df_conn", []), columns=st.session_state.df_conn.columns)
+        st.session_state.df_bha = pd.DataFrame(payload.get("df_bha", []), columns=st.session_state.df_bha.columns)
 
-    # Actividades personalizadas
-    st.session_state.custom_actividades = payload.get("custom_actividades", []) or []
-    # Restauración segura del sidebar: NO modificar keys de widgets después de instanciados.
-    # Guardamos valores para aplicarlos al inicio del script (antes de render del sidebar) y forzamos rerun.
-    if meta:
-        pending = {
-            'equipo_val': meta.get('equipo', ''),
-            'pozo_val': meta.get('pozo', ''),
-        }
+        # drill_day + meta
+        st.session_state.drill_day = payload.get("drill_day", st.session_state.drill_day) or st.session_state.drill_day
+        meta = payload.get("meta") or st.session_state.drill_day.get("meta") or {}
 
-        # fecha viene como string "YYYY-MM-DD" o "YYYY/MM/DD"
-        _fecha_raw = str(meta.get('fecha', ''))
-        _fecha = None
-        for fmt in ('%Y-%m-%d', '%Y/%m/%d'):
-            try:
-                _fecha = datetime.strptime(_fecha_raw, fmt).date()
-                break
-            except Exception:
-                pass
-        if _fecha is not None:
-            pending['fecha_val'] = _fecha
+        # Actividades personalizadas
+        st.session_state.custom_actividades = payload.get("custom_actividades", []) or []
+        # Restauración segura del sidebar: NO modificar keys de widgets después de instanciados.
+        # Guardamos valores para aplicarlos al inicio del script (antes de render del sidebar) y forzamos rerun.
+        if meta:
+            pending = {
+                'equipo_val': meta.get('equipo', ''),
+                'pozo_val': meta.get('pozo', ''),
+            }
 
-        pending['equipo_tipo_val'] = meta.get('equipo_tipo', '')
-        pending['etapa_manual_chk'] = bool(meta.get('etapa_manual', False))
-        pending['etapa_sel'] = meta.get('etapa', meta.get('etapa_manual_val', ''))
-        pending['etapa_manual_val'] = meta.get('etapa_manual_val', meta.get('etapa', ''))
+            # fecha viene como string "YYYY-MM-DD" o "YYYY/MM/DD"
+            _fecha_raw = str(meta.get('fecha', ''))
+            _fecha = None
+            for fmt in ('%Y-%m-%d', '%Y/%m/%d'):
+                try:
+                    _fecha = datetime.strptime(_fecha_raw, fmt).date()
+                    break
+                except Exception:
+                    pass
+            if _fecha is not None:
+                pending['fecha_val'] = _fecha
 
-        if 'modo_reporte' in meta:
-            pending['modo_reporte'] = meta.get('modo_reporte', st.session_state.get('modo_reporte', ''))
-        if 'show_charts' in meta:
-            pending['show_charts'] = bool(meta.get('show_charts', True))
+            pending['equipo_tipo_val'] = meta.get('equipo_tipo', '')
+            pending['etapa_manual_chk'] = bool(meta.get('etapa_manual', False))
+            pending['etapa_sel'] = meta.get('etapa', meta.get('etapa_manual_val', ''))
+            pending['etapa_manual_val'] = meta.get('etapa_manual_val', meta.get('etapa', ''))
 
-        st.session_state['_pending_sidebar_restore'] = pending
-        # Mantener meta también dentro de drill_day
-        st.session_state.drill_day['meta'] = meta
+            if 'modo_reporte' in meta:
+                pending['modo_reporte'] = meta.get('modo_reporte', st.session_state.get('modo_reporte', ''))
+            if 'show_charts' in meta:
+                pending['show_charts'] = bool(meta.get('show_charts', True))
 
-    return True
+            st.session_state['_pending_sidebar_restore'] = pending
+            # Mantener meta también dentro de drill_day
+            st.session_state.drill_day['meta'] = meta
+
+        return True
+    except Exception as e:
+        st.sidebar.error(f"No se pudo aplicar la jornada: {e}")
+        return False
 
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # SIDEBAR (con modo presentación)
@@ -2840,8 +3135,9 @@ def _json_default(obj):
         pass
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
-with st.sidebar.container(border=True):
-    st.sidebar.markdown("### Jornada (guardar / cargar)")
+def _render_jornada_avanzado(container) -> None:
+    c = container or st.sidebar
+    c.markdown("#### Guardar / cargar (avanzado)")
 
     # Nombre sugerido del archivo (solo nombre, sin ruta)
     _fname_full = _default_jornada_path(equipo, pozo, str(fecha))
@@ -2877,83 +3173,146 @@ with st.sidebar.container(border=True):
     _payload = _build_jornada_payload()
     _payload_str = json.dumps(_payload, ensure_ascii=False, indent=2, default=_json_default)
 
-    # --- Guardar jornada (DESCARGA) ---
-    st.sidebar.download_button(
-        label="Guardar jornada (.json)",
-        data=_payload_str,
-        file_name=_fname,
-        mime="application/json",
-        use_container_width=True,
-    )
+    if use_drive:
+        folder_name = st.secrets.get("drive", {}).get("jornadas_folder", "DrillSpot_Jornadas")
+        folder_id = _ensure_drive_folder(drive, folder_name)
 
-    st.sidebar.divider()
+        # Guardar en Drive
+        if c.button("💾 Guardar jornada en Drive", use_container_width=True):
+            try:
+                _drive_upsert_json(drive, folder_id, _fname, _payload)
+                c.success("Guardado en Drive ✅")
+            except Exception as e:
+                c.error(f"No se pudo guardar en Drive: {e}")
 
-    # --- Cargar jornada (SUBIR ARCHIVO) ---
-    up_jornada = st.sidebar.file_uploader(
-        "Cargar jornada (.json)",
-        type=["json"],
-        accept_multiple_files=False,
-        key="jornada_uploader",
-        help="Carga un .json previamente guardado para continuar donde se dejó (incluye etapa, estadísticas, etc.).",
-    )
+        c.divider()
 
-    if st.sidebar.button("Aplicar jornada", use_container_width=True, disabled=(up_jornada is None)):
-        try:
-            payload = json.loads(up_jornada.getvalue().decode("utf-8"))
-        except Exception as e:
-            st.sidebar.error(f"No se pudo leer el JSON: {e}")
-            payload = None
+        # Cargar desde Drive
+        c.caption("Cargar desde Drive")
+        _files = _drive_list_json(drive, folder_id, limit=100)
+        if not _files:
+            c.info("No hay jornadas en Drive todavía.")
+            up_jornada = None
+        else:
+            _options = {f'{f["name"]} · {f.get("modifiedTime","")}': f["id"] for f in _files}
+            _pick = c.selectbox("Selecciona jornada", list(_options.keys()), key="drive_jornada_pick")
+            if c.button("📥 Descargar selección a memoria", use_container_width=True):
+                try:
+                    payload = _drive_download_json(drive, _options[_pick])
+                    # Guardamos en memoria como si fuera un upload
+                    st.session_state["_drive_payload_cache"] = payload
+                    c.success("Lista para aplicar ✅ (pulsa 'Aplicar jornada')")
+                except Exception as e:
+                    c.error(f"No se pudo descargar: {e}")
+            up_jornada = None  # el apply tomará del cache
+    else:
+        c.download_button(
+            label="Guardar jornada (.json)",
+            data=_payload_str,
+            file_name=_fname,
+            mime="application/json",
+            use_container_width=True,
+        )
+
+        c.divider()
+
+        up_jornada = c.file_uploader(
+            "Cargar jornada (.json)",
+            type=["json"],
+            accept_multiple_files=False,
+            key="jornada_uploader",
+            help="Carga un .json previamente guardado para continuar donde se dejó (incluye etapa, estadísticas, etc.).",
+        )
+
+    if c.button("Aplicar jornada", use_container_width=True, disabled=(up_jornada is None and st.session_state.get("_drive_payload_cache") is None)):
+        payload = None
+
+        # 1) Si viene de Drive (cache en memoria)
+        if st.session_state.get("_drive_payload_cache") is not None:
+            payload = st.session_state.get("_drive_payload_cache")
+        # 2) Si viene de upload local
+        elif up_jornada is not None:
+            try:
+                payload = json.loads(up_jornada.getvalue().decode("utf-8"))
+            except Exception as e:
+                c.error(f"No se pudo leer el JSON: {e}")
+                payload = None
 
         if isinstance(payload, dict):
-            # Reusar loader existente, pero desde dict
-            # Guardamos temporalmente en memoria y aplicamos como si fuera load_jornada_json
+            if _apply_jornada_payload(payload):
+                c.success("Jornada cargada ✅")
+                st.session_state["_drive_payload_cache"] = None
+                st.rerun()
+
+# --- Guardar / Cargar jornada ---
+# Preferencia: Google Drive (si hay sesión OAuth). Fallback: descarga/subida local.
+drive = _drive_service()
+use_drive = drive is not None
+
+st.sidebar.markdown("**Selector rápido de jornadas**")
+if use_drive:
+    folder_name = st.secrets.get("drive", {}).get("jornadas_folder", "DrillSpot_Jornadas")
+    folder_id = _ensure_drive_folder(drive, folder_name)
+    _files_quick = _drive_list_json(drive, folder_id, limit=50)
+    if _files_quick:
+        _options_quick = {f'{f["name"]} · {f.get("modifiedTime","")}': f["id"] for f in _files_quick}
+        _pick_quick = st.sidebar.selectbox("Jornadas en Drive", list(_options_quick.keys()), key="drive_jornada_quick")
+        try:
+            _payload_preview = _drive_download_json(drive, _options_quick[_pick_quick])
+            _kpi_prev = _kpi_summary_from_payload(_payload_preview)
+            _render_kpi_summary(_kpi_prev, title="Resumen KPI (vista previa)")
+        except Exception:
+            st.sidebar.caption("No se pudo generar vista previa.")
+        if st.sidebar.button("Cargar jornada (Drive)", use_container_width=True, key="drive_jornada_quick_btn"):
             try:
-                # Tablas
-                st.session_state.df = pd.DataFrame(payload.get("df", []), columns=st.session_state.df.columns)
-                st.session_state.df_conn = pd.DataFrame(payload.get("df_conn", []), columns=st.session_state.df_conn.columns)
-                st.session_state.df_bha = pd.DataFrame(payload.get("df_bha", []), columns=st.session_state.df_bha.columns)
-
-                # drill_day + meta
-                st.session_state.drill_day = payload.get("drill_day", st.session_state.drill_day) or st.session_state.drill_day
-                meta = payload.get("meta") or st.session_state.drill_day.get("meta") or {}
-
-                # Actividades personalizadas
-                st.session_state.custom_actividades = payload.get("custom_actividades", []) or []
-
-                # Restauración segura (aplicar al inicio del script)
-                if meta:
-                    pending = {
-                        "equipo_val": meta.get("equipo", ""),
-                        "pozo_val": meta.get("pozo", ""),
-                    }
-                    _fecha_raw = str(meta.get("fecha", ""))
-                    _fecha = None
-                    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
-                        try:
-                            _fecha = datetime.strptime(_fecha_raw, fmt).date()
-                            break
-                        except Exception:
-                            pass
-                    if _fecha is not None:
-                        pending["fecha_val"] = _fecha
-
-                    pending["equipo_tipo_val"] = meta.get("equipo_tipo", "")
-                    pending["etapa_manual_chk"] = bool(meta.get("etapa_manual", False))
-                    pending["etapa_sel"] = meta.get("etapa", meta.get("etapa_manual_val", ""))
-                    pending["etapa_manual_val"] = meta.get("etapa_manual_val", meta.get("etapa", ""))
-
-                    if "modo_reporte" in meta:
-                        pending["modo_reporte"] = meta.get("modo_reporte", st.session_state.get("modo_reporte", ""))
-                    if "show_charts" in meta:
-                        pending["show_charts"] = bool(meta.get("show_charts", True))
-
-                    st.session_state["_pending_sidebar_restore"] = pending
-                    st.session_state.drill_day["meta"] = meta
-
+                payload = _drive_download_json(drive, _options_quick[_pick_quick])
+                if _apply_jornada_payload(payload):
+                    st.sidebar.success("Jornada cargada ✅")
+                    st.rerun()
+            except Exception as e:
+                st.sidebar.error(f"No se pudo cargar: {e}")
+    else:
+        st.sidebar.caption("No hay jornadas en Drive todavía.")
+else:
+    _local_list = _list_local_jornadas()
+    if _local_list:
+        _labels = [x[0] for x in _local_list]
+        _map = {x[0]: x[1] for x in _local_list}
+        _pick_local = st.sidebar.selectbox("Jornadas locales", _labels, key="local_jornada_quick")
+        try:
+            with open(_map[_pick_local], "r", encoding="utf-8") as f:
+                _payload_preview = json.load(f)
+            _kpi_prev = _kpi_summary_from_payload(_payload_preview)
+            _render_kpi_summary(_kpi_prev, title="Resumen KPI (vista previa)")
+        except Exception:
+            st.sidebar.caption("No se pudo generar vista previa.")
+        if st.sidebar.button("Cargar jornada local", use_container_width=True, key="local_jornada_quick_btn"):
+            if load_jornada_json(_map[_pick_local]):
                 st.sidebar.success("Jornada cargada ✅")
                 st.rerun()
-            except Exception as e:
-                st.sidebar.error(f"No se pudo aplicar la jornada: {e}")
+            else:
+                st.sidebar.error("No se pudo cargar la jornada local.")
+    else:
+        st.sidebar.caption("No hay jornadas locales guardadas.")
+
+st.sidebar.markdown("**Subir y aplicar .json**")
+up_quick = st.sidebar.file_uploader(
+    "Subir jornada (.json)",
+    type=["json"],
+    accept_multiple_files=False,
+    key="quick_jornada_uploader",
+)
+if st.sidebar.button("Aplicar jornada (subida)", use_container_width=True, disabled=up_quick is None, key="quick_jornada_apply_btn"):
+    try:
+        payload = json.loads(up_quick.getvalue().decode("utf-8"))
+        if _apply_jornada_payload(payload):
+            st.sidebar.success("Jornada cargada ✅")
+            st.rerun()
+    except Exception as e:
+        st.sidebar.error(f"No se pudo aplicar la jornada: {e}")
+
+_exp_adv = st.sidebar.expander("Jornada (avanzado)", expanded=False)
+_render_jornada_avanzado(_exp_adv)
 
 with st.sidebar.container(border=True):
     st.sidebar.markdown("### Carga colaborativa (por dia)")
@@ -6226,6 +6585,37 @@ with tab_conn:
         )
 
         df_conn_view = df_conn[df_conn["Etapa"] == etapa_conn_view].copy() if (etapa_conn_view != "Sin datos" and not df_conn.empty) else pd.DataFrame()
+
+        # ------------------------------
+        # Chips pro: exceso vs estándar (con sugerencias)
+        # ------------------------------
+        if not df_conn_view.empty:
+            try:
+                per_conn = df_conn_view.groupby("Conn_No", as_index=False).first()[["Conn_No", "Conn_Tipo", "Angulo_Bucket"]]
+                per_conn["Std_Total"] = per_conn.apply(
+                    lambda r: float(CONN_STDS.get((r["Conn_Tipo"], r["Angulo_Bucket"]), {}).get("TOTAL", 0.0)),
+                    axis=1,
+                )
+                total_std_min = float(per_conn["Std_Total"].sum())
+                total_real_min = float(df_conn_view.groupby(["Conn_No"])["Minutos_Reales"].sum().sum())
+
+                # Componente con mayor exceso
+                comp_over = None
+                if {"Componente", "Minutos_Reales", "Minutos_Estandar"}.issubset(df_conn_view.columns):
+                    comp_sum = df_conn_view.groupby("Componente", as_index=False).agg(
+                        real=("Minutos_Reales", "sum"),
+                        std=("Minutos_Estandar", "sum"),
+                    )
+                    comp_sum["over"] = comp_sum["real"] - comp_sum["std"]
+                    comp_sum = comp_sum.sort_values("over", ascending=False)
+                    if not comp_sum.empty and float(comp_sum.iloc[0]["over"]) > 0:
+                        comp_over = str(comp_sum.iloc[0]["Componente"])
+
+                chips_exceso = _conn_exceso_suggestions(total_real_min, total_std_min, comp_over)
+                if chips_exceso:
+                    render_chip_row(chips_exceso, use_iframe=True, height=110)
+            except Exception:
+                pass
 
         # ------------------------------
         # Gráficas (pie + stacked) por etapa
