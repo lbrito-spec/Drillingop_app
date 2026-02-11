@@ -1008,13 +1008,34 @@ allowed_domain = ""  # opcional: "rogii.com"
 
 # (El login legacy por usuario/contraseña fue removido: acceso solo por Google OAuth)
 
+# ---------- TEMPORAL: bypass Google para pruebas en local ----------
+# Poner en False para volver a exigir login con Google.
+BYPASS_GOOGLE_FOR_LOCAL = False
 
 # ---------- Gate de acceso ----------
 _google_oauth_login_sidebar()
+
+if BYPASS_GOOGLE_FOR_LOCAL and not st.session_state.get("auth_ok"):
+    st.session_state["auth_ok"] = True
+    st.session_state["auth_user"] = {
+        "name": "Usuario Local",
+        "email": "local@local",
+        "username": "local@local",
+        "role": "user",
+        "photo_url": "",
+    }
+
 if not st.session_state.get("auth_ok"):
     st.title("Dashboard Diario Operativo – DrillSpot / ROGII")
     st.info("Inicia sesión en el panel lateral para continuar.")
     st.stop()
+
+# Mensaje de carga inicial (la app es pesada; así se ve que está respondiendo)
+_loading_placeholder = None
+if BYPASS_GOOGLE_FOR_LOCAL and st.session_state.get("auth_ok"):
+    _loading_placeholder = st.empty()
+    with _loading_placeholder.container():
+        st.info("Cargando dashboard… (primera vez puede tardar 15–30 s)")
 
 # Registrar usuario activo (latido simple)
 try:
@@ -1030,6 +1051,8 @@ try:
 except Exception:
     pass
 
+if _loading_placeholder is not None:
+    _loading_placeholder.empty()
 
 # --- Modo visual (forzar claro/oscuro independiente del theme de Streamlit) ---
 # Esto controla los "cards" (HTML/iframes) y algunos estilos pro. No afecta cálculos.
@@ -1254,6 +1277,9 @@ TIPO_AGUJERO = ["Entubado", "Descubierto"]
 BARRERAS_DEFAULT = ['36"', '26"', '18 1/2"', '17 1/2"', '16"', '14 1/2"', '13 1/2"', '12 1/4"', '10 5/8"', '8 1/2"', '6 1/4"']
 SECCIONES_DEFAULT = ['30"', '20"', '16"', '13 3/8"', '11 3/4"', '9 5/8"', '7"', '5"']
 TURNOS = ["Diurno", "Nocturno"]
+# Límite de horas del día (al llegar aquí se considera día lleno). Turnos: 12h cada uno.
+DAY_LIMIT_HOURS = 24.0
+TURNO_LIMIT_HOURS = 12.0
 
 ACTIVIDADES = [
     "Perforación",
@@ -2805,11 +2831,43 @@ def _day_used_hours(df: pd.DataFrame, fecha_sel) -> float:
     except Exception:
         return 0.0
 
-def _remaining_day_hours(df: pd.DataFrame, fecha_sel, day_limit: float = 24.0) -> float:
-    """Horas restantes disponibles para el día (cap en 24h por defecto)."""
+def _remaining_day_hours(df: pd.DataFrame, fecha_sel, day_limit: float = None) -> float:
+    """Horas restantes disponibles para el día (cap en DAY_LIMIT_HOURS)."""
+    if day_limit is None:
+        day_limit = DAY_LIMIT_HOURS
     used = _day_used_hours(df, fecha_sel)
     try:
         return max(0.0, float(day_limit) - float(used))
+    except Exception:
+        return 0.0
+
+def _day_used_hours_by_turno(df: pd.DataFrame, fecha_sel, turno_nombre: str) -> float:
+    """Suma horas ya cargadas en el día para un turno ('Diurno' o 'Nocturno')."""
+    if df is None or df.empty or "Fecha" not in df.columns or "Turno" not in df.columns:
+        return 0.0
+    try:
+        fecha_str = str(fecha_sel)
+        df_local = df.copy()
+        df_local["Fecha"] = df_local["Fecha"].astype(str)
+        df_local = df_local[df_local["Fecha"] == fecha_str]
+        turno_col = df_local.get("Turno", pd.Series(dtype=str)).fillna("").astype(str).str.lower()
+        is_diurno = (
+            turno_col.str.contains("diurno", na=False) | turno_col.str.contains("dia", na=False)
+            | turno_col.str.contains("día", na=False) | turno_col.str.contains("day", na=False)
+            | turno_col.str.contains("☀", na=False)
+        )
+        is_nocturno = (
+            turno_col.str.contains("nocturno", na=False) | turno_col.str.contains("noche", na=False)
+            | turno_col.str.contains("night", na=False) | turno_col.str.contains("🌙", na=False)
+        )
+        tn = str(turno_nombre or "").strip().lower()
+        if "diurno" in tn or "dia" in tn or "día" in tn:
+            mask = is_diurno
+        elif "nocturno" in tn or "noche" in tn:
+            mask = is_nocturno
+        else:
+            return 0.0
+        return float(pd.to_numeric(df_local.loc[mask, "Horas_Reales"], errors="coerce").fillna(0).sum())
     except Exception:
         return 0.0
 
@@ -2961,14 +3019,55 @@ def load_jornada_json(path_in: str) -> bool:
 
 def _apply_jornada_payload(payload: dict) -> bool:
     try:
-        # Tablas
-        st.session_state.df = pd.DataFrame(payload.get("df", []), columns=st.session_state.df.columns)
-        st.session_state.df_conn = pd.DataFrame(payload.get("df_conn", []), columns=st.session_state.df_conn.columns)
-        st.session_state.df_bha = pd.DataFrame(payload.get("df_bha", []), columns=st.session_state.df_bha.columns)
+        meta = payload.get("meta") or {}
+        # Fecha de la jornada que estamos cargando (para merge por día, no reemplazo total)
+        _fecha_raw = str(meta.get("fecha", ""))
+        payload_fecha_str = None
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+            try:
+                dt = datetime.strptime(_fecha_raw, fmt)
+                payload_fecha_str = dt.strftime("%Y-%m-%d")
+                break
+            except Exception:
+                pass
+        if not payload_fecha_str:
+            payload_fecha_str = _fecha_raw
+
+        def _merge_jornada_table(current: pd.DataFrame, payload_rows: list, cols) -> pd.DataFrame:
+            """Mantiene todos los días actuales; solo reemplaza el día de la jornada si el payload tiene más (o igual) datos; si en sesión hay más registros (ej. viajes recién agregados), se conservan."""
+            new_day = pd.DataFrame(payload_rows, columns=cols) if payload_rows else pd.DataFrame(columns=cols)
+            if current is None or current.empty:
+                return new_day if not new_day.empty else pd.DataFrame(columns=cols)
+            if "Fecha" not in current.columns:
+                return new_day if not new_day.empty else current
+            cur = current.copy()
+            cur["Fecha"] = cur["Fecha"].astype(str).str.replace("/", "-")
+            other = cur[cur["Fecha"] != payload_fecha_str]
+            existing_for_date = cur[cur["Fecha"] == payload_fecha_str]
+            # Si en sesión ya hay datos de ese día y tiene más (o igual) filas que el JSON, no reemplazar (evita perder viajes/actividades recién cargados al cambiar de día)
+            if len(existing_for_date) > 0 and len(existing_for_date) >= len(new_day) and not new_day.empty:
+                return current.reset_index(drop=True)
+            # Si el payload viene vacío para ese día, conservar lo que hay en sesión
+            if new_day.empty:
+                return cur.reset_index(drop=True)
+            new_day = new_day.copy()
+            new_day["Fecha"] = payload_fecha_str
+            return pd.concat([other, new_day], ignore_index=True).reset_index(drop=True)
+
+        # Merge por fecha: se actualiza solo el día de la jornada, se conservan los demás días
+        st.session_state.df = _merge_jornada_table(
+            st.session_state.df, payload.get("df", []), st.session_state.df.columns
+        )
+        st.session_state.df_conn = _merge_jornada_table(
+            st.session_state.df_conn, payload.get("df_conn", []), st.session_state.df_conn.columns
+        )
+        st.session_state.df_bha = _merge_jornada_table(
+            st.session_state.df_bha, payload.get("df_bha", []), st.session_state.df_bha.columns
+        )
 
         # drill_day + meta
         st.session_state.drill_day = payload.get("drill_day", st.session_state.drill_day) or st.session_state.drill_day
-        meta = payload.get("meta") or st.session_state.drill_day.get("meta") or {}
+        meta = meta or st.session_state.drill_day.get("meta") or {}
 
         # Actividades personalizadas
         st.session_state.custom_actividades = payload.get("custom_actividades", []) or []
@@ -3056,7 +3155,7 @@ with st.sidebar.container(border=True):
         st.session_state["etapa_sel"] = etapa
     fecha = st.sidebar.date_input("Fecha", value=st.session_state.get("fecha_val", datetime.today().date()), key="fecha_val")
 
-    # Progreso de carga del dia (horas reales vs 24h)
+    # Progreso de carga del dia (horas reales vs DAY_LIMIT_HOURS, p.ej. 25h)
     try:
         _df_day = st.session_state.get("df", pd.DataFrame())
         if isinstance(_df_day, pd.DataFrame) and (not _df_day.empty) and ("Fecha" in _df_day.columns):
@@ -3068,21 +3167,24 @@ with st.sidebar.container(border=True):
         _hrs_day = float(pd.to_numeric(_df_day_local.get("Horas_Reales", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
     except Exception:
         _hrs_day = 0.0
-    _pct_day = clamp_0_100(safe_pct(_hrs_day, 24.0)) if _hrs_day >= 0 else 0.0
-    _rest_day = max(0.0, 24.0 - _hrs_day)
-    st.sidebar.markdown("**Avance del dia (24h)**")
+    _pct_day = clamp_0_100(safe_pct(_hrs_day, DAY_LIMIT_HOURS)) if _hrs_day >= 0 else 0.0
+    _rest_day = max(0.0, DAY_LIMIT_HOURS - _hrs_day)
+    st.sidebar.markdown(f"**Avance del dia ({DAY_LIMIT_HOURS:.0f}h)**")
     st.sidebar.progress(_pct_day / 100.0)
     st.sidebar.caption(f"{_hrs_day:.2f} h cargadas · faltan {_rest_day:.2f} h")
 
-    # Avance por turno (Diurno/Nocturno) - 12h cada uno
+    # Avance por turno (Diurno/Nocturno) - TURNO_LIMIT_HOURS cada uno; la barra muestra máx 100% y "12 h / 12 h" aunque se pasen
     _turno_col = _df_day_local.get("Turno", pd.Series(dtype=str)).fillna("").astype(str)
     _turno_norm = _turno_col.str.lower()
     _is_day_turno = _turno_norm.str.contains("diurno") | _turno_norm.str.contains("dia") | _turno_norm.str.contains("día") | _turno_norm.str.contains("day") | _turno_norm.str.contains("☀")
     _is_night_turno = _turno_norm.str.contains("nocturno") | _turno_norm.str.contains("noche") | _turno_norm.str.contains("night") | _turno_norm.str.contains("🌙")
     _hrs_day_turno = float(pd.to_numeric(_df_day_local.loc[_is_day_turno, "Horas_Reales"], errors="coerce").fillna(0).sum()) if not _df_day_local.empty else 0.0
     _hrs_night_turno = float(pd.to_numeric(_df_day_local.loc[_is_night_turno, "Horas_Reales"], errors="coerce").fillna(0).sum()) if not _df_day_local.empty else 0.0
-    _pct_day_turno = clamp_0_100(safe_pct(_hrs_day_turno, 12.0)) if _hrs_day_turno >= 0 else 0.0
-    _pct_night_turno = clamp_0_100(safe_pct(_hrs_night_turno, 12.0)) if _hrs_night_turno >= 0 else 0.0
+    _pct_day_turno = clamp_0_100(safe_pct(_hrs_day_turno, TURNO_LIMIT_HOURS)) if _hrs_day_turno >= 0 else 0.0
+    _pct_night_turno = clamp_0_100(safe_pct(_hrs_night_turno, TURNO_LIMIT_HOURS)) if _hrs_night_turno >= 0 else 0.0
+    # Mostrar horas cap en 12 para que la barra no muestre "18.5 h / 12 h"; a 12h la barra queda al 100%
+    _hrs_day_display = min(_hrs_day_turno, TURNO_LIMIT_HOURS)
+    _hrs_night_display = min(_hrs_night_turno, TURNO_LIMIT_HOURS)
 
     st.sidebar.markdown("**Avance por turno**")
     _bar_tpl = """
@@ -3093,15 +3195,15 @@ with st.sidebar.container(border=True):
       <div style="height:10px; background:#e5e7eb; border-radius:999px; overflow:hidden; border:1px solid #e5e7eb;">
         <div style="height:100%; width:{pct:.2f}%; background:{bar_color}; border-radius:999px;"></div>
       </div>
-      <div style="font-size: 0.8rem; color:#6b7280; margin-top:2px;">{hrs:.2f} h / 12 h</div>
+      <div style="font-size: 0.8rem; color:#6b7280; margin-top:2px;">{hrs:.2f} h / {limit:.0f} h</div>
     </div>
     """
     st.sidebar.markdown(
-        _bar_tpl.format(icon="☀️", label="Diurno", pct=_pct_day_turno, bar_color="#F59E0B", hrs=_hrs_day_turno),
+        _bar_tpl.format(icon="☀️", label="Diurno", pct=_pct_day_turno, bar_color="#F59E0B", hrs=_hrs_day_display, limit=TURNO_LIMIT_HOURS),
         unsafe_allow_html=True,
     )
     st.sidebar.markdown(
-        _bar_tpl.format(icon="🌙", label="Nocturno", pct=_pct_night_turno, bar_color="#2563EB", hrs=_hrs_night_turno),
+        _bar_tpl.format(icon="🌙", label="Nocturno", pct=_pct_night_turno, bar_color="#2563EB", hrs=_hrs_night_display, limit=TURNO_LIMIT_HOURS),
         unsafe_allow_html=True,
     )
     
@@ -4264,14 +4366,23 @@ with st.sidebar.container(border=True):
                 "Origen": "Manual",
             })
 
-        # Validación: no permitir que el día supere 24h
+        # Validación: no permitir que el día supere DAY_LIMIT_HOURS
         new_hours = float(sum([_safe_float(r.get("Horas_Reales", 0.0)) for r in add_rows]))
         remaining = _remaining_day_hours(st.session_state.df, fecha)
         if remaining <= 0:
-            st.error("El día ya completó 24h. No se pueden agregar más actividades.")
+            st.error(f"El día ya completó {DAY_LIMIT_HOURS:.0f}h. No se pueden agregar más actividades.")
             st.stop()
         if new_hours > remaining + 1e-6:
             st.error(f"No se puede agregar: quedan {remaining:.2f} h disponibles en el día.")
+            st.stop()
+        # Validación: no permitir que el turno supere TURNO_LIMIT_HOURS (12h)
+        hrs_turno_actual = _day_used_hours_by_turno(st.session_state.df, fecha, turno)
+        restante_turno = max(0.0, TURNO_LIMIT_HOURS - hrs_turno_actual)
+        if new_hours > restante_turno + 1e-6:
+            st.error(
+                f"El turno **{turno}** ya tiene {hrs_turno_actual:.2f} h cargadas. "
+                f"No se pueden cargar más de {TURNO_LIMIT_HOURS:.0f} h por turno (quedan {restante_turno:.2f} h)."
+            )
             st.stop()
 
         st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame(add_rows)], ignore_index=True)
@@ -4284,6 +4395,7 @@ with st.sidebar.container(border=True):
             st.session_state.df = _coalesce_duplicate_columns(st.session_state.df)
 
         st.sidebar.success("Actividad agregada")
+        st.rerun()
 
 
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
@@ -4566,17 +4678,28 @@ if modo_reporte == "Perforación" and actividad == "Conexión perforando":
                         "Semáforo": _semaforo_text(0.0),
                     })
 
-            # Validación: no permitir que el día supere 24h
+            # Validación: no permitir que el día supere DAY_LIMIT_HOURS
             new_hours = float(sum([_safe_float(r.get("Horas_Reales", 0.0)) for r in add_rows]))
             remaining = _remaining_day_hours(st.session_state.df, fecha)
             if remaining <= 0:
-                st.error("El día ya completó 24h. No se pueden agregar más conexiones.")
+                st.error(f"El día ya completó {DAY_LIMIT_HOURS:.0f}h. No se pueden agregar más conexiones.")
                 st.stop()
             if new_hours > remaining + 1e-6:
                 st.error(f"No se puede agregar: quedan {remaining:.2f} h disponibles en el día.")
                 st.stop()
+            # Validación: no permitir que el turno supere TURNO_LIMIT_HOURS (12h)
+            hrs_turno_conn = _day_used_hours_by_turno(st.session_state.df, fecha, turno)
+            restante_turno_conn = max(0.0, TURNO_LIMIT_HOURS - hrs_turno_conn)
+            if new_hours > restante_turno_conn + 1e-6:
+                st.error(
+                    f"El turno **{turno}** ya tiene {hrs_turno_conn:.2f} h cargadas. "
+                    f"No se pueden cargar más de {TURNO_LIMIT_HOURS:.0f} h por turno (quedan {restante_turno_conn:.2f} h)."
+                )
+                st.stop()
 
             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame(add_rows)], ignore_index=True)
+            st.sidebar.success("Conexión agregada")
+            st.rerun()
             
         st.session_state.df = _ensure_rowid(st.session_state.df)
 
@@ -5031,18 +5154,28 @@ if actividad == "Arma/Desarma BHA":
                         new_rows.append(_row)
                 add = new_rows
 
-            # Validación: no permitir que el día supere 24h
+            # Validación: no permitir que el día supere DAY_LIMIT_HOURS
             new_hours = float(sum([_safe_float(r.get("Horas_Reales", 0.0)) for r in add]))
             remaining = _remaining_day_hours(st.session_state.df, fecha)
             if remaining <= 0:
-                st.error("El día ya completó 24h. No se pueden agregar más actividades.")
+                st.error(f"El día ya completó {DAY_LIMIT_HOURS:.0f}h. No se pueden agregar más actividades.")
                 st.stop()
             if new_hours > remaining + 1e-6:
                 st.error(f"No se puede agregar: quedan {remaining:.2f} h disponibles en el día.")
                 st.stop()
+            # Validación: no permitir que el turno BHA supere TURNO_LIMIT_HOURS (12h)
+            hrs_bha_turno = _day_used_hours_by_turno(st.session_state.df, fecha, bha_turno)
+            restante_bha_turno = max(0.0, TURNO_LIMIT_HOURS - hrs_bha_turno)
+            if new_hours > restante_bha_turno + 1e-6:
+                st.error(
+                    f"El turno **{bha_turno}** ya tiene {hrs_bha_turno:.2f} h cargadas. "
+                    f"No se pueden cargar más de {TURNO_LIMIT_HOURS:.0f} h por turno (quedan {restante_bha_turno:.2f} h)."
+                )
+                st.stop()
 
             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame(add)], ignore_index=True)
             st.success("BHA agregado")
+            st.rerun()
 
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # MAIN DATA
@@ -5850,9 +5983,9 @@ with tab_resumen:
                 tnp_h_d = float(df_diario[df_diario["Tipo"] == "TNP"]["Horas_Reales"].sum()) if "Tipo" in df_diario.columns else 0.0
                 eff_d = clamp_0_100(safe_pct(tp_h_d, total_real_d)) if total_real_d > 0 else 0.0
 
-                # Mission Control diario (cap 24h)
-                total_cap = min(total_real_d, 24.0)
-                if total_real_d > 24.0:
+                # Mission Control diario (cap DAY_LIMIT_HOURS)
+                total_cap = min(total_real_d, DAY_LIMIT_HOURS)
+                if total_real_d > DAY_LIMIT_HOURS:
                     scale = total_cap / total_real_d if total_real_d > 0 else 0.0
                     tp_cap = tp_h_d * scale
                     tnpi_cap = tnpi_h_d * scale
@@ -5861,7 +5994,7 @@ with tab_resumen:
                     tp_cap, tnpi_cap, tnp_cap = tp_h_d, tnpi_h_d, tnp_h_d
                 eff_cap = clamp_0_100(safe_pct(tp_cap, total_cap)) if total_cap > 0 else 0.0
 
-                st.markdown("### 🧭 Mission Control Diario (cap 24h)")
+                st.markdown(f"### 🧭 Mission Control Diario (cap {DAY_LIMIT_HOURS:.0f}h)")
                 render_html(
                     mission_control_dashboard(
                         etapa=f"{etapa_resumen} / {fecha_resumen}",
@@ -6569,13 +6702,18 @@ with tab_conn:
     st.subheader("Conexiones perforando")
     st.caption(f"Fecha en trabajo: {str(st.session_state.get('fecha_val', ''))}")
 
+    # Usar siempre la copia más reciente de session_state para que al guardar en Detalle se vea el cambio sin añadir otra fila
+    _df_conn_tab = st.session_state.get("df_conn", pd.DataFrame()).copy()
+    if _df_conn_tab.empty and not df_conn.empty:
+        _df_conn_tab = df_conn.copy()
+
     if modo_reporte != "Perforación":
         st.info("Cambia a modo **Perforación** para ver conexiones.")
     else:
         # ------------------------------
         # Selector de etapa (para separar gráficas por etapa)
         # ------------------------------
-        etapas_conn = sorted(df_conn["Etapa"].dropna().unique().tolist()) if not df_conn.empty else []
+        etapas_conn = sorted(_df_conn_tab["Etapa"].dropna().unique().tolist()) if not _df_conn_tab.empty else []
         etapa_conn_view = st.selectbox(
             "Etapa para conexiones",
             options=etapas_conn if etapas_conn else ["Sin datos"],
@@ -6584,7 +6722,7 @@ with tab_conn:
             help="Filtra las conexiones y sus gráficas por etapa (evita mezclar varias etapas en la misma gráfica).",
         )
 
-        df_conn_view = df_conn[df_conn["Etapa"] == etapa_conn_view].copy() if (etapa_conn_view != "Sin datos" and not df_conn.empty) else pd.DataFrame()
+        df_conn_view = _df_conn_tab[_df_conn_tab["Etapa"] == etapa_conn_view].copy() if (etapa_conn_view != "Sin datos" and not _df_conn_tab.empty) else pd.DataFrame()
 
         # ------------------------------
         # Chips pro: exceso vs estándar (con sugerencias)
@@ -6735,29 +6873,108 @@ with tab_viajes:
     st.subheader("Viajes y conexiones de TP")
     st.caption(f"Fecha en trabajo: {str(st.session_state.get('fecha_val', ''))}")
 
-    # --- FILTRO DE ETAPA (Viajes y conexiones) ---
     _df_main = st.session_state.df
+
+    # --- Selector por corrida (Run) y día grabado en esa corrida ---
+    with st.expander("📅 Ver por corrida (Run) y día", expanded=True):
+        corridas_en_df = []
+        if not _df_main.empty and "Corrida" in _df_main.columns:
+            corridas_en_df = sorted(_df_main["Corrida"].dropna().astype(str).str.strip().unique().tolist())
+            corridas_en_df = [c for c in corridas_en_df if c]
+        opts_corrida = ["(Usar fecha del sidebar)"] + corridas_en_df
+        corrida_viajes_sel = st.selectbox(
+            "Corrida (Run)",
+            options=opts_corrida,
+            index=0,
+            key="viaje_corrida_sel",
+            help="Elige una corrida para ver los días grabados en ella, o usa la fecha del sidebar.",
+        )
+        fecha_viajes_desde_selector = None
+        if corrida_viajes_sel and corrida_viajes_sel != "(Usar fecha del sidebar)":
+            _mask = _df_main["Corrida"].astype(str).str.strip() == str(corrida_viajes_sel).strip()
+            _df_corrida = _df_main.loc[_mask]
+            if not _df_corrida.empty and "Fecha" in _df_corrida.columns:
+                _fechas_raw = _df_corrida["Fecha"].dropna().astype(str).str.strip().unique().tolist()
+                _fechas_ordenadas = sorted(set(_fechas_raw))
+                if _fechas_ordenadas:
+                    dia_en_corrida_sel = st.selectbox(
+                        "Día (grabado en esta corrida)",
+                        options=_fechas_ordenadas,
+                        index=len(_fechas_ordenadas) - 1,
+                        key="viaje_dia_corrida_sel",
+                        help="Días con registros en la corrida seleccionada.",
+                    )
+                    try:
+                        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y"):
+                            try:
+                                fecha_viajes_desde_selector = datetime.strptime(str(dia_en_corrida_sel), fmt).date()
+                                break
+                            except ValueError:
+                                continue
+                    except Exception:
+                        pass
+        if fecha_viajes_desde_selector is not None:
+            fecha_viajes = fecha_viajes_desde_selector
+            st.caption(f"Mostrando datos del día **{str(fecha_viajes)}** (corrida *{corrida_viajes_sel}*).")
+        else:
+            fecha_viajes = st.session_state.get("fecha_val", datetime.today().date())
+
+    # --- FILTRO DE ETAPA (Viajes y conexiones) ---
     _etapas_v = sorted(_df_main["Etapa"].dropna().unique().tolist()) if (not _df_main.empty and "Etapa" in _df_main.columns) else []
     etapa_viajes_sel = st.selectbox(
         "Etapa para viajes",
         options=_etapas_v,
         index=0 if _etapas_v else None,
-        help="Filtra la vista/registro de viajes por etapa."
+        help="Filtra la vista/registro de viajes por etapa.",
+        key="etapa_viajes_sel",
     ) if _etapas_v else None
 
 
     if "viajes_hourly_store" not in st.session_state:
-        # Store por tipo de viaje (actividad)
+        # Store por tipo de viaje y fecha (cada día su propia gráfica/datos)
         st.session_state["viajes_hourly_store"] = {}
 
+    # fecha_viajes ya quedó definida arriba (selector por corrida/día o fecha del sidebar)
     colA, colB, colC = st.columns([1.4, 1.0, 1.0])
 
     with colA:
         viaje_tipo = st.selectbox(
             "Tipo de viaje",
             options=sorted(list(VIAJE_CATALOG.keys())) if "VIAJE_CATALOG" in globals() else [],
-            help="Selecciona el tipo de viaje (catálogo de objetivos)."
+            help="Selecciona el tipo de viaje (catálogo de objetivos).",
+            key="viaje_tipo_sel",
         )
+
+    # Dirección (Trip In / Trip Out): mismo día puede tener ambos, se identifican con chips
+    _base_key = f"{viaje_tipo}|{str(fecha_viajes)}" if viaje_tipo else ""
+    _store = st.session_state.get("viajes_hourly_store", {})
+    _has_trip_in = bool(_base_key and _store.get(f"{_base_key}|Trip In"))
+    _has_trip_out = bool(_base_key and _store.get(f"{_base_key}|Trip Out"))
+    direction_viajes = st.radio(
+        "Dirección del viaje",
+        options=["Trip In", "Trip Out"],
+        index=0,
+        key="viaje_direction_sel",
+        horizontal=True,
+        help="En un mismo día puedes tener Trip In y Trip Out; los chips abajo indican cuáles tienen datos.",
+    )
+    _bg_in = "#22c55e" if _has_trip_in else "rgba(255,255,255,0.12)"
+    _fg_in = "#fff" if _has_trip_in else "rgba(255,255,255,0.6)"
+    _bg_out = "#3b82f6" if _has_trip_out else "rgba(255,255,255,0.12)"
+    _fg_out = "#fff" if _has_trip_out else "rgba(255,255,255,0.6)"
+    _label_in = "Trip In ✓" if _has_trip_in else "Trip In (sin datos)"
+    _label_out = "Trip Out ✓" if _has_trip_out else "Trip Out (sin datos)"
+    st.markdown(
+        f'<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">'
+        f'<span style="background:{_bg_in}; color:{_fg_in}; padding:4px 10px; border-radius:999px; font-size:0.85rem;">{_label_in}</span>'
+        f'<span style="background:{_bg_out}; color:{_fg_out}; padding:4px 10px; border-radius:999px; font-size:0.85rem;">{_label_out}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Chips: verde/azul = hay datos grabados para ese sentido en este día.")
+
+    _viaje_store_key = f"{_base_key}|{direction_viajes}" if _base_key else ""
+    _viaje_ui_suffix = (_viaje_store_key or "").replace("|", "_").replace(" ", "_") or str(fecha_viajes)
 
     # Standards por catálogo
     vel_std = float(VIAJE_CATALOG.get(viaje_tipo, {}).get("vel_mh", 0.0)) if viaje_tipo else 0.0
@@ -6828,13 +7045,15 @@ with tab_viajes:
             df_kpi = load_drillspot_kpi_xlsx(up_kpi)
             hourly_df, meta = compute_viaje_conn_hourly_from_kpi(df_kpi, direction=direction)
 
-            # Guarda en session por tipo de viaje
-            st.session_state["viajes_hourly_store"][viaje_tipo] = {
-                "hourly": hourly_df,
-                "meta": meta,
-                "direction": direction,
-                "considerar_conexion": considerar_conexion,
-            }
+            # Guarda en session por tipo, fecha y dirección (Trip In / Trip Out)
+            _key_xlsx = f"{_base_key}|{direction}" if _base_key else ""
+            if _key_xlsx:
+                st.session_state["viajes_hourly_store"][_key_xlsx] = {
+                    "hourly": hourly_df,
+                    "meta": meta,
+                    "direction": direction,
+                    "considerar_conexion": considerar_conexion,
+                }
             # Si hay longitud del KPI, úsala (pero permite ajustar)
             if meta.get("distance_m_total", 0.0) > 0:
                 st.session_state["viaje_distancia_m"] = float(meta["distance_m_total"])
@@ -6843,7 +7062,7 @@ with tab_viajes:
     # ------------------------------
     # DATA MANUAL / EDITABLE
     # ------------------------------
-    store = st.session_state["viajes_hourly_store"].get(viaje_tipo, {})
+    store = st.session_state["viajes_hourly_store"].get(_viaje_store_key, {})
     hourly_df = store.get("hourly")
     meta = store.get("meta", {}) if isinstance(store, dict) else {}
 
@@ -6867,7 +7086,8 @@ with tab_viajes:
             "Velocidad real (m/h)": st.column_config.NumberColumn("Velocidad real (m/h)", min_value=0.0, step=1.0),
             "Conexión real (min)": st.column_config.NumberColumn("Conexión real (min)", min_value=0.0, step=0.1),
         },
-        num_rows="fixed"
+        num_rows="fixed",
+        key=f"viajes_hourly_editor_{_viaje_ui_suffix}",
     )
 
     csave1, csave2 = st.columns([1, 1])
@@ -6878,28 +7098,30 @@ with tab_viajes:
             for c in ["speed_mh", "conn_min"]:
                 h2[c] = pd.to_numeric(h2[c], errors="coerce").fillna(0.0)
 
-            st.session_state["viajes_hourly_store"][viaje_tipo] = {
-                "hourly": h2,
-                "meta": meta,
-                "direction": store.get("direction", default_trip_direction_from_activity(viaje_tipo)),
-                "considerar_conexion": considerar_conexion,
-            }
+            if _viaje_store_key:
+                st.session_state["viajes_hourly_store"][_viaje_store_key] = {
+                    "hourly": h2,
+                    "meta": meta,
+                    "direction": store.get("direction", default_trip_direction_from_activity(viaje_tipo)),
+                    "considerar_conexion": considerar_conexion,
+                }
             st.success("Ajustes guardados ✅")
 
     with csave2:
         if st.button("Limpiar (poner en cero)", use_container_width=True, disabled=(not viaje_tipo)):
             h2 = pd.DataFrame({"hour": list(range(24)), "speed_mh": [0.0]*24, "conn_min": [0.0]*24})
-            st.session_state["viajes_hourly_store"][viaje_tipo] = {
-                "hourly": h2,
-                "meta": {},
-                "direction": store.get("direction", default_trip_direction_from_activity(viaje_tipo)),
-                "considerar_conexion": considerar_conexion,
-            }
+            if _viaje_store_key:
+                st.session_state["viajes_hourly_store"][_viaje_store_key] = {
+                    "hourly": h2,
+                    "meta": {},
+                    "direction": store.get("direction", default_trip_direction_from_activity(viaje_tipo)),
+                    "considerar_conexion": considerar_conexion,
+                }
             st.success("Valores reiniciados ✅")
             st.rerun()
 
     # Recupera la versión guardada (después de edición)
-    store = st.session_state["viajes_hourly_store"].get(viaje_tipo, {})
+    store = st.session_state["viajes_hourly_store"].get(_viaje_store_key, {})
     hourly_df = store.get("hourly", pd.DataFrame({"hour": list(range(24)), "speed_mh": [0.0]*24, "conn_min": [0.0]*24}))
     hourly_df = hourly_df.sort_values("hour").reset_index(drop=True)
 
@@ -6961,14 +7183,15 @@ with tab_viajes:
                     s2[c] = pd.to_numeric(s2[c], errors="coerce").fillna(0.0)
                 s2["conn_count"] = pd.to_numeric(s2["conn_count"], errors="coerce").fillna(0).astype(int)
 
-                # Persistimos junto con el store del viaje
-                st.session_state["viajes_hourly_store"][viaje_tipo] = {
-                    "hourly": hourly_df,
-                    "std_hourly": s2,
-                    "meta": meta,
-                    "direction": store.get("direction", default_trip_direction_from_activity(viaje_tipo)),
-                    "considerar_conexion": considerar_conexion,
-                }
+                # Persistimos junto con el store del viaje (por fecha)
+                if _viaje_store_key:
+                    st.session_state["viajes_hourly_store"][_viaje_store_key] = {
+                        "hourly": hourly_df,
+                        "std_hourly": s2,
+                        "meta": meta,
+                        "direction": store.get("direction", default_trip_direction_from_activity(viaje_tipo)),
+                        "considerar_conexion": considerar_conexion,
+                    }
                 st.success("Estándar por hora guardado ✅")
                 st.rerun()
 
@@ -6980,18 +7203,19 @@ with tab_viajes:
                     "std_conn_min": [float(tconn_std or 0.0)] * 24,
                     "conn_count": [0] * 24,
                 })
-                st.session_state["viajes_hourly_store"][viaje_tipo] = {
-                    "hourly": hourly_df,
-                    "std_hourly": s2,
-                    "meta": meta,
-                    "direction": store.get("direction", default_trip_direction_from_activity(viaje_tipo)),
-                    "considerar_conexion": considerar_conexion,
-                }
+                if _viaje_store_key:
+                    st.session_state["viajes_hourly_store"][_viaje_store_key] = {
+                        "hourly": hourly_df,
+                        "std_hourly": s2,
+                        "meta": meta,
+                        "direction": store.get("direction", default_trip_direction_from_activity(viaje_tipo)),
+                        "considerar_conexion": considerar_conexion,
+                    }
                 st.success("Estándar por hora reiniciado ✅")
                 st.rerun()
 
         # Recarga (después de guardar/reset)
-        store = st.session_state["viajes_hourly_store"].get(viaje_tipo, {})
+        store = st.session_state["viajes_hourly_store"].get(_viaje_store_key, {})
         std_hourly_df = store.get("std_hourly")
         if std_hourly_df is not None and isinstance(std_hourly_df, pd.DataFrame) and not std_hourly_df.empty:
             std_hourly_df = std_hourly_df.sort_values("hour").reset_index(drop=True)
@@ -7050,7 +7274,7 @@ with tab_viajes:
             annotation_position="top left",
         )
     fig_v.update_layout(showlegend=True, legend_title_text='', xaxis=dict(dtick=1))
-    st.plotly_chart(fig_v, use_container_width=True, key="bar_viajes_velocidad")
+    st.plotly_chart(fig_v, use_container_width=True, key=f"bar_viajes_velocidad_{_viaje_ui_suffix}")
 
     if considerar_conexion:
         fig_c = px.bar(
@@ -7082,7 +7306,12 @@ with tab_viajes:
             )
 
         fig_c.update_layout(showlegend=True, legend_title_text='', xaxis=dict(dtick=1))
-        st.plotly_chart(fig_c, use_container_width=True, key="bar_viajes_conexiones")
+        st.plotly_chart(fig_c, use_container_width=True, key=f"bar_viajes_conexiones_{_viaje_ui_suffix}")
+
+    # ------------------------------
+    # AVISO: botón de guardar más abajo
+    # ------------------------------
+    st.info(f"**Para guardar este viaje** en las actividades del día **{str(fecha_viajes)}**: baja a la sección **Registro en actividades** y pulsa el botón **Registrar este viaje en actividades** (ahí se guardan los datos de las gráficas de arriba).")
 
     # ------------------------------
     # RESUMEN (TABLA)
@@ -7546,14 +7775,24 @@ with tab_viajes:
             if not _rows:
                 st.warning("No hay horas para registrar (revisa longitud, velocidades y/o conexiones).")
             else:
-                # Validación: no permitir que el día supere 24h
+                # Validación: no permitir que el día supere DAY_LIMIT_HOURS
                 new_hours = float(sum([_safe_float(r.get("Horas_Reales", 0.0)) for r in _rows]))
                 remaining = _remaining_day_hours(st.session_state.df, fecha)
                 if remaining <= 0:
-                    st.error("El día ya completó 24h. No se pueden agregar más actividades.")
+                    st.error(f"El día ya completó {DAY_LIMIT_HOURS:.0f}h. No se pueden agregar más actividades.")
                     st.stop()
                 if new_hours > remaining + 1e-6:
                     st.error(f"No se puede agregar: quedan {remaining:.2f} h disponibles en el día.")
+                    st.stop()
+                # Validación: no permitir que el turno supere TURNO_LIMIT_HOURS (12h)
+                _turno_viaje = locals().get("turno_registro", turno)
+                hrs_turno_viaje = _day_used_hours_by_turno(st.session_state.df, fecha, _turno_viaje)
+                restante_turno_viaje = max(0.0, TURNO_LIMIT_HOURS - hrs_turno_viaje)
+                if new_hours > restante_turno_viaje + 1e-6:
+                    st.error(
+                        f"El turno **{_turno_viaje}** ya tiene {hrs_turno_viaje:.2f} h cargadas. "
+                        f"No se pueden cargar más de {TURNO_LIMIT_HOURS:.0f} h por turno (quedan {restante_turno_viaje:.2f} h)."
+                    )
                     st.stop()
 
                 nueva = pd.DataFrame(_rows)
@@ -8169,7 +8408,7 @@ with tab_detalle:
     if df_det.empty:
         st.info("No hay registros para editar.")
     else:
-        with st.expander("Editar registros en tabla (guardar cambios)", expanded=False):
+        with st.expander("Editar registros en tabla (guardar cambios)", expanded=True):
             editable_cols = [
                 "RowID",
                 "Fecha",
@@ -8233,7 +8472,7 @@ with tab_detalle:
                     "Horas_Prog": st.column_config.NumberColumn("Horas Prog", min_value=0.0, step=0.25, format="%.2f"),
                     "Horas_Reales": st.column_config.NumberColumn("Horas Reales", min_value=0.0, step=0.25, format="%.2f"),
                 },
-                key="detalle_editor_df",
+                key="detalle_editor_df_" + str(st.session_state.get("_detalle_editor_version", 0)),
             )
 
             if st.button("Guardar cambios (Detalle)", use_container_width=True):
@@ -8307,9 +8546,11 @@ with tab_detalle:
                         )
                         valid = {v for v in valid if v}
                         if valid:
+                            def _viaje_key_tipo(k):
+                                return (str(k).split("|")[0].strip() if "|" in str(k) else str(k).strip())
                             st.session_state["viajes_hourly_store"] = {
                                 k: v for k, v in st.session_state["viajes_hourly_store"].items()
-                                if str(k).strip() in valid
+                                if _viaje_key_tipo(k) in valid
                             }
                         else:
                             st.session_state["viajes_hourly_store"] = {}
@@ -8329,7 +8570,8 @@ with tab_detalle:
                         st.session_state.pop(k, None)
                     except Exception:
                         pass
-                st.success("Cambios guardados. Las gráficas se actualizaron.")
+                st.session_state["_detalle_editor_version"] = st.session_state.get("_detalle_editor_version", 0) + 1
+                st.success("Cambios guardados. Las gráficas y pestañas (p. ej. Conexiones) se actualizaron.")
                 st.rerun()
 
     st.subheader("Detalle de actividades")
