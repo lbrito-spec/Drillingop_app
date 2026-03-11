@@ -1009,8 +1009,8 @@ allowed_domain = ""  # opcional: "rogii.com"
 # (El login legacy por usuario/contraseña fue removido: acceso solo por Google OAuth)
 
 # ---------- TEMPORAL: bypass Google para pruebas en local ----------
-# Poner en False para volver a exigir login con Google.
-BYPASS_GOOGLE_FOR_LOCAL = False
+# Poner en True para trabajar en local sin login Google. False = exigir login con Google.
+BYPASS_GOOGLE_FOR_LOCAL = True
 
 # ---------- Gate de acceso ----------
 _google_oauth_login_sidebar()
@@ -10029,6 +10029,20 @@ with tab_drillspot:
             c3.metric("Prof. fin (m)", f"{prof_fin:.2f}")
             c4.metric("ΔProf neta (m)", f"{net_m:.2f}")
 
+            # Chips pro acumulativos con semáforos (ROP: verde ≥6, ámbar ≥4, rojo <4 m/h)
+            rop_acum = (net_m / total_h) if total_h and total_h > 0 else 0.0
+            n_events = len(kpi)
+            _st = kpi.get("Start Time")
+            n_days = _st.dropna().dt.date.nunique() if _st is not None and hasattr(_st.dt, "date") else 0
+            _rop_tone = "green" if rop_acum >= 6 else ("amber" if rop_acum >= 4 else "red") if total_h and total_h > 0 else "gray"
+            render_chip_row([
+                {"label": "Total (h)", "value": f"{total_h:.2f}", "tone": "blue"},
+                {"label": "ΔProf neta (m)", "value": f"{net_m:.2f}", "tone": "violet"},
+                {"label": "ROP (m/h)", "value": f"{rop_acum:.2f}", "tone": _rop_tone},
+                {"label": "Días cubiertos", "value": str(n_days), "tone": "gray"},
+                {"label": "Eventos", "value": f"{n_events:,}", "tone": "gray"},
+            ], use_iframe=True, height=100)
+
             # Stats por Run
             if "Run" in kpi.columns:
                 st.markdown("### Resumen por Run")
@@ -10043,6 +10057,21 @@ with tab_drillspot:
                     )
                     .reset_index()
                 )
+                # Semáforo por avance (Delta): verde ≥100 m, ámbar 0–100, rojo ≤0
+                def _sem_run(d):
+                    if d is None or (isinstance(d, float) and pd.isna(d)):
+                        return "⚪"
+                    try:
+                        v = float(d)
+                        if v >= 100:
+                            return "🟢"
+                        if v > 0:
+                            return "🟡"
+                        return "🔴"
+                    except Exception:
+                        return "⚪"
+                run["Semáforo"] = run["Delta"].apply(_sem_run)
+                run = run[["Run", "Semáforo", "Inicio", "Fin", "Delta", "Horas", "Eventos"]]
                 st.dataframe(run, use_container_width=True, hide_index=True)
                 try:
                     r = run.copy()
@@ -10075,6 +10104,8 @@ with tab_drillspot:
                     .sort_values(ascending=False)
                     .reset_index()
                 )
+                total_pareto = pareto["Duration_h"].sum()
+                pareto["%"] = (pareto["Duration_h"] / total_pareto * 100).round(1) if total_pareto else 0
                 st.dataframe(pareto, use_container_width=True, hide_index=True)
                 # ------------------------------
                 # Gráficas (Plotly)
@@ -10111,11 +10142,376 @@ with tab_drillspot:
                     st.plotly_chart(fig_pie, use_container_width=True)
                 except Exception as _e:
                     st.warning(f"No pude generar gráficas KPI: {_e}")
+
+            # ------------------------------ Estadísticas discretizadas por día
+            st.markdown("### Estadísticas por día")
+            _st_col = kpi.get("Start Time")
+            if _st_col is not None and _st_col.notna().any():
+                fechas_disp = sorted(_st_col.dropna().dt.date.unique().tolist())
+                if fechas_disp:
+                    sel_fecha = st.date_input(
+                        "Seleccionar día",
+                        value=min(fechas_disp) if fechas_disp else date.today(),
+                        min_value=min(fechas_disp),
+                        max_value=max(fechas_disp),
+                        key="drillspot_dia",
+                    )
+                    if sel_fecha in fechas_disp:
+                        kpi_dia = kpi[_st_col.dt.date == sel_fecha].copy()
+                        total_h_d = float(kpi_dia["Duration_h"].sum()) if "Duration_h" in kpi_dia.columns else 0.0
+                        prof_ini_d = float(kpi_dia["Start Bit Depth"].min()) if "Start Bit Depth" in kpi_dia.columns else 0.0
+                        prof_fin_d = float(kpi_dia["End Bit Depth"].max()) if "End Bit Depth" in kpi_dia.columns else 0.0
+                        net_m_d = prof_fin_d - prof_ini_d
+                        rop_d = (net_m_d / total_h_d) if total_h_d and total_h_d > 0 else 0.0
+                        n_ev_d = len(kpi_dia)
+                        _rop_tone_d = "green" if rop_d >= 6 else ("amber" if rop_d >= 4 else "red") if total_h_d else "gray"
+                        render_chip_row([
+                            {"label": "Total (h)", "value": f"{total_h_d:.2f}", "tone": "blue"},
+                            {"label": "ΔProf (m)", "value": f"{net_m_d:.2f}", "tone": "violet"},
+                            {"label": "ROP (m/h)", "value": f"{rop_d:.2f}", "tone": _rop_tone_d},
+                            {"label": "Eventos", "value": f"{n_ev_d:,}", "tone": "gray"},
+                        ], use_iframe=True, height=100)
+                        # Gráfica pro: horas del día (0–23) por KPI (barras apiladas) + línea de profundidad
+                        kpi_dia["hora"] = kpi_dia["Start Time"].dt.hour
+                        por_hora_kpi = kpi_dia.groupby(["hora", "KPI"], dropna=False)["Duration_h"].sum().reset_index()
+                        pivot_h = por_hora_kpi.pivot(index="hora", columns="KPI", values="Duration_h").fillna(0)
+                        pivot_h = pivot_h.reindex(range(24), fill_value=0).fillna(0)
+                        fig_dia = go.Figure()
+                        colors = px.colors.qualitative.Set2 + px.colors.qualitative.Pastel
+                        for i, col in enumerate(pivot_h.columns):
+                            fig_dia.add_trace(go.Bar(
+                                x=pivot_h.index.tolist(),
+                                y=pivot_h[col].tolist(),
+                                name=str(col) if col else "N/A",
+                                marker_color=colors[i % len(colors)],
+                            ))
+                        has_depth = "End Bit Depth" in kpi_dia.columns and kpi_dia["End Bit Depth"].notna().any()
+                        added_depth_line = False
+                        if has_depth and "End Time" in kpi_dia.columns:
+                            et = pd.to_datetime(kpi_dia["End Time"], errors="coerce")
+                            depth_at_h = []
+                            for h in range(24):
+                                t_end = pd.Timestamp(sel_fecha) + pd.Timedelta(hours=h + 1)
+                                mask = et <= t_end
+                                val = kpi_dia.loc[mask, "End Bit Depth"].max() if mask.any() else None
+                                depth_at_h.append(None if val is None or (isinstance(val, float) and pd.isna(val)) else float(val))
+                            valid = [x is not None for x in depth_at_h]
+                            if any(valid):
+                                y2 = [d if v else None for d, v in zip(depth_at_h, valid)]
+                                fig_dia.add_trace(
+                                    go.Scatter(
+                                        x=list(range(24)),
+                                        y=y2,
+                                        name="Profundidad (m)",
+                                        line=dict(color="#22c55e", width=2),
+                                        yaxis="y2",
+                                    )
+                                )
+                                added_depth_line = True
+                        layout_kw = dict(
+                            barmode="stack",
+                            title=f"Actividad por hora del día — {sel_fecha}",
+                            xaxis_title="Hora del día",
+                            yaxis_title="Horas",
+                            xaxis=dict(dtick=1, range=[-0.5, 23.5]),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                            height=420,
+                        )
+                        if added_depth_line:
+                            layout_kw["yaxis2"] = dict(title="Profundidad (m)", overlaying="y", side="right", showgrid=False)
+                        fig_dia.update_layout(**layout_kw)
+                        st.plotly_chart(fig_dia, use_container_width=True)
+
+                        # Segunda gráfica: actividad discretizada por evento (no acumulada), minuto dentro de la hora
+                        st.markdown("#### Timeline por evento (minutos dentro de cada hora)")
+                        st.caption("Cada barra es un evento en su minuto de inicio; la altura es la duración. No se acumulan.")
+                        kpi_dia_st = kpi_dia["Start Time"].dropna()
+                        kpi_dia_et = kpi_dia["End Time"].dropna() if "End Time" in kpi_dia.columns else None
+                        kpi_dia_dur = kpi_dia["Duration"] if "Duration" in kpi_dia.columns else (kpi_dia["Duration_h"] * 60.0)
+                        kpi_dia_kpi = kpi_dia["KPI"] if "KPI" in kpi_dia.columns else pd.Series(["Evento"] * len(kpi_dia))
+                        segments = []
+                        for i in kpi_dia.index:
+                            start = kpi_dia_st.get(i)
+                            if start is None or (hasattr(start, "tz") and pd.isna(start)):
+                                continue
+                            dur_min = float(kpi_dia_dur.iloc[kpi_dia.index.get_loc(i)] or 0)
+                            if dur_min <= 0:
+                                continue
+                            k = kpi_dia_kpi.iloc[kpi_dia.index.get_loc(i)]
+                            if pd.isna(k):
+                                k = "N/A"
+                            start = pd.Timestamp(start)
+                            hour0 = start.hour
+                            remaining = dur_min
+                            min0 = start.minute + start.second / 60.0 + start.microsecond / 60000000.0
+                            while remaining > 1e-6 and hour0 < 24:
+                                seg_dur = min(remaining, 60.0 - min0)
+                                if seg_dur > 0:
+                                    segments.append((hour0, min0, seg_dur, str(k)))
+                                remaining -= seg_dur
+                                hour0 += 1
+                                min0 = 0
+                        if segments:
+                            seg_df = pd.DataFrame(segments, columns=["hora", "min_inicio", "dur_min", "KPI"])
+                            kpi_orden = seg_df["KPI"].unique().tolist()
+                            colors_d = {k: px.colors.qualitative.Set2[i % len(px.colors.qualitative.Set2)] for i, k in enumerate(kpi_orden)}
+                            if len(kpi_orden) > len(px.colors.qualitative.Set2):
+                                extra = px.colors.qualitative.Pastel
+                                for i, k in enumerate(kpi_orden[len(px.colors.qualitative.Set2):]):
+                                    colors_d[k] = extra[i % len(extra)]
+                            fig_tl = go.Figure()
+                            for k in kpi_orden:
+                                sub = seg_df[seg_df["KPI"] == k]
+                                fig_tl.add_trace(go.Bar(
+                                    x=sub["hora"].tolist(),
+                                    y=sub["dur_min"].tolist(),
+                                    base=sub["min_inicio"].tolist(),
+                                    name=str(k),
+                                    marker_color=colors_d.get(k, "gray"),
+                                    width=0.85,
+                                ))
+                            layout_tl = dict(
+                                barmode="overlay",
+                                title=f"Actividad por evento (minuto dentro de la hora) — {sel_fecha}",
+                                xaxis_title="Hora del día",
+                                yaxis_title="Minutos dentro de la hora",
+                                xaxis=dict(dtick=1, range=[-0.5, 23.5]),
+                                yaxis=dict(range=[0, 60], dtick=5),
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                                height=420,
+                            )
+                            if added_depth_line:
+                                fig_tl.add_trace(
+                                    go.Scatter(
+                                        x=list(range(24)),
+                                        y=y2,
+                                        name="Profundidad (m)",
+                                        line=dict(color="#22c55e", width=2),
+                                        yaxis="y2",
+                                    )
+                                )
+                                layout_tl["yaxis2"] = dict(title="Profundidad (m)", overlaying="y", side="right", showgrid=False)
+                            fig_tl.update_layout(**layout_tl)
+                            st.plotly_chart(fig_tl, use_container_width=True)
+                        else:
+                            st.info("No hay eventos con hora de inicio para mostrar el timeline por evento.")
+                    else:
+                        st.info("No hay datos para la fecha seleccionada.")
+                else:
+                    st.caption("No se detectaron fechas en el archivo para estadísticas por día.")
+            else:
+                st.caption("Se requiere columna 'Start Time' con fechas para estadísticas por día.")
+
             st.markdown("### Datos crudos (preview)")
             st.dataframe(kpi.head(200), use_container_width=True, hide_index=True)
 
         except Exception as e:
             st.error(f"No pude leer el archivo. Error: {e}")
+
+    # ------------------------------ Rig Activities (timeline por evento, mismo estilo que KPI)
+    st.markdown("---")
+    st.subheader("Rig Activities")
+    st.caption("Carga un CSV de actividades del equipo: columna de timestamp (ej. YYYY-MM-DDTHH:MM:SS), «Rig Activity», «Bit depth (m)», «Hole Depth (m)». Se muestran actividades completas en timeline por evento.")
+    up_rig = st.file_uploader("Cargar CSV Rig Activities", type=["csv"], key="rig_activities_upload")
+    if up_rig is not None:
+        try:
+            rig_raw = pd.read_csv(up_rig)
+            # Detectar columna de tiempo (primera columna o la que contenga 'time'/'date' o formato ISO)
+            time_col = None
+            for c in rig_raw.columns:
+                c_low = str(c).strip().lower()
+                if c_low in ("time", "timestamp", "date", "datetime") or "time" in c_low or "date" in c_low:
+                    time_col = c
+                    break
+            if time_col is None and len(rig_raw.columns) > 0:
+                sample = str(rig_raw.iloc[0, 0]) if len(rig_raw) > 0 else ""
+                if "T" in sample and "-" in sample and ":" in sample:
+                    time_col = rig_raw.columns[0]
+            if time_col is None and len(rig_raw.columns) > 0:
+                time_col = rig_raw.columns[0]
+            # Actividad y profundidad
+            activity_col = None
+            for c in rig_raw.columns:
+                if "rig" in str(c).lower() and "activ" in str(c).lower():
+                    activity_col = c
+                    break
+            if activity_col is None:
+                for c in rig_raw.columns:
+                    if "activ" in str(c).lower():
+                        activity_col = c
+                        break
+            if activity_col is None:
+                st.error("No se encontró columna de actividad (ej. «Rig Activity»).")
+            else:
+                rig = rig_raw.copy()
+                rig[time_col] = pd.to_datetime(rig[time_col], errors="coerce")
+                rig = rig.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
+                if rig.empty:
+                    st.warning("No hay filas con timestamp válido.")
+                else:
+                    # Segmentos: agrupar filas consecutivas con la misma actividad (start = primera fila, end = timestamp de la siguiente)
+                    rig["_act"] = rig[activity_col].astype(str).fillna("")
+                    segs = []
+                    i = 0
+                    while i < len(rig):
+                        act = rig["_act"].iloc[i]
+                        t_start = rig[time_col].iloc[i]
+                        j = i + 1
+                        while j < len(rig) and rig["_act"].iloc[j] == act:
+                            j += 1
+                        if j < len(rig):
+                            t_end = rig[time_col].iloc[j]
+                        else:
+                            # Último bloque: duración = diferencia con el siguiente registro o 1 registro = 0 min → usar intervalo medio
+                            if len(rig) > 1:
+                                dt_med = (rig[time_col].diff().dropna()).median()
+                                t_end = t_start + (dt_med if pd.notna(dt_med) else pd.Timedelta(seconds=10))
+                            else:
+                                t_end = t_start + pd.Timedelta(seconds=10)
+                        dur_min = (t_end - t_start).total_seconds() / 60.0
+                        if dur_min > 0:
+                            segs.append({"Start Time": t_start, "End Time": t_end, "Duration": dur_min, "Rig Activity": act})
+                        i = j
+                    if not segs:
+                        st.info("No se generaron segmentos de actividad (revisa el CSV).")
+                    else:
+                        rig_seg = pd.DataFrame(segs)
+                        st.success(f"Rig Activities cargado: {up_rig.name} → {len(rig_seg):,} segmentos.")
+
+                        # Profundidad: Bit depth o Hole Depth
+                        depth_col = None
+                        for c in rig_raw.columns:
+                            if "bit" in str(c).lower() and "depth" in str(c).lower():
+                                depth_col = c
+                                break
+                        if depth_col is None:
+                            for c in rig_raw.columns:
+                                if "hole" in str(c).lower() and "depth" in str(c).lower():
+                                    depth_col = c
+                                    break
+                        if depth_col:
+                            rig[depth_col] = pd.to_numeric(rig[depth_col], errors="coerce")
+                            rig_has_depth = rig[depth_col].notna().any() and (rig[depth_col] != 0).any()
+                        else:
+                            rig_has_depth = False
+
+                        fechas_rig = sorted(pd.to_datetime(rig_seg["Start Time"]).dt.date.unique().tolist())
+                        if fechas_rig:
+                            sel_fecha_rig = st.date_input(
+                                "Día (Rig Activities)",
+                                value=min(fechas_rig),
+                                min_value=min(fechas_rig),
+                                max_value=max(fechas_rig),
+                                key="rig_dia",
+                            )
+                            if sel_fecha_rig in fechas_rig:
+                                rig_dia = rig_seg[pd.to_datetime(rig_seg["Start Time"]).dt.date == sel_fecha_rig].copy()
+                                if rig_dia.empty:
+                                    st.info("No hay segmentos para la fecha seleccionada.")
+                                else:
+                                    st.markdown("#### Timeline Rig Activities (por evento)")
+                                    st.caption("Cada barra es un segmento de actividad en su minuto de inicio; la altura es la duración. No se acumulan.")
+                                    # Chips pro: métricas del día (antes del gráfico para evitar superposición con leyenda)
+                                    total_min_rig = float(rig_dia["Duration"].sum())
+                                    total_h_rig = total_min_rig / 60.0
+                                    top_act = rig_dia.groupby("Rig Activity", dropna=False)["Duration"].sum().sort_values(ascending=False)
+                                    top_act_name = str(top_act.index[0]) if not top_act.empty else "-"
+                                    top_act_min = float(top_act.iloc[0]) if not top_act.empty else 0.0
+                                    n_act = int(rig_dia["Rig Activity"].nunique()) if "Rig Activity" in rig_dia.columns else 0
+                                    # Semáforo: cobertura del día (horas con actividad / 24)
+                                    horas_con_act = rig_dia["Start Time"].apply(lambda t: pd.Timestamp(t).hour).nunique() if "Start Time" in rig_dia.columns else 0
+                                    cobertura_pct = (horas_con_act / 24.0 * 100.0) if horas_con_act else 0.0
+                                    _tone_cob = "green" if cobertura_pct >= 80 else ("amber" if cobertura_pct >= 50 else "red")
+                                    _tone_top = "green" if "drill" in top_act_name.lower() or "perfor" in top_act_name.lower() else "blue"
+                                    render_chip_row([
+                                        {"label": "Total día", "value": f"{total_h_rig:.2f} h", "tone": "blue"},
+                                        {"label": "Actividad principal", "value": f"{top_act_name[:20]}{'…' if len(top_act_name) > 20 else ''}", "tone": _tone_top},
+                                        {"label": "Principal (min)", "value": f"{top_act_min:.0f} min", "tone": "violet"},
+                                        {"label": "Cobertura día", "value": f"{cobertura_pct:.0f}% ({horas_con_act}h)", "tone": _tone_cob},
+                                        {"label": "Actividades distintas", "value": str(n_act), "tone": "gray"},
+                                    ], use_iframe=True, height=100)
+                                    segments_rig = []
+                                    for _, r in rig_dia.iterrows():
+                                        start = pd.Timestamp(r["Start Time"])
+                                        dur_min = float(r["Duration"])
+                                        if dur_min <= 0:
+                                            continue
+                                        k = str(r["Rig Activity"]) if pd.notna(r["Rig Activity"]) else "N/A"
+                                        hour0 = start.hour
+                                        remaining = dur_min
+                                        min0 = start.minute + start.second / 60.0 + start.microsecond / 60000000.0
+                                        while remaining > 1e-6 and hour0 < 24:
+                                            seg_dur = min(remaining, 60.0 - min0)
+                                            if seg_dur > 0:
+                                                segments_rig.append((hour0, min0, seg_dur, k))
+                                            remaining -= seg_dur
+                                            hour0 += 1
+                                            min0 = 0
+                                    if segments_rig:
+                                        seg_rig_df = pd.DataFrame(segments_rig, columns=["hora", "min_inicio", "dur_min", "Rig Activity"])
+                                        act_orden = seg_rig_df["Rig Activity"].unique().tolist()
+                                        colors_rig = {a: px.colors.qualitative.Set2[i % len(px.colors.qualitative.Set2)] for i, a in enumerate(act_orden)}
+                                        if len(act_orden) > len(px.colors.qualitative.Set2):
+                                            for i, a in enumerate(act_orden[len(px.colors.qualitative.Set2):]):
+                                                colors_rig[a] = px.colors.qualitative.Pastel[i % len(px.colors.qualitative.Pastel)]
+                                        fig_rig = go.Figure()
+                                        for a in act_orden:
+                                            sub = seg_rig_df[seg_rig_df["Rig Activity"] == a]
+                                            fig_rig.add_trace(go.Bar(
+                                                x=sub["hora"].tolist(),
+                                                y=sub["dur_min"].tolist(),
+                                                base=sub["min_inicio"].tolist(),
+                                                name=str(a),
+                                                marker_color=colors_rig.get(a, "gray"),
+                                                width=0.85,
+                                            ))
+                                        layout_rig = dict(
+                                            barmode="overlay",
+                                            title=dict(text=f"Rig Activities por evento — {sel_fecha_rig}", x=0.5, xanchor="center", font=dict(size=16)),
+                                            margin=dict(t=56, b=80, l=50, r=50),
+                                            xaxis_title="Hora del día",
+                                            yaxis_title="Minutos dentro de la hora",
+                                            xaxis=dict(dtick=1, range=[-0.5, 23.5]),
+                                            yaxis=dict(range=[0, 60], dtick=5),
+                                            legend=dict(orientation="h", yanchor="top", y=-0.14, xanchor="center", x=0.5),
+                                            height=420,
+                                        )
+                                        y2_rig = None
+                                        if depth_col and rig_has_depth and time_col:
+                                            # Profundidad al cierre de cada hora (desde datos crudos del día)
+                                            rig_dia_dates = rig[pd.to_datetime(rig[time_col]).dt.date == sel_fecha_rig]
+                                            if not rig_dia_dates.empty:
+                                                ts = pd.to_datetime(rig_dia_dates[time_col])
+                                                depth_vals = rig_dia_dates[depth_col]
+                                                depth_at_h = []
+                                                for h in range(24):
+                                                    t_end = pd.Timestamp(sel_fecha_rig) + pd.Timedelta(hours=h + 1)
+                                                    mask = ts <= t_end
+                                                    if mask.any():
+                                                        val = depth_vals.loc[mask].max()
+                                                        depth_at_h.append(None if pd.isna(val) else float(val))
+                                                    else:
+                                                        depth_at_h.append(None)
+                                                if any(x is not None for x in depth_at_h):
+                                                    y2_rig = [x if x is not None else None for x in depth_at_h]
+                                                    fig_rig.add_trace(go.Scatter(
+                                                        x=list(range(24)),
+                                                        y=y2_rig,
+                                                        name="Profundidad (m)",
+                                                        line=dict(color="#22c55e", width=2),
+                                                        yaxis="y2",
+                                                    ))
+                                                    layout_rig["yaxis2"] = dict(title="Profundidad (m)", overlaying="y", side="right", showgrid=False)
+                                        fig_rig.update_layout(**layout_rig)
+                                        st.plotly_chart(fig_rig, use_container_width=True)
+                                    else:
+                                        st.info("No hay segmentos con duración para esta fecha.")
+                            else:
+                                st.info("Selecciona una fecha con datos.")
+                        else:
+                            st.caption("No se detectaron fechas en los segmentos de Rig Activities.")
+        except Exception as e_rig:
+            st.error(f"No se pudo procesar el CSV de Rig Activities. Error: {e_rig}")
 
 # NUEVA TAB: REPORTE GENERAL DEL POZO (TODAS LAS ETAPAS)
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
