@@ -901,8 +901,6 @@ def _google_oauth_login_sidebar():
                 st.session_state["auth_ok"] = False
                 st.session_state["auth_user"] = None
                 st.session_state["google_creds"] = None
-                st.session_state.pop("oauth_state", None)
-                st.session_state.pop("oauth_code_verifier", None)
                 st.rerun()
             return
 
@@ -929,23 +927,20 @@ allowed_domain = ""  # opcional: "rogii.com"
             }
         }
 
+        flow = Flow.from_client_config(
+            client_config,
+            scopes=GOOGLE_SCOPES,
+            redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
+        autogenerate_code_verifier=False,)
+
         q = st.query_params
         code = q.get("code", None)
-        state = q.get("state", None)
 
         if code:
+            # Canjear código por tokens. No llamar a authorization_url() cuando ya tenemos
+            # el code, así el flujo no genera code_verifier (PKCE). Los clientes "Web application"
+            # con client_secret no deben enviar code_verifier; si no, Google devuelve invalid_grant.
             try:
-                flow = Flow.from_client_config(
-                    client_config,
-                    scopes=GOOGLE_SCOPES,
-                    redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
-                    state=st.session_state.get("oauth_state"),
-                )
-
-                saved_verifier = st.session_state.get("oauth_code_verifier")
-                if saved_verifier:
-                    flow.code_verifier = saved_verifier
-
                 flow.fetch_token(code=code)
                 creds = flow.credentials
 
@@ -1000,26 +995,17 @@ allowed_domain = ""  # opcional: "rogii.com"
                     "username": email,
                 }
 
-                st.session_state.pop("oauth_state", None)
-                st.session_state.pop("oauth_code_verifier", None)
                 st.query_params.clear()
                 st.rerun()
 
             except Exception as e:
                 st.error(f"No se pudo completar login: {e}")
         else:
-            flow = Flow.from_client_config(
-                client_config,
-                scopes=GOOGLE_SCOPES,
-                redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
-            )
-            auth_url, new_state = flow.authorization_url(
+            auth_url, _ = flow.authorization_url(
                 access_type="offline",
                 include_granted_scopes="true",
                 prompt="consent",
             )
-            st.session_state["oauth_state"] = new_state
-            st.session_state["oauth_code_verifier"] = getattr(flow, "code_verifier", None)
             st.markdown(f"[➡️ Iniciar sesión con Google]({auth_url})")
 
 
