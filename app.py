@@ -937,10 +937,13 @@ allowed_domain = ""  # opcional: "rogii.com"
         code = q.get("code", None)
 
         if code:
-            # Canjear código por tokens. No llamar a authorization_url() cuando ya tenemos
-            # el code, así el flujo no genera code_verifier (PKCE). Los clientes "Web application"
-            # con client_secret no deben enviar code_verifier; si no, Google devuelve invalid_grant.
+            # La URL de autorización se generó con PKCE (code_challenge); Google exige el
+            # code_verifier al canjear el código. Lo guardamos en sesión al generar el enlace
+            # y lo restauramos aquí (en la vuelta el Flow es nuevo y no lo tiene).
             try:
+                saved_verifier = st.session_state.get("oauth_code_verifier")
+                if saved_verifier is not None:
+                    flow._code_verifier = saved_verifier
                 flow.fetch_token(code=code)
                 creds = flow.credentials
 
@@ -996,6 +999,8 @@ allowed_domain = ""  # opcional: "rogii.com"
                 }
 
                 st.query_params.clear()
+                if "oauth_code_verifier" in st.session_state:
+                    del st.session_state["oauth_code_verifier"]
                 st.rerun()
 
             except Exception as e:
@@ -1006,6 +1011,8 @@ allowed_domain = ""  # opcional: "rogii.com"
                 include_granted_scopes="true",
                 prompt="consent",
             )
+            if getattr(flow, "_code_verifier", None) is not None:
+                st.session_state["oauth_code_verifier"] = flow._code_verifier
             st.markdown(f"[➡️ Iniciar sesión con Google]({auth_url})")
 
 
