@@ -933,17 +933,13 @@ allowed_domain = ""  # opcional: "rogii.com"
             redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
         )
 
-        auth_url, _ = flow.authorization_url(
-            access_type="offline",
-            include_granted_scopes="true",
-            prompt="consent",
-        )
-
-        st.markdown(f"[➡️ Iniciar sesión con Google]({auth_url})")
-
         q = st.query_params
         code = q.get("code", None)
+
         if code:
+            # Canjear código por tokens. No llamar a authorization_url() cuando ya tenemos
+            # el code, así el flujo no genera code_verifier (PKCE). Los clientes "Web application"
+            # con client_secret no deben enviar code_verifier; si no, Google devuelve invalid_grant.
             try:
                 flow.fetch_token(code=code)
                 creds = flow.credentials
@@ -1004,13 +1000,20 @@ allowed_domain = ""  # opcional: "rogii.com"
 
             except Exception as e:
                 st.error(f"No se pudo completar login: {e}")
+        else:
+            auth_url, _ = flow.authorization_url(
+                access_type="offline",
+                include_granted_scopes="true",
+                prompt="consent",
+            )
+            st.markdown(f"[➡️ Iniciar sesión con Google]({auth_url})")
 
 
 # (El login legacy por usuario/contraseña fue removido: acceso solo por Google OAuth)
 
 # ---------- TEMPORAL: bypass Google para pruebas en local ----------
 # Poner en True para trabajar en local sin login Google. False = exigir login con Google.
-BYPASS_GOOGLE_FOR_LOCAL = True
+BYPASS_GOOGLE_FOR_LOCAL = False
 
 # ---------- Gate de acceso ----------
 _google_oauth_login_sidebar()
