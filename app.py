@@ -898,9 +898,8 @@ def _google_oauth_login_sidebar():
             if u.get("photo_url"):
                 st.sidebar.image(u["photo_url"], width=48)
             if st.button("Cerrar sesión", key="logout_btn_google"):
-                st.session_state["auth_ok"] = False
-                st.session_state["auth_user"] = None
-                st.session_state["google_creds"] = None
+                for k in ["auth_ok", "auth_user", "google_creds", "oauth_state", "oauth_code_verifier"]:
+                    st.session_state.pop(k, None)
                 st.rerun()
             return
 
@@ -927,23 +926,30 @@ allowed_domain = ""  # opcional: "rogii.com"
             }
         }
 
-        flow = Flow.from_client_config(
-            client_config,
-            scopes=GOOGLE_SCOPES,
-            redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
-        )
-
         q = st.query_params
-        code = q.get("code", None)
+        code = q.get("code")
+        state = q.get("state")
 
         if code:
-            # La URL de autorización se generó con PKCE (code_challenge); Google exige el
-            # code_verifier al canjear el código. Lo guardamos en sesión al generar el enlace
-            # y lo restauramos aquí (en la vuelta el Flow es nuevo y no lo tiene).
             try:
+                saved_state = st.session_state.get("oauth_state")
+                if saved_state and state and state != saved_state:
+                    st.error("No se pudo completar login: el parámetro state no coincide. Intenta iniciar sesión de nuevo.")
+                    st.session_state.pop("oauth_state", None)
+                    st.session_state.pop("oauth_code_verifier", None)
+                    return
+
+                flow = Flow.from_client_config(
+                    client_config,
+                    scopes=GOOGLE_SCOPES,
+                    redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
+                    state=saved_state,
+                )
+
                 saved_verifier = st.session_state.get("oauth_code_verifier")
-                if saved_verifier is not None:
-                    flow._code_verifier = saved_verifier
+                if saved_verifier:
+                    flow.code_verifier = saved_verifier
+
                 flow.fetch_token(code=code)
                 creds = flow.credentials
 
@@ -998,21 +1004,26 @@ allowed_domain = ""  # opcional: "rogii.com"
                     "username": email,
                 }
 
+                st.session_state.pop("oauth_state", None)
+                st.session_state.pop("oauth_code_verifier", None)
                 st.query_params.clear()
-                if "oauth_code_verifier" in st.session_state:
-                    del st.session_state["oauth_code_verifier"]
                 st.rerun()
 
             except Exception as e:
                 st.error(f"No se pudo completar login: {e}")
         else:
-            auth_url, _ = flow.authorization_url(
+            flow = Flow.from_client_config(
+                client_config,
+                scopes=GOOGLE_SCOPES,
+                redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
+            )
+            auth_url, new_state = flow.authorization_url(
                 access_type="offline",
                 include_granted_scopes="true",
                 prompt="consent",
             )
-            if getattr(flow, "_code_verifier", None) is not None:
-                st.session_state["oauth_code_verifier"] = flow._code_verifier
+            st.session_state["oauth_state"] = new_state
+            st.session_state["oauth_code_verifier"] = getattr(flow, "code_verifier", None)
             st.markdown(f"[➡️ Iniciar sesión con Google]({auth_url})")
 
 
