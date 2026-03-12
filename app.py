@@ -898,8 +898,11 @@ def _google_oauth_login_sidebar():
             if u.get("photo_url"):
                 st.sidebar.image(u["photo_url"], width=48)
             if st.button("Cerrar sesión", key="logout_btn_google"):
-                for k in ["auth_ok", "auth_user", "google_creds", "oauth_state", "oauth_code_verifier"]:
-                    st.session_state.pop(k, None)
+                st.session_state["auth_ok"] = False
+                st.session_state["auth_user"] = None
+                st.session_state["google_creds"] = None
+                st.session_state.pop("oauth_state", None)
+                st.session_state.pop("oauth_code_verifier", None)
                 st.rerun()
             return
 
@@ -927,23 +930,16 @@ allowed_domain = ""  # opcional: "rogii.com"
         }
 
         q = st.query_params
-        code = q.get("code")
-        state = q.get("state")
+        code = q.get("code", None)
+        state = q.get("state", None)
 
         if code:
             try:
-                saved_state = st.session_state.get("oauth_state")
-                if saved_state and state and state != saved_state:
-                    st.error("No se pudo completar login: el parámetro state no coincide. Intenta iniciar sesión de nuevo.")
-                    st.session_state.pop("oauth_state", None)
-                    st.session_state.pop("oauth_code_verifier", None)
-                    return
-
                 flow = Flow.from_client_config(
                     client_config,
                     scopes=GOOGLE_SCOPES,
                     redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
-                    state=saved_state,
+                    state=st.session_state.get("oauth_state"),
                 )
 
                 saved_verifier = st.session_state.get("oauth_code_verifier")
