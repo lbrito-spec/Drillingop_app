@@ -1932,8 +1932,9 @@ def render_export_diario_calendario():
                             key="dl_csv_day",
                         )
 
-                with st.expander("Vista previa (tabla del día)", expanded=False):
-                    st.dataframe(df_day, use_container_width=True, height=260)
+                # Vista previa (no expander dentro de expander: Streamlit no lo permite)
+                st.markdown("**Vista previa (tabla del día)**")
+                st.dataframe(df_day, use_container_width=True, height=260)
 
 
 def style_for_export(fig):
@@ -6441,10 +6442,10 @@ with tab_resumen:
                 else:
                     st.info("No hay viajes registrados para el resumen diario.")
 
-                # Tabla resumen diario
-                with st.expander("Ver tabla diaria (etapa + fecha)", expanded=False):
-                    cols_show = [c for c in ["Fecha","Etapa","Actividad","Tipo","Horas_Prog","Horas_Reales","Categoria_TNPI","Detalle_TNPI","Categoria_TNP","Detalle_TNP","Comentario"] if c in df_diario.columns]
-                    st.dataframe(df_diario[cols_show], use_container_width=True, height=260)
+                # Tabla resumen diario (no usar expander dentro de expander: Streamlit no lo permite)
+                st.markdown("#### Ver tabla diaria (etapa + fecha)")
+                cols_show = [c for c in ["Fecha","Etapa","Actividad","Tipo","Horas_Prog","Horas_Reales","Categoria_TNPI","Detalle_TNPI","Categoria_TNP","Detalle_TNP","Comentario"] if c in df_diario.columns]
+                st.dataframe(df_diario[cols_show], use_container_width=True, height=260)
 
 # == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == =
 # TAB: INDICADORES ACTIVIDADES
