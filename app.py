@@ -4936,7 +4936,9 @@ if actividad == "Arma/Desarma BHA":
             # Nota: no sobrescribir la selección TNP con un selector TNPI.
 
             # --- Desglose opcional (múltiples causas) ---
-            with st.expander("Detalle TNPI (opcional) - desglose por múltiples causas", expanded=False):
+            # (No usar st.expander aquí: está dentro de sidebar.expander "Arma/Desarma BHA"; Streamlit no permite expanders anidados.)
+            show_bha_desglose = st.toggle("Detalle TNPI (opcional) - desglose por múltiples causas", value=False, key="bha_show_desglose")
+            if show_bha_desglose:
                 st.caption("Agrega varias causas y presiona **Guardar cambios**. La suma debe ser igual al TNPI calculado.")
 
                 # Inicializar borrador si está vacío y no hay nada guardado
