@@ -1,6 +1,7 @@
 import io
 import smtplib
 from email.message import EmailMessage
+from pathlib import Path
 
 import altair as alt
 import pandas as pd
@@ -47,9 +48,6 @@ st.markdown(
 )
 
 
-# =========================
-# Helpers
-# =========================
 def detect_timestamp_column(columns):
     preferred = ["Timestamp", "timestamp", "YYYY-MM-DDTHH:MM:SS"]
     for col in preferred:
@@ -59,10 +57,6 @@ def detect_timestamp_column(columns):
 
 
 def preserve_units_row(original_df: pd.DataFrame, filtered_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Conserva la primera fila del archivo original como fila de unidades,
-    para que quede justo debajo del encabezado en el CSV final.
-    """
     if original_df.empty:
         return filtered_df.copy()
 
@@ -86,21 +80,23 @@ def send_email_with_attachment(
     to_email: str,
     attachment_bytes: bytes,
     attachment_name: str,
+    mime_type: str,
 ) -> None:
     msg = EmailMessage()
-    msg["Subject"] = f"CSV filtrado - {attachment_name}"
+    msg["Subject"] = f"Archivo filtrado - {attachment_name}"
     msg["From"] = from_email
     msg["To"] = to_email
     msg.set_content(
         "Hola,\n\n"
-        "Adjunto el archivo CSV filtrado generado desde la app de Streamlit.\n\n"
+        "Adjunto el archivo filtrado generado desde la app de Streamlit.\n\n"
         "Saludos."
     )
 
+    maintype, subtype = mime_type.split("/", 1)
     msg.add_attachment(
         attachment_bytes,
-        maintype="text",
-        subtype="csv",
+        maintype=maintype,
+        subtype=subtype,
         filename=attachment_name,
     )
 
@@ -110,9 +106,43 @@ def send_email_with_attachment(
         server.send_message(msg)
 
 
-# =========================
-# Sidebar
-# =========================
+def find_logo_path():
+    candidates = [
+        Path(__file__).parent / "assets" / "LogoDS.png",
+        Path(__file__).parent / "LogoDS.png",
+        Path("assets") / "LogoDS.png",
+        Path("LogoDS.png"),
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return None
+
+
+def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Hookload_filtrado")
+        ws = writer.sheets["Hookload_filtrado"]
+
+        for col_cells in ws.columns:
+            max_length = 0
+            column_letter = col_cells[0].column_letter
+            for cell in col_cells:
+                try:
+                    cell_len = len(str(cell.value)) if cell.value is not None else 0
+                    if cell_len > max_length:
+                        max_length = cell_len
+                except Exception:
+                    pass
+            ws.column_dimensions[column_letter].width = min(max(max_length + 2, 12), 40)
+
+    output.seek(0)
+    return output.getvalue()
+
+
 with st.sidebar:
     st.header("Configuración de limpieza")
     timestamp_col_enabled = st.checkbox(
@@ -139,25 +169,12 @@ with st.sidebar:
     to_email = st.text_input("To email", value="solobox+pemex@rogii.com")
 
 
-# =========================
-# Header
-# =========================
-col_logo, col_title = st.columns([0.6, 8])
+col_logo, col_title = st.columns([0.7, 8])
 
 with col_logo:
-    logo_loaded = False
-
-    try:
-        st.image("LogoDS.png", width=56)
-        logo_loaded = True
-    except Exception:
-        pass
-
-    if not logo_loaded:
-        try:
-            st.image(r"C:\Users\l.brito_rogii\Downloads\Tripping App\LogoDS.png", width=56)
-        except Exception:
-            pass
+    logo_path = find_logo_path()
+    if logo_path is not None:
+        st.image(str(logo_path), width=56)
 
 with col_title:
     st.title("Filtrado de Hookload máximo por Bit depth")
@@ -171,9 +188,6 @@ st.write(
 uploaded_file = st.file_uploader("Sube tu archivo CSV", type=["csv"])
 
 
-# =========================
-# Main flow
-# =========================
 if uploaded_file is not None:
     try:
         raw_bytes = uploaded_file.getvalue()
@@ -193,7 +207,6 @@ if uploaded_file is not None:
 
         df = original_df.copy()
 
-        # Limpieza numérica
         df["Bit depth"] = pd.to_numeric(df["Bit depth"], errors="coerce")
         df["Hookload"] = pd.to_numeric(df["Hookload"], errors="coerce")
 
@@ -201,7 +214,6 @@ if uploaded_file is not None:
         df = df.dropna(subset=["Bit depth", "Hookload"]).copy()
         cleaned_rows = len(df)
 
-        # Procesamiento de timestamp
         ts_col = detect_timestamp_column(df.columns)
         if timestamp_col_enabled and ts_col is not None:
             df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce")
@@ -215,7 +227,6 @@ if uploaded_file is not None:
             st.warning("No quedaron filas válidas después de la limpieza.")
             st.stop()
 
-        # Filtrado por máximo Hookload para cada Bit depth
         filtered_df = (
             df.loc[df.groupby("Bit depth")["Hookload"].idxmax()]
             .sort_values("Bit depth")
@@ -233,9 +244,6 @@ if uploaded_file is not None:
         m3.metric("Filas filtradas", len(filtered_df))
         m4.metric("Fila de unidades", "Sí" if len(original_df) >= 1 else "No")
 
-        # =========================
-        # Gráfico Hookload vs Depth
-        # =========================
         st.subheader("Gráfico Hookload vs Depth en vivo")
 
         chart_df = filtered_df.copy()
@@ -257,21 +265,34 @@ if uploaded_file is not None:
             st.info("No hay datos suficientes para graficar.")
 
         csv_bytes = final_df.to_csv(index=False).encode("utf-8")
-        output_name = uploaded_file.name.replace(".csv", "_filtrado.csv")
+        excel_bytes = dataframe_to_excel_bytes(final_df)
 
-        c1, c2 = st.columns(2)
+        base_name = uploaded_file.name.rsplit(".", 1)[0]
+        output_csv_name = f"{base_name}_filtrado.csv"
+        output_xlsx_name = f"{base_name}_filtrado.xlsx"
+
+        c1, c2, c3 = st.columns(3)
 
         with c1:
             st.download_button(
                 label="⬇️ Descargar CSV filtrado",
                 data=csv_bytes,
-                file_name=output_name,
+                file_name=output_csv_name,
                 mime="text/csv",
                 use_container_width=True,
             )
 
         with c2:
-            if st.button("🚀 Enviar a Parsing Email", type="primary", use_container_width=True):
+            st.download_button(
+                label="⬇️ Descargar Excel filtrado",
+                data=excel_bytes,
+                file_name=output_xlsx_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+        with c3:
+            if st.button("🚀 Enviar Excel a Parsing Email", type="primary", use_container_width=True):
                 try:
                     send_email_with_attachment(
                         smtp_server=smtp_server,
@@ -280,10 +301,11 @@ if uploaded_file is not None:
                         smtp_pass=smtp_pass,
                         from_email=from_email,
                         to_email=to_email,
-                        attachment_bytes=csv_bytes,
-                        attachment_name=output_name,
+                        attachment_bytes=excel_bytes,
+                        attachment_name=output_xlsx_name,
+                        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
-                    st.success(f"Archivo enviado correctamente a {to_email}")
+                    st.success(f"Archivo Excel enviado correctamente a {to_email}")
                 except Exception as email_error:
                     st.error(f"No se pudo enviar el correo: {email_error}")
 
