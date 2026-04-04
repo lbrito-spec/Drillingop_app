@@ -1,0 +1,14 @@
+streamlit
+pandas
+numpy
+plotly
+requests
+scipy
+python-dotenv
+Pillow
+python-pptx
+streamlit-echarts
+streamlit-drawable-canvas
+pdfplumber
+openpyxl
+kaleido
