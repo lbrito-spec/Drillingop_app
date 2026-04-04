@@ -100,12 +100,15 @@ import streamlit as st
 
 import os
 
-logo_path = os.path.join("assets", "LogoDS.png")
+# === LOGO (robusto para Streamlit Cloud) ===
+logo_path = os.path.join(os.path.dirname(__file__), "assets", "LogoDS.png")
+
 if os.path.exists(logo_path):
-    import streamlit as st
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         st.image(logo_path, width=200)
+else:
+    st.warning(f"No encontré el logo en: {logo_path}")
 
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
