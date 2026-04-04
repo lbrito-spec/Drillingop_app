@@ -2254,6 +2254,39 @@ def prettify_hist(fig, h: int = 420):
     return fig
 
 
+def plotly_figure_to_png_bytes(fig, scale: int = 2) -> bytes | None:
+    """
+    Convierte una figura Plotly a PNG vía Kaleido. En servidores sin Chrome/Chromium
+    (p. ej. Streamlit Cloud) suele fallar: devuelve None en lugar de propagar el error.
+    """
+    try:
+        return fig.to_image(format="png", scale=int(scale))
+    except Exception:
+        return None
+
+
+def add_plotly_slide_to_prs(
+    prs: Presentation,
+    title: str,
+    fig,
+    *,
+    scale: int = 2,
+) -> None:
+    """Añade diapositiva con captura PNG del gráfico, o texto si Kaleido no está disponible."""
+    png_bytes = plotly_figure_to_png_bytes(fig, scale=scale)
+    if png_bytes is not None:
+        buf = io.BytesIO(png_bytes)
+        buf.seek(0)
+        add_image_slide(prs, title, buf)
+    else:
+        add_text_slide(
+            prs,
+            title,
+            "Esta gráfica no pudo exportarse a imagen en este entorno (Kaleido/Chrome no disponible). "
+            "Genera el PPTX en un equipo local con kaleido y Chromium, o revisa los gráficos en la app.",
+        )
+
+
 def save_and_show_plotly(
     prs: Presentation,
     title: str,
@@ -2266,10 +2299,7 @@ def save_and_show_plotly(
         fig = prettify_heatmap(fig)
     else:
         fig = prettify_hist(fig) if is_hist else prettify(fig)
-    png_bytes = fig.to_image(format="png", scale=2)
-    buf = io.BytesIO(png_bytes)
-    buf.seek(0)
-    add_image_slide(prs, title, buf)
+    add_plotly_slide_to_prs(prs, title, fig, scale=2)
 
     if show_plots:
         st.plotly_chart(
@@ -4651,13 +4681,11 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
 
     # Proximity figure
     fig1 = build_proximity_figure(df, wob_col, rpm_col, analysis, torque_col)
-    buf1 = io.BytesIO(fig1.to_image(format="png", scale=2))
-    add_image_slide(prs, "BHA Proximity to Resonance", buf1)
+    add_plotly_slide_to_prs(prs, "BHA Proximity to Resonance", fig1)
 
     # Frequency figure
     fig2 = build_frequency_figure(df, wob_col, rpm_col, analysis, torque_col)
-    buf2 = io.BytesIO(fig2.to_image(format="png", scale=2))
-    add_image_slide(prs, "BHA Rotational Frequency Mapping", buf2)
+    add_plotly_slide_to_prs(prs, "BHA Rotational Frequency Mapping", fig2)
 
     # WOB–RPM binned heatmap (squared bins); color by ROP if available, else MSE, else Shocks & Vibs
     n_bins_pptx = 30
@@ -4685,8 +4713,7 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
                 title=f"WOB–RPM Heatmap (squared bins) · {shocks_col_pptx}",
             )
     if fig_hm_pptx is not None:
-        buf_hm = io.BytesIO(fig_hm_pptx.to_image(format="png", scale=2))
-        add_image_slide(prs, "WOB–RPM Heatmap (squared bins)", buf_hm)
+        add_plotly_slide_to_prs(prs, "WOB–RPM Heatmap (squared bins)", fig_hm_pptx)
 
     # Heatmap (porcentual)
     corr_cols = [wob_col, rpm_col, torque_col, "Freq_Hz", "Proximity_norm"]
@@ -4710,8 +4737,7 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
     )
     fig_corr.update_layout(coloraxis_colorbar_title="Corr (-1 a 1)")
     fig_corr = prettify_heatmap(fig_corr)
-    buf3 = io.BytesIO(fig_corr.to_image(format="png", scale=2))
-    add_image_slide(prs, "Engineering Correlation Heatmap", buf3)
+    add_plotly_slide_to_prs(prs, "Engineering Correlation Heatmap", fig_corr)
 
     # Safe windows bar
     if analysis["report"] is not None:
@@ -4724,8 +4750,7 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
         )
         fig_windows.update_traces(marker_line_width=0)
         fig_windows = prettify(fig_windows)
-        buf4 = io.BytesIO(fig_windows.to_image(format="png", scale=2))
-        add_image_slide(prs, "Safe Window Widths", buf4)
+        add_plotly_slide_to_prs(prs, "Safe Window Widths", fig_windows)
 
     # MSE slides (if columns available)
     if rop_col in df.columns and depth_col in df.columns:
@@ -4743,10 +4768,8 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
                 df_mse, "Ingeniería", "Depth_MSE", "Depth (m)"
             )
             fig_mse_hist = build_mse_hist(df_mse, "Ingeniería")
-            buf5 = io.BytesIO(fig_mse_depth.to_image(format="png", scale=2))
-            add_image_slide(prs, "MSE vs Profundidad", buf5)
-            buf6 = io.BytesIO(fig_mse_hist.to_image(format="png", scale=2))
-            add_image_slide(prs, "MSE Distribution", buf6)
+            add_plotly_slide_to_prs(prs, "MSE vs Profundidad", fig_mse_depth)
+            add_plotly_slide_to_prs(prs, "MSE Distribution", fig_mse_hist)
 
     tmp_dir = Path(tempfile.mkdtemp())
     pptx_path = tmp_dir / "Engineering_Insights_Report.pptx"
@@ -8661,6 +8684,74 @@ def compute_zone_stability_summary(zone_stats: dict) -> dict:
     }
 
 
+
+def build_kpi_csv_executive_summary(
+    zone_stats: dict,
+    rop_avg: float,
+    rop_max: float,
+    filled_points: int,
+    total_rows: int,
+    interpolation_method: str,
+    smoothing_method: str,
+    mse_series: pd.Series | None = None,
+) -> str:
+    """Resumen ejecutivo corto, listo para copiar en WhatsApp."""
+    stability = compute_zone_stability_summary(zone_stats)
+    best_rop = float(zone_stats.get("best_rop", float("nan")))
+    best_count = int(zone_stats.get("best_count", 0))
+    wob_low = float(zone_stats.get("best_wob_low", float("nan")))
+    wob_high = float(zone_stats.get("best_wob_high", float("nan")))
+    rpm_low = float(zone_stats.get("best_rpm_low", float("nan")))
+    rpm_high = float(zone_stats.get("best_rpm_high", float("nan")))
+
+    upside_pct = (
+        ((best_rop / max(float(rop_avg), 1e-6)) - 1.0) * 100.0
+        if np.isfinite(best_rop) and np.isfinite(rop_avg)
+        else float("nan")
+    )
+
+    lines = [
+        "Resumen ejecutivo KPI desde CSV",
+        "",
+        (
+            f"Se procesaron {int(total_rows):,} registros. "
+            f"Se rellenaron {int(filled_points):,} huecos usando interpolación {interpolation_method} "
+            f"y suavizado {smoothing_method}."
+        ),
+        (
+            f"La mejor ventana operativa de ROP quedó en WOB {wob_low:.2f}–{wob_high:.2f} "
+            f"y RPM {rpm_low:.2f}–{rpm_high:.2f}, con ROP promedio de {best_rop:.2f} "
+            f"en {best_count} puntos."
+        ),
+        (
+            f"Contra el promedio del dataset ({float(rop_avg):.2f}), esta ventana representa "
+            f"{upside_pct:.1f}% de mejora potencial y el pico observado fue {float(rop_max):.2f}."
+            if np.isfinite(upside_pct) and np.isfinite(rop_max) and np.isfinite(rop_avg)
+            else "No fue posible calcular mejora potencial completa contra el promedio del dataset."
+        ),
+        (
+            f"El semáforo de estabilidad quedó en {stability['label']} "
+            f"({float(stability['score']):.1f}/100), con cobertura {float(stability['coverage_pct']):.1f}%, "
+            f"densidad {float(stability['density_pct']):.1f}% y consistencia {float(stability['consistency_pct']):.1f}%."
+        ),
+    ]
+
+    if mse_series is not None:
+        mse_clean = pd.to_numeric(mse_series, errors="coerce").dropna()
+        if not mse_clean.empty:
+            q10 = float(mse_clean.quantile(0.10))
+            q50 = float(mse_clean.quantile(0.50))
+            q90 = float(mse_clean.quantile(0.90))
+            lines.append(
+                f"En eficiencia mecánica, el MSE quedó con mediana {q50:.2f} ksi y banda central P10–P90 de {q10:.2f}–{q90:.2f} ksi."
+            )
+
+    lines.append(
+        "Recomendación: usar esta ventana como referencia operativa inicial y validarla contra torque, vibración y respuesta de formación antes de estandarizarla."
+    )
+    return "\n\n".join(lines)
+
+
 def render_kpi_executive_dashboard(zone_stats: dict, rop_avg: float, rop_max: float, filled_points: int) -> None:
     summary = compute_zone_stability_summary(zone_stats)
     upside_pct = ((float(zone_stats.get('best_rop', 0.0)) / max(float(rop_avg), 1e-6)) - 1.0) * 100.0 if np.isfinite(rop_avg) else float('nan')
@@ -8911,6 +9002,32 @@ def render_kpi_csv_optimizer() -> None:
             rop_avg=float(rop_avg_value) if np.isfinite(rop_avg_value) else float('nan'),
             rop_max=float(rop_max_value) if np.isfinite(rop_max_value) else float('nan'),
             filled_points=filled_points,
+        )
+
+        mse_summary_series = None
+        if df_mse is not None and not df_mse.empty and mse_value_col is not None and mse_value_col in df_mse.columns:
+            mse_summary_series = df_mse[mse_value_col]
+
+        wa_kpi_csv = build_kpi_csv_executive_summary(
+            zone_stats=zone_stats,
+            rop_avg=float(rop_avg_value) if np.isfinite(rop_avg_value) else float("nan"),
+            rop_max=float(rop_max_value) if np.isfinite(rop_max_value) else float("nan"),
+            filled_points=filled_points,
+            total_rows=len(df_processed),
+            interpolation_method=str(interpolation_method),
+            smoothing_method=str(smoothing_method),
+            mse_series=mse_summary_series,
+        )
+
+        st.markdown("#### Resumen ejecutivo listo para WhatsApp")
+        st.caption(
+            "Texto corto, ejecutivo y copiable para compartir la lectura del CSV con operaciones, ingeniería o supervisión."
+        )
+        st.text_area(
+            "Resumen ejecutivo CSV",
+            value=wa_kpi_csv,
+            height=220,
+            key="kpi_csv_whatsapp_summary",
         )
 
         fig_hm = build_optimal_rop_heatmap(zone_stats, title="Mapa operativo pro de la mejor zona de ROP")
