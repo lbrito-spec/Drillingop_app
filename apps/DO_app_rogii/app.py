@@ -8129,7 +8129,7 @@ render_language_selector_sidebar()
 col_spacer_l, col_logo, col_title, col_spacer_r = st.columns([0.4, 1.2, 6, 0.4], vertical_alignment="center")
 with col_logo:
     if LOGO_PATH.exists():
-        st.image(str(LOGO_PATH), width=170)
+        st.image(str(LOGO_PATH), width=130)
 
 with col_title:
     st.title(APP_TITLE)
@@ -9041,6 +9041,10 @@ def render_kpi_csv_optimizer() -> None:
             st.markdown('#### Ranking de ventanas operativas')
             st.dataframe(pd.DataFrame(top_rows), use_container_width=True, hide_index=True)
 
+    preview_df = df_processed.copy()
+    if df_mse is not None and not df_mse.empty and mse_value_col is not None and mse_value_col in df_mse.columns:
+        preview_df = preview_df.join(df_mse[[mse_value_col]], how="left")
+
     preview_cols = [c for c in [
         depth_col if depth_col != "<ninguna>" else None,
         rop_col,
@@ -9051,10 +9055,10 @@ def render_kpi_csv_optimizer() -> None:
         rpm_work_col if rpm_work_col != rpm_col else None,
         torque_col if torque_col != "<ninguna>" else None,
         torque_work_col if torque_col != "<ninguna>" and torque_work_col != torque_col else None,
-        mse_value_col,
-    ] if c]
+        mse_value_col if mse_value_col in preview_df.columns else None,
+    ] if c and c in preview_df.columns]
     with st.expander("Vista previa de datos procesados", expanded=False):
-        st.dataframe(df_processed[preview_cols].head(200), use_container_width=True, hide_index=True)
+        st.dataframe(preview_df[preview_cols].head(200), use_container_width=True, hide_index=True)
 
 
 def render_kpi_module() -> None:
