@@ -97,19 +97,6 @@ import requests
 from scipy.signal import find_peaks, savgol_filter
 from scipy.stats import binned_statistic_2d
 import streamlit as st
-
-import os
-
-# === LOGO (robusto para Streamlit Cloud) ===
-logo_path = os.path.join(os.path.dirname(__file__), "assets", "LogoDS.png")
-
-if os.path.exists(logo_path):
-    col1, col2, col3 = st.columns([1,2,1])
-    with col2:
-        st.image(logo_path, width=200)
-else:
-    st.warning(f"No encontré el logo en: {logo_path}")
-
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 from pptx import Presentation
@@ -496,7 +483,7 @@ except Exception:
 # =========================
 APP_TITLE = "Drilling KPI & Mechanical Efficiency Report"
 BASE_DIR = Path(__file__).resolve().parent
-LOGO_PATH = BASE_DIR / "LogoDS.png"
+LOGO_PATH = (BASE_DIR / "assets" / "LogoDS.png") if (BASE_DIR / "assets" / "LogoDS.png").exists() else (BASE_DIR / "LogoDS.png")
 SHEET_NAME = "worksheet"
 PLOTLY_TEMPLATE = "plotly_white"
 COLOR_SEQ = ["#2563EB", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#14B8A6"]
@@ -8139,15 +8126,16 @@ def save_whatsapp_summaries_excel(
 init_session_state()
 render_language_selector_sidebar()
 
-col_logo, col_title = st.columns([1, 6], vertical_alignment="center")
+col_spacer_l, col_logo, col_title, col_spacer_r = st.columns([0.4, 1.2, 6, 0.4], vertical_alignment="center")
 with col_logo:
     if LOGO_PATH.exists():
-        st.image(str(LOGO_PATH), width=90)
-    else:
-        st.warning(f"{tr('logo_missing')} {LOGO_PATH}")
+        st.image(str(LOGO_PATH), width=170)
 
 with col_title:
     st.title(APP_TITLE)
+
+if not LOGO_PATH.exists():
+    st.info(f"{tr('logo_missing')} {LOGO_PATH}")
 
 st.markdown(
     f"{tr('intro_p1')}\n\n{tr('intro_p2')}\n\n{tr('intro_p3')}"
