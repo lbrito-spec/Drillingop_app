@@ -492,7 +492,25 @@ except Exception:
 # =========================
 APP_TITLE = "Drilling KPI & Mechanical Efficiency Report"
 BASE_DIR = Path(__file__).resolve().parent
-LOGO_PATH = BASE_DIR / "LogoDS.png"
+def _resolve_logo_path() -> Path:
+    candidates = [
+        BASE_DIR / "assets" / "LogoDS.png",
+        BASE_DIR / "LogoDS.png",
+        BASE_DIR.parent / "assets" / "LogoDS.png",
+        BASE_DIR.parent / "LogoDS.png",
+        Path.cwd() / "assets" / "LogoDS.png",
+        Path.cwd() / "LogoDS.png",
+        Path.cwd() / "apps" / "DO_app_rogii" / "assets" / "LogoDS.png",
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                return p
+        except Exception:
+            continue
+    return BASE_DIR / "assets" / "LogoDS.png"
+
+LOGO_PATH = _resolve_logo_path()
 SHEET_NAME = "worksheet"
 PLOTLY_TEMPLATE = "plotly_white"
 COLOR_SEQ = ["#2563EB", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#14B8A6"]
@@ -9175,6 +9193,12 @@ with col_logo:
 
 with col_title:
     st.title(APP_TITLE)
+
+if LOGO_PATH.exists():
+    try:
+        st.sidebar.image(str(LOGO_PATH), width=130)
+    except Exception:
+        pass
 
 st.markdown(
     f"{tr('intro_p1')}\n\n{tr('intro_p2')}\n\n{tr('intro_p3')}"
