@@ -1,3 +1,4 @@
+# Density @ °C unificada en una sola columna (valor @ temperatura)
 """Drilling KPI & Mechanical Efficiency Report (Streamlit).
 
 Versión .py con mejoras profesionales:
@@ -22,6 +23,14 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _combine_value_temp(value, temp):
+    if value is None and temp is None:
+        return None
+    v = "" if value is None else str(value)
+    t = "" if temp is None else str(temp)
+    return f"{v} @ {t}" if t != "" else v
 from typing import Iterable, List, Tuple
 from urllib.parse import urlencode
 from textwrap import wrap
@@ -483,12 +492,33 @@ except Exception:
 # =========================
 APP_TITLE = "Drilling KPI & Mechanical Efficiency Report"
 BASE_DIR = Path(__file__).resolve().parent
-LOGO_PATH = (BASE_DIR / "assets" / "LogoDS.png") if (BASE_DIR / "assets" / "LogoDS.png").exists() else (BASE_DIR / "LogoDS.png")
+LOGO_PATH = BASE_DIR / "LogoDS.png"
 SHEET_NAME = "worksheet"
 PLOTLY_TEMPLATE = "plotly_white"
 COLOR_SEQ = ["#2563EB", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#14B8A6"]
 # Sin barra de herramientas (iconos de zoom, etc.) en gráficas Plotly
 PLOTLY_CONFIG = {"displayModeBar": False, "displaylogo": False}
+# Heatmap ROP dashboard: barra al pasar el mouse + export PNG a mayor escala
+PLOTLY_CONFIG_ROP_DASH = {
+    **PLOTLY_CONFIG,
+    "displayModeBar": "hover",
+    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+    "toImageButtonOptions": {
+        "format": "png",
+        "filename": "heatmap_rop_mejor_zona",
+        "scale": 3,
+    },
+}
+# Degradado continuo tipo panel pro: azul profundo → teal/cian → amarillo → naranja (sin rojo duro)
+ROP_HEATMAP_COLORSCALE: list[list] = [
+    [0.0, "rgb(8, 16, 40)"],
+    [0.17, "rgb(37, 72, 170)"],
+    [0.38, "rgb(8, 131, 168)"],
+    [0.55, "rgb(45, 185, 168)"],
+    [0.74, "rgb(234, 179, 8)"],
+    [1.0, "rgb(251, 146, 60)"],
+]
+ROP_HEATMAP_LABEL_TOP_FRACTION = 0.15
 # Conversión MPa -> ksi (kpsi): 1 MPa = 0.145038 ksi
 MPA_TO_KSI = 0.145038
 MODE_NORMALIZATION = {
@@ -2254,39 +2284,6 @@ def prettify_hist(fig, h: int = 420):
     return fig
 
 
-def plotly_figure_to_png_bytes(fig, scale: int = 2) -> bytes | None:
-    """
-    Convierte una figura Plotly a PNG vía Kaleido. En servidores sin Chrome/Chromium
-    (p. ej. Streamlit Cloud) suele fallar: devuelve None en lugar de propagar el error.
-    """
-    try:
-        return fig.to_image(format="png", scale=int(scale))
-    except Exception:
-        return None
-
-
-def add_plotly_slide_to_prs(
-    prs: Presentation,
-    title: str,
-    fig,
-    *,
-    scale: int = 2,
-) -> None:
-    """Añade diapositiva con captura PNG del gráfico, o texto si Kaleido no está disponible."""
-    png_bytes = plotly_figure_to_png_bytes(fig, scale=scale)
-    if png_bytes is not None:
-        buf = io.BytesIO(png_bytes)
-        buf.seek(0)
-        add_image_slide(prs, title, buf)
-    else:
-        add_text_slide(
-            prs,
-            title,
-            "Esta gráfica no pudo exportarse a imagen en este entorno (Kaleido/Chrome no disponible). "
-            "Genera el PPTX en un equipo local con kaleido y Chromium, o revisa los gráficos en la app.",
-        )
-
-
 def save_and_show_plotly(
     prs: Presentation,
     title: str,
@@ -2299,7 +2296,10 @@ def save_and_show_plotly(
         fig = prettify_heatmap(fig)
     else:
         fig = prettify_hist(fig) if is_hist else prettify(fig)
-    add_plotly_slide_to_prs(prs, title, fig, scale=2)
+    png_bytes = fig.to_image(format="png", scale=2)
+    buf = io.BytesIO(png_bytes)
+    buf.seek(0)
+    add_image_slide(prs, title, buf)
 
     if show_plots:
         st.plotly_chart(
@@ -2420,12 +2420,938 @@ def prettify_heatmap(fig, h: int = 520):
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
         height=h,
-        margin=dict(l=60, r=30, t=40, b=60),
-        title=dict(x=0.02, xanchor="left"),
+        margin=dict(l=60, r=30, t=48, b=60),
+        title=dict(x=0.02, xanchor="left", font=dict(size=15)),
         font=dict(family="Segoe UI", size=12, color="#2A2A2A"),
+        plot_bgcolor="rgba(248,250,252,0.65)",
     )
-    fig.update_xaxes(showgrid=False)
+    fig.update_xaxes(showgrid=False, tickangle=-35)
     fig.update_yaxes(showgrid=False)
+    return fig
+
+
+def prettify_heatmap_auto(fig, h: int = 520):
+    """Heatmap con tema claro/oscuro alineado al dashboard."""
+    if is_streamlit_dark_mode():
+        fig.update_layout(
+            template="plotly_dark",
+            height=h,
+            margin=dict(l=60, r=30, t=48, b=60),
+            title=dict(x=0.02, xanchor="left", font=dict(size=15, color="#F1F5F9")),
+            font=dict(family="Segoe UI", size=12, color="#E2E8F0"),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(15,23,42,0.5)",
+        )
+        fig.update_xaxes(showgrid=False, tickangle=-35, tickfont=dict(color="#CBD5E1"))
+        fig.update_yaxes(showgrid=False, tickfont=dict(color="#CBD5E1"))
+        return fig
+    return prettify_heatmap(fig, h=h)
+
+
+def heatmap_numeric_stats(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+    """Min / media / max / N por columna (datos fuente del heatmap de correlación)."""
+    cols = [c for c in cols if c is not None and str(c).strip() and c in df.columns]
+    if not cols:
+        return pd.DataFrame()
+    d = df[cols].copy()
+    for c in cols:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    rows: list[dict] = []
+    for c in cols:
+        s = d[c].dropna()
+        if s.empty:
+            rows.append(
+                {
+                    "Parámetro": str(c),
+                    "Mínimo": np.nan,
+                    "Promedio": np.nan,
+                    "Máximo": np.nan,
+                    "N": 0,
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "Parámetro": str(c),
+                    "Mínimo": float(s.min()),
+                    "Promedio": float(s.mean()),
+                    "Máximo": float(s.max()),
+                    "N": int(len(s)),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def build_minmax_mean_spine_figure(
+    stats_df: pd.DataFrame,
+    title: str = "Rango por parámetro (0=min, 1=max, ●=media)",
+) -> go.Figure | None:
+    """
+    Por cada variable: segmento vertical 0→1 en escala normalizada al rango observado;
+    marcador azul = posición de la media en ese rango.
+    """
+    if stats_df is None or stats_df.empty or "Parámetro" not in stats_df.columns:
+        return None
+    fig = go.Figure()
+    for _, r in stats_df.iterrows():
+        lo, mid, hi = r.get("Mínimo"), r.get("Promedio"), r.get("Máximo")
+        p = str(r["Parámetro"])
+        if pd.isna(lo) or pd.isna(mid) or pd.isna(hi):
+            continue
+        lo_f, mid_f, hi_f = float(lo), float(mid), float(hi)
+        span = hi_f - lo_f
+        if span <= 0 or not np.isfinite(span):
+            ym = 0.5
+        else:
+            ym = (mid_f - lo_f) / span
+            ym = float(min(1.0, max(0.0, ym)))
+        fig.add_trace(
+            go.Scatter(
+                x=[p, p],
+                y=[0.0, 1.0],
+                mode="lines",
+                line=dict(width=3, color="rgba(148,163,184,0.9)"),
+                showlegend=False,
+                hovertemplate=(
+                    f"<b>{p}</b><br>min: {lo_f:.6g}<br>max: {hi_f:.6g}<br>n: {int(r.get('N', 0))}<extra></extra>"
+                ),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[p],
+                y=[ym],
+                mode="markers",
+                marker=dict(size=11, color="#0ea5e9", line=dict(width=2, color="white")),
+                showlegend=False,
+                hovertemplate=f"<b>{p}</b><br>media: {mid_f:.6g}<br>posición en rango: {ym:.2f}<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        title=dict(text=title, x=0.02, xanchor="left"),
+        xaxis_title="Parámetro",
+        yaxis_title="Normalizado (min→max)",
+        yaxis=dict(range=[-0.08, 1.08], tickvals=[0, 0.5, 1], ticktext=["Min", "0.5", "Max"]),
+        height=400,
+        template=PLOTLY_TEMPLATE,
+        margin=dict(l=52, r=28, t=52, b=96),
+        font=dict(family="Segoe UI", size=11, color="#334155"),
+    )
+    if is_streamlit_dark_mode():
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#0b0d14",
+            plot_bgcolor="#0b0d14",
+            font=dict(family="Segoe UI", size=11, color="#E2E8F0"),
+            title=dict(font=dict(color="#F8FAFC")),
+            xaxis=dict(tickfont=dict(color="#CBD5E1")),
+            yaxis=dict(
+                range=[-0.08, 1.08],
+                tickvals=[0, 0.5, 1],
+                ticktext=["Min", "0.5", "Max"],
+                tickfont=dict(color="#CBD5E1"),
+            ),
+        )
+    return fig
+
+
+def build_rop_top_zones_bar_figure(
+    zone_stats: dict,
+    top_n: int = 8,
+    title: str = "Top zonas operativas por ROP",
+) -> go.Figure | None:
+    """Barras horizontales: mejores celdas WOB×RPM por ROP medio (estilo panel oscuro)."""
+    stat = np.asarray(zone_stats.get("stat"), dtype=float)
+    x_edges = zone_stats.get("x_edges")
+    y_edges = zone_stats.get("y_edges")
+    if stat.size == 0 or x_edges is None or y_edges is None:
+        return None
+    rows: list[tuple[float, str]] = []
+    nwx, nwy = stat.shape
+    for i in range(nwx):
+        for j in range(nwy):
+            v = stat[i, j]
+            if not np.isfinite(v):
+                continue
+            w0, w1 = float(x_edges[i]), float(x_edges[i + 1])
+            r0, r1 = float(y_edges[j]), float(y_edges[j + 1])
+            label = f"WOB {w0:.0f}-{w1:.0f} | RPM {r0:.0f}-{r1:.0f}"
+            rows.append((float(v), label))
+    if not rows:
+        return None
+    rows.sort(key=lambda t: -t[0])
+    rows = rows[: max(1, int(top_n))]
+    rows.reverse()
+    rops = [r[0] for r in rows]
+    labels = [r[1] for r in rows]
+    # En barras horizontales, la 1ª categoría en ``y`` va **abajo** y la última **arriba**.
+    # Tras reverse(), la mejor ROP queda al **final** → el naranja debe ir en el **último** ítem.
+    n_b = len(rows)
+    colors = ["#2dd4bf"] * n_b
+    if n_b:
+        colors[-1] = "#f97316"
+    bar_text = [f"{v:.1f}" for v in rops]
+    if n_b:
+        bar_text[-1] = f"{rops[-1]:.1f} · mejor"
+    fig = go.Figure(
+        go.Bar(
+            x=rops,
+            y=labels,
+            orientation="h",
+            text=bar_text,
+            textposition="outside",
+            textfont=dict(color="#e2e8f0", size=11),
+            hovertemplate="%{y}<br>ROP medio: %{x:.2f}<extra></extra>",
+            marker=dict(
+                color=colors,
+                line=dict(color="rgba(255,255,255,0.22)", width=1),
+            ),
+        )
+    )
+    fig.update_layout(
+        title=dict(text=title, x=0.02, xanchor="left", font=dict(size=15, color="#f1f5f9")),
+        xaxis_title="ROP medio",
+        yaxis_title="Zona WOB-RPM",
+        template="plotly_dark",
+        paper_bgcolor="#0b0d14",
+        plot_bgcolor="#0b0d14",
+        height=max(380, min(520, 44 * len(rows) + 140)),
+        margin=dict(l=210, r=72, t=56, b=52),
+        font=dict(family="Segoe UI", size=11, color="#e2e8f0"),
+        xaxis=dict(gridcolor="rgba(255,255,255,0.08)", zeroline=False),
+        yaxis=dict(gridcolor="rgba(255,255,255,0.04)", automargin=True),
+    )
+    # plotly_dark a veces aplana el color de las barras; reforzar por barra
+    fig.update_traces(
+        marker=dict(color=colors, line=dict(color="rgba(255,255,255,0.22)", width=1)),
+    )
+    return fig
+
+
+def _x_contiguous_segments_where_true(x_sorted: np.ndarray, mask: np.ndarray) -> list[tuple[float, float]]:
+    """Tramos contiguos en x donde ``mask`` es True (mismos índices que x ordenado)."""
+    if x_sorted.size == 0 or mask.size != x_sorted.size:
+        return []
+    out: list[tuple[float, float]] = []
+    n = int(mask.size)
+    i = 0
+    while i < n:
+        if not bool(mask[i]):
+            i += 1
+            continue
+        j = i + 1
+        while j < n and bool(mask[j]):
+            j += 1
+        out.append((float(x_sorted[i]), float(x_sorted[j - 1])))
+        i = j
+    return out
+
+
+def kpi_depth_optimal_zone_chips(
+    xv: np.ndarray,
+    y_r: np.ndarray,
+    in_zone: np.ndarray,
+    x_title: str,
+    zone_stats: dict,
+    n_segments: int,
+) -> list[tuple[str, str]]:
+    """Chips pro para la franja de profundidad/índice en la celda óptima WOB×RPM."""
+    items: list[tuple[str, str]] = []
+    br = float(zone_stats.get("best_rop", 0.0))
+    items.append((f"Celda óptima heatmap · ROP bin {br:.1f}", "orange"))
+
+    if not np.any(in_zone):
+        items.append(("Sin puntos en franja (WOB×RPM fuera de celda)", "gray"))
+        return items
+
+    ntot = max(int(in_zone.size), 1)
+    pct = 100.0 * float(np.count_nonzero(in_zone)) / ntot
+    items.append((f"Muestras en franja: {pct:.1f}% del tramo", "blue"))
+    rop_z = y_r[in_zone]
+    items.append((f"ROP medio en franja: {float(np.mean(rop_z)):.1f}", "green"))
+    items.append((f"ROP máx. en franja: {float(np.max(rop_z)):.1f}", "green"))
+    xv_z = xv[in_zone]
+    if "Profundidad" in x_title:
+        items.append(
+            (f"Prof. franja: {float(np.min(xv_z)):.0f} – {float(np.max(xv_z)):.0f}", "blue"),
+        )
+    else:
+        items.append(
+            (f"Tramos contiguos en celda: {n_segments}", "blue"),
+        )
+    w0, w1 = float(zone_stats["best_wob_low"]), float(zone_stats["best_wob_high"])
+    r0, r1 = float(zone_stats["best_rpm_low"]), float(zone_stats["best_rpm_high"])
+    items.append((f"WOB {w0:.0f}-{w1:.0f} · RPM {r0:.0f}-{r1:.0f}", "gray"))
+    return items
+
+
+def build_kpi_depth_curves_figure(
+    df: pd.DataFrame,
+    depth_col: str | None,
+    rop_col: str,
+    wob_col: str,
+    rpm_col: str,
+    title: str = "Curvas suavizadas de ROP, WOB y RPM",
+    zone_stats: dict | None = None,
+) -> tuple[go.Figure | None, list[tuple[str, str]]]:
+    """
+    Series en **unidades reales** vs profundidad (o índice): ROP (eje Y izq.), WOB y RPM (ejes Y derecha).
+
+    Si ``zone_stats`` tiene la celda óptima, se sombrean **franjas verticales** donde WOB y RPM
+    caen dentro de esos rangos (tramos contiguos en X).
+    """
+    need = [rop_col, wob_col, rpm_col]
+    if not all(c in df.columns for c in need):
+        return None, []
+    y_r = pd.to_numeric(df[rop_col], errors="coerce")
+    y_w = pd.to_numeric(df[wob_col], errors="coerce")
+    y_m = pd.to_numeric(df[rpm_col], errors="coerce")
+    if depth_col and str(depth_col).strip() and depth_col in df.columns:
+        x = pd.to_numeric(df[depth_col], errors="coerce")
+        x_title = "Profundidad"
+    else:
+        x = pd.Series(np.arange(len(df), dtype=float), index=df.index)
+        x_title = "Índice de muestra (sin columna de profundidad)"
+    m = x.notna() & y_r.notna() & y_w.notna() & y_m.notna()
+    if int(m.sum()) < 2:
+        return None, []
+    xv = x[m].to_numpy(dtype=float)
+    oi = np.argsort(xv, kind="mergesort")
+    xv = xv[oi]
+    y_r = y_r[m].to_numpy(dtype=float)[oi]
+    y_w = y_w[m].to_numpy(dtype=float)[oi]
+    y_m = y_m[m].to_numpy(dtype=float)[oi]
+
+    chips: list[tuple[str, str]] = []
+    segments: list[tuple[float, float]] = []
+    in_zone = np.zeros(len(xv), dtype=bool)
+    if zone_stats is not None:
+        wlo = float(zone_stats["best_wob_low"])
+        whi = float(zone_stats["best_wob_high"])
+        rlo = float(zone_stats["best_rpm_low"])
+        rhi = float(zone_stats["best_rpm_high"])
+        in_zone = (y_w >= wlo) & (y_w <= whi) & (y_m >= rlo) & (y_m <= rhi)
+        segments = _x_contiguous_segments_where_true(xv, in_zone)
+        chips = kpi_depth_optimal_zone_chips(xv, y_r, in_zone, x_title, zone_stats, len(segments))
+
+    fig = go.Figure()
+    for x0, x1 in segments:
+        span = max(x1 - x0, 1e-9)
+        pad = min(span * 0.008, (float(np.nanmax(xv)) - float(np.nanmin(xv))) * 0.002 + 1e-9)
+        fig.add_vrect(
+            x0=x0 - pad,
+            x1=x1 + pad,
+            fillcolor="rgba(249,115,22,0.16)",
+            line=dict(color="rgba(251,146,60,0.65)", width=1.2),
+            layer="below",
+        )
+    fig.add_trace(
+        go.Scatter(
+            x=xv,
+            y=y_r,
+            name="ROP",
+            mode="lines",
+            line=dict(color="#f97316", width=2.4),
+            yaxis="y",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=xv,
+            y=y_w,
+            name="WOB",
+            mode="lines",
+            line=dict(color="#2dd4bf", width=2),
+            yaxis="y2",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=xv,
+            y=y_m,
+            name="RPM",
+            mode="lines",
+            line=dict(color="#64748b", width=2),
+            yaxis="y3",
+        )
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#0b0d14",
+        plot_bgcolor="#0b0d14",
+        title=dict(text=title, x=0.02, font=dict(size=15, color="#f1f5f9")),
+        xaxis=dict(title=x_title, gridcolor="rgba(255,255,255,0.08)", zeroline=False),
+        yaxis=dict(
+            title=dict(text="ROP", font=dict(color="#fdba74")),
+            side="left",
+            gridcolor="rgba(255,255,255,0.06)",
+            zeroline=False,
+            tickfont=dict(color="#fdba74"),
+        ),
+        yaxis2=dict(
+            title=dict(text="WOB", font=dict(color="#5eead4")),
+            overlaying="y",
+            side="right",
+            showgrid=False,
+            zeroline=False,
+            tickfont=dict(color="#5eead4"),
+        ),
+        yaxis3=dict(
+            title=dict(text="RPM", font=dict(color="#94a3b8")),
+            overlaying="y",
+            side="right",
+            anchor="free",
+            position=0.97,
+            showgrid=False,
+            zeroline=False,
+            tickfont=dict(color="#cbd5e1"),
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+            font=dict(size=11, color="#e2e8f0"),
+            bgcolor="rgba(11,13,20,0.7)",
+        ),
+        margin=dict(l=58, r=92, t=72, b=48),
+        height=460,
+        font=dict(family="Segoe UI", color="#e2e8f0"),
+        hovermode="x unified",
+    )
+    if segments:
+        fig.add_trace(
+            go.Scatter(
+                x=[np.nan],
+                y=[np.nan],
+                mode="markers",
+                marker=dict(size=14, color="rgba(249,115,22,0.55)", symbol="square"),
+                name="Franja zona óptima (WOB×RPM)",
+            )
+        )
+        fig.update_layout(
+            title=dict(
+                text=title + " · franjas = celda óptima",
+                x=0.02,
+                font=dict(size=15, color="#f1f5f9"),
+            )
+        )
+    return fig, chips
+
+
+def stats_df_to_heatmap_chips(stats_df: pd.DataFrame, max_chips: int = 12) -> list[tuple[str, str]]:
+    """Etiquetas cortas para fila de chips (nombre + min–max + media)."""
+    items: list[tuple[str, str]] = []
+    for _, r in stats_df.iterrows():
+        if int(r.get("N", 0) or 0) < 1:
+            continue
+        name = str(r["Parámetro"])
+        if len(name) > 18:
+            name = name[:16] + "…"
+        lo, mid, hi = r["Mínimo"], r["Promedio"], r["Máximo"]
+        sub = f"{format_num(lo, 1)}–{format_num(hi, 1)} · μ{format_num(mid, 1)}"
+        items.append((f"{name}: {sub}", "blue"))
+        if len(items) >= max_chips:
+            break
+    return items
+
+
+def build_heatmap_marginal_max_curves(
+    zone_stats: dict,
+    x_label: str = "WOB (centro de bin)",
+    y_label: str = "RPM (centro de bin)",
+    z_label: str = "ROP máx. en bin",
+) -> go.Figure | None:
+    """
+    Curvas adicionales: máximo de ROP a lo largo de cada eje del heatmap 2D (por bin).
+    """
+    stat = zone_stats.get("stat")
+    x_c = zone_stats.get("x_centers")
+    y_c = zone_stats.get("y_centers")
+    if stat is None or x_c is None or y_c is None:
+        return None
+    stat = np.asarray(stat, dtype=float)
+    if stat.size == 0:
+        return None
+    # stat[i,j] = valor en bin x_i, y_j
+    max_along_rpm = np.nanmax(stat, axis=1)
+    max_along_wob = np.nanmax(stat, axis=0)
+    from plotly.subplots import make_subplots
+
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        row_heights=[0.45, 0.55],
+        vertical_spacing=0.14,
+        subplot_titles=(
+            f"{z_label} vs {x_label.split('(')[0].strip()} (máx. por bin WOB)",
+            f"{z_label} vs {y_label.split('(')[0].strip()} (máx. por bin RPM)",
+        ),
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=x_c,
+            y=max_along_rpm,
+            mode="lines+markers",
+            name="Máx por WOB",
+            line=dict(color="#2563EB", width=2.5),
+            marker=dict(size=6),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=y_c,
+            y=max_along_wob,
+            mode="lines+markers",
+            name="Máx por RPM",
+            line=dict(color="#F59E0B", width=2.5),
+            marker=dict(size=6),
+        ),
+        row=2,
+        col=1,
+    )
+    fig.update_xaxes(title_text=x_label, row=1, col=1)
+    fig.update_yaxes(title_text=z_label, row=1, col=1)
+    fig.update_xaxes(title_text=y_label, row=2, col=1)
+    fig.update_yaxes(title_text=z_label, row=2, col=1)
+    fig.update_layout(
+        height=520,
+        showlegend=False,
+        margin=dict(l=55, r=25, t=56, b=48),
+        font=dict(family="Segoe UI", size=11),
+    )
+    if is_streamlit_dark_mode():
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(17,24,39,0.85)",
+        )
+    else:
+        fig.update_layout(template=PLOTLY_TEMPLATE, plot_bgcolor="rgba(248,250,252,0.9)")
+    return fig
+
+
+def rop_zone_dashboard_chips(zone_stats: dict) -> list[tuple[str, str]]:
+    """Chips de KPI para el dashboard ROP (mejor celda + extremos en la grilla 2D)."""
+    stat = np.asarray(zone_stats.get("stat"), dtype=float)
+    items: list[tuple[str, str]] = []
+    br = zone_stats.get("best_rop")
+    if br is not None and np.isfinite(float(br)):
+        items.append((f"Mejor ROP (celda): {float(br):.1f}", "green"))
+    items.append(
+        (
+            f"WOB óptimo: {zone_stats.get('best_wob_center', 0):.1f}",
+            "blue",
+        )
+    )
+    items.append(
+        (
+            f"RPM óptimo: {zone_stats.get('best_rpm_center', 0):.1f}",
+            "blue",
+        )
+    )
+    if stat.size:
+        gmax = np.nanmax(stat)
+        gmin = np.nanmin(stat)
+        if np.isfinite(gmax):
+            items.append((f"ROP máx (grilla): {float(gmax):.1f}", "orange"))
+        if np.isfinite(gmin):
+            items.append((f"ROP mín (grilla): {float(gmin):.1f}", "gray"))
+    n = zone_stats.get("best_count")
+    if n is not None:
+        items.append((f"Puntos en mejor bin: {int(n)}", "gray"))
+    return items
+
+
+def _rop_heatmap_label_matrix_top_fraction(
+    z_t: np.ndarray,
+    top_fraction: float = ROP_HEATMAP_LABEL_TOP_FRACTION,
+) -> np.ndarray:
+    """Texto por celda: solo valores en el top ``top_fraction`` (p. ej. 15 %) del ROP en la grilla."""
+    z = np.asarray(z_t, dtype=float)
+    flat = z[np.isfinite(z)]
+    if flat.size == 0:
+        return np.full(z.shape, "", dtype=object)
+    pct = 100.0 * (1.0 - float(np.clip(top_fraction, 0.01, 0.5)))
+    thr = float(np.nanpercentile(flat, pct))
+
+    def _cell(v: object) -> str:
+        if not np.isfinite(float(v)):
+            return ""
+        if float(v) < thr:
+            return ""
+        return f"{float(v):.1f}"
+
+    return np.vectorize(_cell, otypes=[object])(z)
+
+
+def build_optimal_rop_heatmap_with_marginals(
+    zone_stats: dict,
+    title: str = "Heatmap ROP vs WOB-RPM (con marginales)",
+) -> go.Figure | None:
+    """
+    Vista tipo dashboard: heatmap central + curvas arriba (WOB vs ROP máx/mín por bin)
+    + curvas a la derecha (RPM vs ROP máx/mín por bin), alineadas con los ejes del mapa.
+
+    Siempre usa fondo oscuro tipo heatmap pro (alineado a prettify_heatmap_auto en dark)
+    y canvas grande para mejor nitidez al escalar en Streamlit.
+    """
+    # Canvas grande para nitidez al escalar en pantalla / export PNG
+    _dash_w, _dash_h = 1680, 1050
+    # Un solo fondo (paper + plot + accesorios): evita el rectángulo más claro vs Streamlit dark
+    _dash_bg = "#0b0d14"
+    _fg = "#E2E8F0"
+    _tick = "#CBD5E1"
+    _grid_marg = "rgba(255,255,255,0.1)"
+    stat = zone_stats.get("stat")
+    x_c = zone_stats.get("x_centers")
+    y_c = zone_stats.get("y_centers")
+    if stat is None or x_c is None or y_c is None:
+        return None
+    stat = np.asarray(stat, dtype=float)
+    if stat.size == 0:
+        return None
+
+    x_c = np.asarray(x_c, dtype=float)
+    y_c = np.asarray(y_c, dtype=float)
+    max_w = np.nanmax(stat, axis=1)
+    min_w = np.nanmin(stat, axis=1)
+    max_r = np.nanmax(stat, axis=0)
+    min_r = np.nanmin(stat, axis=0)
+
+    i, j = zone_stats["best_bin"]
+    x0 = zone_stats["best_wob_low"]
+    x1 = zone_stats["best_wob_high"]
+    y0 = zone_stats["best_rpm_low"]
+    y1 = zone_stats["best_rpm_high"]
+
+    from plotly.subplots import make_subplots
+
+    fig = make_subplots(
+        rows=2,
+        cols=2,
+        row_heights=[0.24, 0.76],
+        column_widths=[0.76, 0.24],
+        specs=[[{"type": "scatter"}, None], [{"type": "heatmap"}, {"type": "scatter"}]],
+        horizontal_spacing=0.04,
+        vertical_spacing=0.07,
+        shared_xaxes=True,
+    )
+
+    # (1,1) Marginal superior: WOB → ROP máx / mín al variar RPM en cada columna
+    fig.add_trace(
+        go.Scatter(
+            x=x_c,
+            y=max_w,
+            mode="lines+markers",
+            name="Máx ROP",
+            line=dict(color="#F97316", width=3),
+            marker=dict(size=7, line=dict(width=0)),
+            legendgroup="top",
+            showlegend=True,
+            hovertemplate="WOB: %{x:.2f}<br>ROP máx. en bin: %{y:.2f}<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=x_c,
+            y=min_w,
+            mode="lines+markers",
+            name="Mín ROP",
+            line=dict(color="#38BDF8", width=2.5, dash="dot"),
+            marker=dict(size=6, line=dict(width=0)),
+            legendgroup="top",
+            showlegend=True,
+            hovertemplate="WOB: %{x:.2f}<br>ROP mín. en bin: %{y:.2f}<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+
+    z_t = stat.T
+    z_ok = stat[np.isfinite(stat)]
+    if z_ok.size:
+        _zlo = float(np.nanmin(z_ok))
+        _zhi = float(np.nanmax(z_ok))
+        _zpad = max(0.15, (_zhi - _zlo) * 0.04)
+        zmin_hm, zmax_hm = _zlo - _zpad, _zhi + _zpad
+    else:
+        zmin_hm, zmax_hm = None, None
+
+    counts = zone_stats.get("counts")
+    custom_cd = None
+    if counts is not None:
+        c_arr = np.asarray(counts, dtype=float)
+        if c_arr.shape == stat.shape:
+            custom_cd = c_arr.T
+
+    hm_text = _rop_heatmap_label_matrix_top_fraction(z_t)
+    hm_extras: dict = {
+        "text": hm_text,
+        "texttemplate": "%{text}",
+        "textfont": dict(
+            family="Segoe UI", size=13, color="rgba(248,250,252,0.94)"
+        ),
+    }
+
+    # (2,1) Heatmap principal
+    fig.add_trace(
+        go.Heatmap(
+            x=x_c,
+            y=y_c,
+            z=z_t,
+            zmin=zmin_hm,
+            zmax=zmax_hm,
+            colorscale=ROP_HEATMAP_COLORSCALE,
+            zsmooth="best",
+            xgap=2,
+            ygap=2,
+            customdata=custom_cd,
+            **hm_extras,
+            colorbar=dict(
+                title=dict(text="ROP<br>medio", font=dict(size=14, color=_fg)),
+                tickfont=dict(size=13, color=_tick),
+                tickformat=".1f",
+                len=0.6,
+                y=0.36,
+                yanchor="middle",
+                thickness=22,
+                outlinewidth=0,
+                bgcolor=_dash_bg,
+                bordercolor="rgba(255,255,255,0.12)",
+                borderwidth=1,
+            ),
+            hovertemplate=(
+                "WOB (centro bin): %{x:.2f}<br>"
+                "RPM (centro bin): %{y:.2f}<br>"
+                "ROP medio: %{z:.2f}"
+                + ("<br>Puntos en celda: %{customdata:.0f}" if custom_cd is not None else "")
+                + "<extra></extra>"
+            ),
+            hoverongaps=False,
+            showscale=True,
+        ),
+        row=2,
+        col=1,
+    )
+    _bw = float(zone_stats["best_wob_center"])
+    _br = float(zone_stats["best_rpm_center"])
+    _brop = float(zone_stats["best_rop"])
+    fig.add_trace(
+        go.Scatter(
+            x=[_bw],
+            y=[_br],
+            mode="markers",
+            marker=dict(
+                symbol="star",
+                size=20,
+                color="#FDE047",
+                line=dict(color="rgb(15,23,42)", width=1.5),
+            ),
+            name="Pico",
+            showlegend=False,
+            hovertemplate=(
+                "Pico operacional<br>WOB: %{x:.2f}<br>RPM: %{y:.2f}<br>"
+                f"ROP: {_brop:.1f}<extra></extra>"
+            ),
+        ),
+        row=2,
+        col=1,
+    )
+    fig.add_shape(
+        type="rect",
+        x0=x0,
+        x1=x1,
+        y0=y0,
+        y1=y1,
+        line=dict(color="#ffffff", width=3.5),
+        fillcolor="rgba(255,255,255,0)",
+        row=2,
+        col=1,
+    )
+    _yr_span = float(np.nanmax(y_c) - np.nanmin(y_c)) if y_c.size else 1.0
+    _dy = (
+        float(np.median(np.abs(np.diff(np.sort(y_c)))))
+        if len(y_c) > 1
+        else max(_yr_span * 0.04, 1.0)
+    )
+    fig.add_annotation(
+        x=_bw,
+        y=_br + 1.35 * _dy,
+        text="Pico",
+        showarrow=True,
+        arrowhead=2,
+        arrowsize=1,
+        arrowwidth=1.5,
+        arrowcolor="rgba(248,250,252,0.85)",
+        ax=0,
+        ay=-28,
+        font=dict(color="#F8FAFC", size=12, family="Segoe UI"),
+        bgcolor="rgba(0,0,0,0.55)",
+        borderpad=4,
+        row=2,
+        col=1,
+    )
+    fig.add_annotation(
+        x=(x0 + x1) / 2.0,
+        y=(y0 + y1) / 2.0,
+        text=f"Mejor zona<br>ROP {_brop:.1f}",
+        showarrow=False,
+        font=dict(color="#ffffff", size=12, family="Segoe UI"),
+        bgcolor="rgba(0,0,0,0.55)",
+        borderpad=5,
+        row=2,
+        col=1,
+    )
+
+    # (2,2) Marginal derecha: ROP en X, RPM en Y (mismo eje Y que el heatmap vía matches)
+    fig.add_trace(
+        go.Scatter(
+            x=max_r,
+            y=y_c,
+            mode="lines+markers",
+            name="Máx ROP",
+            line=dict(color="#F97316", width=3),
+            marker=dict(size=7, line=dict(width=0)),
+            legendgroup="right",
+            showlegend=False,
+            hovertemplate="RPM: %{y:.2f}<br>ROP máx. en bin: %{x:.2f}<extra></extra>",
+        ),
+        row=2,
+        col=2,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=min_r,
+            y=y_c,
+            mode="lines+markers",
+            name="Mín ROP",
+            line=dict(color="#38BDF8", width=2.5, dash="dot"),
+            marker=dict(size=6, line=dict(width=0)),
+            legendgroup="right",
+            showlegend=False,
+            hovertemplate="RPM: %{y:.2f}<br>ROP mín. en bin: %{x:.2f}<extra></extra>",
+        ),
+        row=2,
+        col=2,
+    )
+
+    xr = float(np.nanmin(x_c)), float(np.nanmax(x_c))
+    yr = float(np.nanmin(y_c)), float(np.nanmax(y_c))
+    zmax = float(np.nanmax(stat)) if np.isfinite(np.nanmax(stat)) else 1.0
+    zmin_marg = float(np.nanmin(np.concatenate([max_r, min_r, max_w, min_w]))) if max_r.size else 0.0
+    zmax_marg = float(np.nanmax(np.concatenate([max_r, min_r, max_w, min_w]))) if max_r.size else zmax
+    pad = max(1e-6, (zmax_marg - zmin_marg) * 0.06)
+    zr_marg = (zmin_marg - pad, zmax_marg + pad)
+
+    fig.update_xaxes(
+        title_text="WOB",
+        title_font=dict(size=14, color=_fg),
+        range=list(xr),
+        showgrid=False,
+        tickangle=-35,
+        tickfont=dict(size=12, color=_tick),
+        row=2,
+        col=1,
+    )
+    fig.update_yaxes(
+        title_text="RPM",
+        title_font=dict(size=14, color=_fg),
+        range=list(yr),
+        showgrid=False,
+        tickfont=dict(size=12, color=_tick),
+        row=2,
+        col=1,
+    )
+    fig.update_xaxes(
+        title_text="",
+        showticklabels=False,
+        range=list(xr),
+        showgrid=True,
+        gridcolor=_grid_marg,
+        row=1,
+        col=1,
+    )
+    fig.update_yaxes(
+        title_text="ROP (máx/mín por WOB)",
+        title_font=dict(size=12, color=_fg),
+        range=list(zr_marg),
+        showgrid=True,
+        gridcolor=_grid_marg,
+        tickfont=dict(size=11, color=_tick),
+        row=1,
+        col=1,
+    )
+    fig.update_xaxes(
+        title_text="ROP (máx/mín por RPM)",
+        title_font=dict(size=12, color=_fg),
+        range=list(zr_marg),
+        showgrid=True,
+        gridcolor=_grid_marg,
+        tickfont=dict(size=11, color=_tick),
+        row=2,
+        col=2,
+    )
+    fig.update_yaxes(
+        title_text="",
+        range=list(yr),
+        showticklabels=True,
+        showgrid=False,
+        tickfont=dict(size=12, color=_tick),
+        row=2,
+        col=2,
+    )
+
+    fig.update_layout(
+        template="plotly_dark",
+        width=_dash_w,
+        height=_dash_h,
+        paper_bgcolor=_dash_bg,
+        plot_bgcolor=_dash_bg,
+        title=dict(
+            text=title,
+            x=0.02,
+            xanchor="left",
+            font=dict(size=18, color="#F1F5F9"),
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=13, color=_fg),
+            bgcolor="rgba(11,13,20,0.92)",
+            bordercolor="rgba(255,255,255,0.06)",
+            borderwidth=1,
+        ),
+        margin=dict(l=72, r=64, t=92, b=72),
+        font=dict(family="Segoe UI", size=13, color=_fg),
+        hoverlabel=dict(
+            bgcolor="rgba(15,23,42,0.96)",
+            bordercolor="rgba(148,163,184,0.35)",
+            font_size=14,
+            font_family="Segoe UI",
+        ),
+    )
+
+    # plotly_dark puede dejar ejes con otro tono; reforzar fondo único en todos los paneles
+    fig.update_xaxes(
+        showline=False,
+        zeroline=False,
+        linecolor="rgba(255,255,255,0.12)",
+    )
+    fig.update_yaxes(
+        showline=False,
+        zeroline=False,
+        linecolor="rgba(255,255,255,0.12)",
+    )
+
     return fig
 
 
@@ -4441,6 +5367,67 @@ def render_bha_module() -> None:
         fig_hm = None
     if fig_hm is not None:
         st.plotly_chart(fig_hm, use_container_width=True, config=PLOTLY_CONFIG)
+        _df_bha_chip = df_mse_for_hm if color_by == "MSE" and df_mse_for_hm is not None else df_hm
+        _vcol_bha = (
+            rop_col
+            if color_by == "ROP"
+            else ("MSE_ksi" if color_by == "MSE" else shocks_col)
+        )
+        _cols_bha_hm = [bha_wob_col, bha_rpm_col]
+        if _vcol_bha and _vcol_bha in _df_bha_chip.columns:
+            _cols_bha_hm.append(_vcol_bha)
+        _st_bha = heatmap_numeric_stats(_df_bha_chip, _cols_bha_hm)
+        _ch_bha = stats_df_to_heatmap_chips(_st_bha, max_chips=8)
+        if _ch_bha:
+            st.caption("**Rangos de los datos usados en el mapa**")
+            _render_chips_row([("Bins " + f"{int(n_bins_hm)}×{int(n_bins_hm)}", "gray")] + _ch_bha)
+        _zs_bha = None
+        if color_by == "ROP" and has_rop:
+            _zs_bha = compute_rop_zone_stats(
+                df_hm,
+                bha_wob_col,
+                bha_rpm_col,
+                str(rop_col),
+                bins=int(n_bins_hm),
+                min_points_per_bin=1,
+            )
+        elif color_by == "MSE" and df_mse_for_hm is not None:
+            _zs_bha = compute_rop_zone_stats(
+                df_mse_for_hm,
+                bha_wob_col,
+                bha_rpm_col,
+                "MSE_ksi",
+                bins=int(n_bins_hm),
+                min_points_per_bin=1,
+            )
+        elif color_by == "Shocks & Vibs" and shocks_col:
+            _zs_bha = compute_rop_zone_stats(
+                df_hm,
+                bha_wob_col,
+                bha_rpm_col,
+                str(shocks_col),
+                bins=int(n_bins_hm),
+                min_points_per_bin=1,
+            )
+        _marg_bha = (
+            build_heatmap_marginal_max_curves(
+                _zs_bha,
+                x_label="WOB (centro de bin)",
+                y_label="RPM (centro de bin)",
+                z_label=f"max {color_by} en bin",
+            )
+            if _zs_bha is not None
+            else None
+        )
+        if _marg_bha is not None:
+            st.caption("**Curvas de máximo por eje:** pico de la variable coloreada a lo largo de WOB y de RPM.")
+            st.plotly_chart(_marg_bha, use_container_width=True, config=PLOTLY_CONFIG)
+        _sp_bha = build_minmax_mean_spine_figure(
+            _st_bha,
+            title="Min · media · max (variables del heatmap WOB–RPM)",
+        )
+        if _sp_bha is not None:
+            st.plotly_chart(_sp_bha, use_container_width=True, config=PLOTLY_CONFIG)
         chart_notes(
             f"Bins cuadrados {n_bins_hm}×{n_bins_hm}. Color = media de {color_by} en cada celda.",
             "Útil para ver zonas WOB–RPM con mejor ROP, menor MSE o mayor/menor shocks.",
@@ -4518,6 +5505,14 @@ def render_roadmap() -> None:
     corr_cols = [wob_col, rpm_col, torque_col, "Freq_Hz", "Proximity_norm"]
     corr_cols = [c for c in corr_cols if c in df.columns]
     corr_df = df[corr_cols].corr()
+    _hm_stats_eng = heatmap_numeric_stats(df, corr_cols)
+    st.caption("**KPI de variables** (misma base que la matriz de correlación)")
+    _chip_eng = stats_df_to_heatmap_chips(_hm_stats_eng, max_chips=12)
+    if _chip_eng:
+        _render_chips_row([("n=" + f"{len(df):,}", "gray")] + _chip_eng[:11])
+    if not _hm_stats_eng.empty:
+        with st.expander("Tabla min / media / max por parámetro", expanded=False):
+            st.dataframe(_hm_stats_eng, use_container_width=True, hide_index=True)
     # Opción: mostrar valores en % en la celda (escala -100 a 100)
     corr_pct = (corr_df * 100).round(0).astype(int)
     fig_corr = px.imshow(
@@ -4541,10 +5536,17 @@ def render_roadmap() -> None:
         "Números en celdas = **porcentaje** (ej. 60 = 60% de relación lineal)."
     )
     st.plotly_chart(
-        prettify_heatmap(fig_corr),
+        prettify_heatmap_auto(fig_corr),
         use_container_width=True,
         config=PLOTLY_CONFIG,
     )
+    _spine_eng = build_minmax_mean_spine_figure(
+        _hm_stats_eng,
+        title="Rango observado por parámetro (● = media en min–max)",
+    )
+    if _spine_eng is not None:
+        st.caption("**Curvas de contexto:** cada barra gris es el rango min→max; el punto azul es la media.")
+        st.plotly_chart(_spine_eng, use_container_width=True, config=PLOTLY_CONFIG)
     st.markdown("---")
     st.markdown("**Resumen de lo observado (en % y comentarios)**")
     st.markdown(summarize_heatmap_engineering_pct(corr_df))
@@ -4681,11 +5683,13 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
 
     # Proximity figure
     fig1 = build_proximity_figure(df, wob_col, rpm_col, analysis, torque_col)
-    add_plotly_slide_to_prs(prs, "BHA Proximity to Resonance", fig1)
+    buf1 = io.BytesIO(fig1.to_image(format="png", scale=2))
+    add_image_slide(prs, "BHA Proximity to Resonance", buf1)
 
     # Frequency figure
     fig2 = build_frequency_figure(df, wob_col, rpm_col, analysis, torque_col)
-    add_plotly_slide_to_prs(prs, "BHA Rotational Frequency Mapping", fig2)
+    buf2 = io.BytesIO(fig2.to_image(format="png", scale=2))
+    add_image_slide(prs, "BHA Rotational Frequency Mapping", buf2)
 
     # WOB–RPM binned heatmap (squared bins); color by ROP if available, else MSE, else Shocks & Vibs
     n_bins_pptx = 30
@@ -4713,7 +5717,8 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
                 title=f"WOB–RPM Heatmap (squared bins) · {shocks_col_pptx}",
             )
     if fig_hm_pptx is not None:
-        add_plotly_slide_to_prs(prs, "WOB–RPM Heatmap (squared bins)", fig_hm_pptx)
+        buf_hm = io.BytesIO(fig_hm_pptx.to_image(format="png", scale=2))
+        add_image_slide(prs, "WOB–RPM Heatmap (squared bins)", buf_hm)
 
     # Heatmap (porcentual)
     corr_cols = [wob_col, rpm_col, torque_col, "Freq_Hz", "Proximity_norm"]
@@ -4737,7 +5742,16 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
     )
     fig_corr.update_layout(coloraxis_colorbar_title="Corr (-1 a 1)")
     fig_corr = prettify_heatmap(fig_corr)
-    add_plotly_slide_to_prs(prs, "Engineering Correlation Heatmap", fig_corr)
+    buf3 = io.BytesIO(fig_corr.to_image(format="png", scale=2))
+    add_image_slide(prs, "Engineering Correlation Heatmap", buf3)
+    _stats_pptx = heatmap_numeric_stats(df, corr_cols)
+    _sp_pptx = build_minmax_mean_spine_figure(
+        _stats_pptx,
+        title="Parámetros – rango min–media–max (normalizado)",
+    )
+    if _sp_pptx is not None:
+        buf_spine = io.BytesIO(_sp_pptx.to_image(format="png", scale=2))
+        add_image_slide(prs, "Contexto heatmap – min / media / max por parámetro", buf_spine)
 
     # Safe windows bar
     if analysis["report"] is not None:
@@ -4750,7 +5764,8 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
         )
         fig_windows.update_traces(marker_line_width=0)
         fig_windows = prettify(fig_windows)
-        add_plotly_slide_to_prs(prs, "Safe Window Widths", fig_windows)
+        buf4 = io.BytesIO(fig_windows.to_image(format="png", scale=2))
+        add_image_slide(prs, "Safe Window Widths", buf4)
 
     # MSE slides (if columns available)
     if rop_col in df.columns and depth_col in df.columns:
@@ -4768,8 +5783,10 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
                 df_mse, "Ingeniería", "Depth_MSE", "Depth (m)"
             )
             fig_mse_hist = build_mse_hist(df_mse, "Ingeniería")
-            add_plotly_slide_to_prs(prs, "MSE vs Profundidad", fig_mse_depth)
-            add_plotly_slide_to_prs(prs, "MSE Distribution", fig_mse_hist)
+            buf5 = io.BytesIO(fig_mse_depth.to_image(format="png", scale=2))
+            add_image_slide(prs, "MSE vs Profundidad", buf5)
+            buf6 = io.BytesIO(fig_mse_hist.to_image(format="png", scale=2))
+            add_image_slide(prs, "MSE Distribution", buf6)
 
     tmp_dir = Path(tempfile.mkdtemp())
     pptx_path = tmp_dir / "Engineering_Insights_Report.pptx"
@@ -8149,16 +9166,15 @@ def save_whatsapp_summaries_excel(
 init_session_state()
 render_language_selector_sidebar()
 
-col_spacer_l, col_logo, col_title, col_spacer_r = st.columns([0.4, 1.2, 6, 0.4], vertical_alignment="center")
+col_logo, col_title = st.columns([1, 6], vertical_alignment="center")
 with col_logo:
     if LOGO_PATH.exists():
-        st.image(str(LOGO_PATH), width=130)
+        st.image(str(LOGO_PATH), width=90)
+    else:
+        st.warning(f"{tr('logo_missing')} {LOGO_PATH}")
 
 with col_title:
     st.title(APP_TITLE)
-
-if not LOGO_PATH.exists():
-    st.info(f"{tr('logo_missing')} {LOGO_PATH}")
 
 st.markdown(
     f"{tr('intro_p1')}\n\n{tr('intro_p2')}\n\n{tr('intro_p3')}"
@@ -8262,7 +9278,20 @@ def compute_rop_zone_stats(
     rop_col: str,
     bins: int = 20,
     min_points_per_bin: int = 3,
+    density_percentile_trim: tuple[float, float] | None = None,
 ) -> dict | None:
+    """
+    Agrupa WOB×RPM en una grilla y calcula ROP medio por celda.
+
+    Las celdas quedan **vacías** (NaN) si:
+    - no cayó ningún punto en ese bin, o
+    - hay menos de ``min_points_per_bin`` puntos (para no confiar en medias con N muy bajo).
+
+    Por defecto los bordes de la grilla van del **mínimo al máximo** de WOB y RPM en el archivo;
+    si casi todo el trabajo fue en una “nube” pequeña, verás **mucho negro** fuera de esa nube.
+    Opcionalmente ``density_percentile_trim=(2, 98)`` recorta outliers en el plano WOB×RPM antes
+    de binar, para que los bins se concentren donde hay más datos.
+    """
     needed = [wob_col, rpm_col, rop_col]
     if any(c not in df.columns for c in needed):
         return None
@@ -8273,58 +9302,33 @@ def compute_rop_zone_stats(
     if d.empty:
         return None
 
-    x = d[wob_col].to_numpy()
-    y = d[rpm_col].to_numpy()
-    z = d[rop_col].to_numpy()
+    if density_percentile_trim is not None:
+        p_lo = float(np.clip(density_percentile_trim[0], 0.0, 49.0))
+        p_hi = float(np.clip(density_percentile_trim[1], 51.0, 100.0))
+        wa = d[wob_col].to_numpy(dtype=float)
+        ra = d[rpm_col].to_numpy(dtype=float)
+        wl, wh = np.percentile(wa, p_lo), np.percentile(wa, p_hi)
+        rl, rh = np.percentile(ra, p_lo), np.percentile(ra, p_hi)
+        mask = d[wob_col].between(wl, wh) & d[rpm_col].between(rl, rh)
+        d_sub = d.loc[mask]
+        if len(d_sub) >= max(30, int(bins) * 2):
+            d = d_sub
 
-    x_min, x_max = np.nanmin(x), np.nanmax(x)
-    y_min, y_max = np.nanmin(y), np.nanmax(y)
-    if not np.isfinite([x_min, x_max, y_min, y_max]).all():
-        return None
-    if x_min == x_max:
-        x_min -= 0.5
-        x_max += 0.5
-    if y_min == y_max:
-        y_min -= 0.5
-        y_max += 0.5
-
-    x_pad = max((x_max - x_min) * 0.04, 1e-6)
-    y_pad = max((y_max - y_min) * 0.04, 1e-6)
-    x_range = [x_min - x_pad, x_max + x_pad]
-    y_range = [y_min - y_pad, y_max + y_pad]
-
-    stat, x_edges, y_edges, _ = binned_statistic_2d(
-        x,
-        y,
-        z,
-        statistic='mean',
+    stat, x_edges, y_edges, binnumber = binned_statistic_2d(
+        d[wob_col].to_numpy(),
+        d[rpm_col].to_numpy(),
+        d[rop_col].to_numpy(),
+        statistic="mean",
         bins=bins,
-        range=[x_range, y_range],
     )
     counts, _, _, _ = binned_statistic_2d(
-        x,
-        y,
-        z,
-        statistic='count',
-        bins=[x_edges, y_edges],
-    )
-    stds, _, _, _ = binned_statistic_2d(
-        x,
-        y,
-        z,
-        statistic='std',
-        bins=[x_edges, y_edges],
-    )
-    p90, _, _, _ = binned_statistic_2d(
-        x,
-        y,
-        z,
-        statistic=lambda arr: float(np.nanpercentile(arr, 90)) if len(arr) else np.nan,
+        d[wob_col].to_numpy(),
+        d[rpm_col].to_numpy(),
+        d[rop_col].to_numpy(),
+        statistic="count",
         bins=[x_edges, y_edges],
     )
     stat = np.where(counts >= max(1, int(min_points_per_bin)), stat, np.nan)
-    stds = np.where(counts >= max(1, int(min_points_per_bin)), stds, np.nan)
-    p90 = np.where(counts >= max(1, int(min_points_per_bin)), p90, np.nan)
     if np.isnan(stat).all():
         return None
 
@@ -8336,516 +9340,145 @@ def compute_rop_zone_stats(
     center_rpm = (best_rpm_low + best_rpm_high) / 2.0
     best_rop = float(stat[i, j])
     best_count = int(counts[i, j])
-    best_std = float(stds[i, j]) if np.isfinite(stds[i, j]) else float('nan')
-    best_p90 = float(p90[i, j]) if np.isfinite(p90[i, j]) else float('nan')
 
     x_centers = (x_edges[:-1] + x_edges[1:]) / 2.0
     y_centers = (y_edges[:-1] + y_edges[1:]) / 2.0
-    z_plot = np.where(np.isnan(stat.T), None, stat.T)
-
-    valid_vals = stat[np.isfinite(stat)]
-    top_threshold = float(np.nanpercentile(valid_vals, 85)) if len(valid_vals) else float(best_rop)
-
-    top_cells: list[dict] = []
-    for ii in range(stat.shape[0]):
-        for jj in range(stat.shape[1]):
-            val = stat[ii, jj]
-            cnt = counts[ii, jj]
-            if not np.isfinite(val):
-                continue
-            top_cells.append(
-                {
-                    'i': ii,
-                    'j': jj,
-                    'rop': float(val),
-                    'count': int(cnt),
-                    'std': float(stds[ii, jj]) if np.isfinite(stds[ii, jj]) else float('nan'),
-                    'p90': float(p90[ii, jj]) if np.isfinite(p90[ii, jj]) else float('nan'),
-                    'wob_low': float(x_edges[ii]),
-                    'wob_high': float(x_edges[ii + 1]),
-                    'rpm_low': float(y_edges[jj]),
-                    'rpm_high': float(y_edges[jj + 1]),
-                    'wob_center': float((x_edges[ii] + x_edges[ii + 1]) / 2.0),
-                    'rpm_center': float((y_edges[jj] + y_edges[jj + 1]) / 2.0),
-                    'label': f"WOB {x_edges[ii]:.1f}–{x_edges[ii + 1]:.1f} | RPM {y_edges[jj]:.1f}–{y_edges[jj + 1]:.1f}",
-                }
-            )
-    top_cells = sorted(top_cells, key=lambda row: (row['rop'], row['count']), reverse=True)
-    top_cells_best = top_cells[:8]
-
-    highlight_cells = [c for c in top_cells if c['rop'] >= top_threshold]
-    if not highlight_cells:
-        highlight_cells = top_cells_best[:1]
-
-    focus_x_low = min(c['wob_low'] for c in highlight_cells)
-    focus_x_high = max(c['wob_high'] for c in highlight_cells)
-    focus_y_low = min(c['rpm_low'] for c in highlight_cells)
-    focus_y_high = max(c['rpm_high'] for c in highlight_cells)
-    focus_x_pad = max((focus_x_high - focus_x_low) * 0.25, (x_edges[1] - x_edges[0]) * 0.8)
-    focus_y_pad = max((focus_y_high - focus_y_low) * 0.25, (y_edges[1] - y_edges[0]) * 0.8)
 
     return {
-        'stat': stat,
-        'counts': counts,
-        'z_plot': z_plot,
-        'x_edges': x_edges,
-        'y_edges': y_edges,
-        'x_centers': x_centers,
-        'y_centers': y_centers,
-        'best_bin': (i, j),
-        'best_rop': best_rop,
-        'best_wob_low': float(best_wob_low),
-        'best_wob_high': float(best_wob_high),
-        'best_rpm_low': float(best_rpm_low),
-        'best_rpm_high': float(best_rpm_high),
-        'best_wob_center': float(center_wob),
-        'best_rpm_center': float(center_rpm),
-        'best_count': best_count,
-        'best_std': best_std,
-        'best_p90': best_p90,
-        'valid_points': int(len(d)),
-        'active_bins': int(np.isfinite(stat).sum()),
-        'top_threshold': top_threshold,
-        'top_cells': top_cells_best,
-        'highlight_cells': highlight_cells,
-        'focus_x_range': [float(focus_x_low - focus_x_pad), float(focus_x_high + focus_x_pad)],
-        'focus_y_range': [float(focus_y_low - focus_y_pad), float(focus_y_high + focus_y_pad)],
+        "stat": stat,
+        "counts": counts,
+        "x_edges": x_edges,
+        "y_edges": y_edges,
+        "x_centers": x_centers,
+        "y_centers": y_centers,
+        "best_bin": (i, j),
+        "best_rop": best_rop,
+        "best_wob_low": float(best_wob_low),
+        "best_wob_high": float(best_wob_high),
+        "best_rpm_low": float(best_rpm_low),
+        "best_rpm_high": float(best_rpm_high),
+        "best_wob_center": float(center_wob),
+        "best_rpm_center": float(center_rpm),
+        "best_count": best_count,
     }
 
 
-def build_optimal_rop_heatmap(zone_stats: dict, title: str = 'Mapa operativo pro de ROP') -> go.Figure:
-    i, j = zone_stats['best_bin']
-    x0 = zone_stats['best_wob_low']
-    x1 = zone_stats['best_wob_high']
-    y0 = zone_stats['best_rpm_low']
-    y1 = zone_stats['best_rpm_high']
+def build_optimal_rop_heatmap(zone_stats: dict, title: str = "Heatmap ROP vs WOB-RPM") -> go.Figure:
+    i, j = zone_stats["best_bin"]
+    x0 = zone_stats["best_wob_low"]
+    x1 = zone_stats["best_wob_high"]
+    y0 = zone_stats["best_rpm_low"]
+    y1 = zone_stats["best_rpm_high"]
 
-    zmax = float(np.nanmax(zone_stats['stat']))
-    zmin = float(np.nanmin(zone_stats['stat']))
-    text_labels = []
-    for jj, yc in enumerate(zone_stats['y_centers']):
-        row = []
-        for ii, xc in enumerate(zone_stats['x_centers']):
-            val = zone_stats['stat'][ii, jj]
-            if np.isfinite(val) and val >= zone_stats['top_threshold']:
-                row.append(f'{val:.1f}')
-            else:
-                row.append('')
-        text_labels.append(row)
+    stat = np.asarray(zone_stats["stat"], dtype=float)
+    z_t = stat.T
+    z_ok = stat[np.isfinite(stat)]
+    if z_ok.size:
+        zlo, zhi = float(np.nanmin(z_ok)), float(np.nanmax(z_ok))
+        zpad = max(0.15, (zhi - zlo) * 0.04)
+        zmin_hm, zmax_hm = zlo - zpad, zhi + zpad
+    else:
+        zmin_hm, zmax_hm = None, None
+
+    counts = zone_stats.get("counts")
+    custom_cd = None
+    if counts is not None:
+        c_arr = np.asarray(counts, dtype=float)
+        if c_arr.shape == stat.shape:
+            custom_cd = c_arr.T
+
+    hm_text = _rop_heatmap_label_matrix_top_fraction(z_t)
+    hm_extras: dict = {
+        "text": hm_text,
+        "texttemplate": "%{text}",
+        "textfont": dict(size=12, color="rgba(248,250,252,0.92)"),
+    }
+    _bw = float(zone_stats["best_wob_center"])
+    _br = float(zone_stats["best_rpm_center"])
+    _brop = float(zone_stats["best_rop"])
+    y_centers = np.asarray(zone_stats["y_centers"], dtype=float)
+    _yr_span = float(np.nanmax(y_centers) - np.nanmin(y_centers)) if y_centers.size else 1.0
+    _dy = (
+        float(np.median(np.abs(np.diff(np.sort(y_centers)))))
+        if len(y_centers) > 1
+        else max(_yr_span * 0.04, 1.0)
+    )
 
     fig = go.Figure(
-        data=go.Heatmap(
-            x=zone_stats['x_centers'],
-            y=zone_stats['y_centers'],
-            z=zone_stats['z_plot'],
-            colorscale='RdYlGn',
-            reversescale=False,
-            zmin=zmin,
-            zmax=zmax,
-            colorbar=dict(title='ROP medio', thickness=18, len=0.82),
-            xgap=2,
-            ygap=2,
-            hoverongaps=False,
-            text=text_labels,
-            texttemplate='%{text}',
-            textfont=dict(size=11, color='white'),
-            hovertemplate='WOB: %{x:.2f}<br>RPM: %{y:.2f}<br>ROP medio: %{z:.2f}<extra></extra>',
-        )
+        data=[
+            go.Heatmap(
+                x=zone_stats["x_centers"],
+                y=zone_stats["y_centers"],
+                z=z_t,
+                zmin=zmin_hm,
+                zmax=zmax_hm,
+                colorscale=ROP_HEATMAP_COLORSCALE,
+                zsmooth="best",
+                xgap=2,
+                ygap=2,
+                colorbar=dict(title="ROP medio", tickformat=".1f", thickness=20),
+                customdata=custom_cd,
+                hovertemplate=(
+                    "WOB: %{x:.2f}<br>RPM: %{y:.2f}<br>ROP medio: %{z:.2f}"
+                    + ("<br>Puntos: %{customdata:.0f}" if custom_cd is not None else "")
+                    + "<extra></extra>"
+                ),
+                hoverongaps=False,
+                **hm_extras,
+            ),
+            go.Scatter(
+                x=[_bw],
+                y=[_br],
+                mode="markers",
+                marker=dict(
+                    symbol="star",
+                    size=18,
+                    color="#FDE047",
+                    line=dict(color="rgb(15,23,42)", width=1.2),
+                ),
+                name="Pico",
+                showlegend=False,
+                hovertemplate=(
+                    "Pico operacional<br>WOB: %{x:.2f}<br>RPM: %{y:.2f}<br>"
+                    f"ROP: {_brop:.1f}<extra></extra>"
+                ),
+            ),
+        ]
     )
-
-    fig.add_trace(
-        go.Contour(
-            x=zone_stats['x_centers'],
-            y=zone_stats['y_centers'],
-            z=zone_stats['stat'].T,
-            showscale=False,
-            contours=dict(coloring='none', showlabels=False),
-            line=dict(color='rgba(255,255,255,0.28)', width=1),
-            hoverinfo='skip',
-        )
-    )
-
-    for cell in zone_stats['highlight_cells']:
-        fig.add_shape(
-            type='rect',
-            x0=cell['wob_low'],
-            x1=cell['wob_high'],
-            y0=cell['rpm_low'],
-            y1=cell['rpm_high'],
-            line=dict(color='rgba(255,255,255,0.45)', width=1),
-            fillcolor='rgba(255,255,255,0)',
-        )
-
     fig.add_shape(
-        type='rect',
+        type="rect",
         x0=x0,
         x1=x1,
         y0=y0,
         y1=y1,
-        line=dict(color='#ffffff', width=4),
-        fillcolor='rgba(255,255,255,0.04)',
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=[zone_stats['best_wob_center']],
-            y=[zone_stats['best_rpm_center']],
-            mode='markers+text',
-            name='Mejor zona',
-            marker=dict(size=22, symbol='star', color='#ffffff', line=dict(color='#1f2937', width=2.5)),
-            text=['Pico'],
-            textposition='top center',
-            textfont=dict(size=13, color='#ffffff'),
-            hovertemplate=(
-                f"Mejor zona<br>WOB: {zone_stats['best_wob_low']:.1f}–{zone_stats['best_wob_high']:.1f}"
-                f"<br>RPM: {zone_stats['best_rpm_low']:.1f}–{zone_stats['best_rpm_high']:.1f}"
-                f"<br>ROP medio: {zone_stats['best_rop']:.2f}<extra></extra>"
-            ),
-        )
+        line=dict(color="#ffffff", width=3),
+        fillcolor="rgba(255,255,255,0)",
     )
     fig.add_annotation(
-        x=zone_stats['best_wob_center'],
-        y=min(zone_stats['focus_y_range'][1], y1 + (zone_stats['focus_y_range'][1] - zone_stats['focus_y_range'][0]) * 0.12),
-        text=f"Mejor zona · ROP {zone_stats['best_rop']:.1f}",
+        x=_bw,
+        y=_br + 1.35 * _dy,
+        text="Pico",
         showarrow=True,
         arrowhead=2,
-        arrowwidth=1.6,
         arrowsize=1,
+        arrowwidth=1.5,
+        arrowcolor="rgba(248,250,252,0.85)",
         ax=0,
-        ay=-35,
-        font=dict(size=12, color='#ffffff'),
-        bgcolor='rgba(15,23,42,0.78)',
-        bordercolor='rgba(255,255,255,0.55)',
-        borderwidth=1,
+        ay=-24,
+        font=dict(color="#F8FAFC", size=11),
+        bgcolor="rgba(0,0,0,0.5)",
+        borderpad=3,
     )
     fig.add_annotation(
-        xref='paper',
-        yref='paper',
-        x=0.5,
-        y=1.10,
-        text='La estrella marca el pico operativo y el recuadro blanco resalta la celda óptima. Solo se etiquetan las celdas del top 15% para una lectura más limpia.',
+        x=(x0 + x1) / 2.0,
+        y=(y0 + y1) / 2.0,
+        text=f"Mejor zona<br>ROP {_brop:.1f}",
         showarrow=False,
-        font=dict(size=11, color='#cbd5e1'),
+        font=dict(color="#ffffff", size=12),
+        bgcolor="rgba(0,0,0,0.4)",
     )
-
-    fig.update_layout(
-        title=title,
-        xaxis_title='WOB',
-        yaxis_title='RPM',
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-    )
-    fig.update_xaxes(range=zone_stats['focus_x_range'], showgrid=False, zeroline=False)
-    fig.update_yaxes(range=zone_stats['focus_y_range'], showgrid=False, zeroline=False)
-    return prettify_heatmap(fig, h=560)
-
-
-def build_top_rop_zones_bar(zone_stats: dict, top_n: int = 6) -> go.Figure | None:
-    top_cells = zone_stats.get('top_cells') or []
-    if not top_cells:
-        return None
-    top_df = pd.DataFrame(top_cells[:top_n]).copy()
-    top_df['Zona'] = [f"#{i+1}" for i in range(len(top_df))]
-    top_df['Etiqueta'] = top_df.apply(lambda r: f"WOB {r['wob_low']:.1f}–{r['wob_high']:.1f}<br>RPM {r['rpm_low']:.1f}–{r['rpm_high']:.1f}", axis=1)
-    fig = px.bar(
-        top_df,
-        x='Zona',
-        y='rop',
-        text=top_df['rop'].map(lambda v: f'{v:.1f}'),
-        custom_data=['Etiqueta', 'count'],
-        title='Top zonas operativas por ROP',
-        labels={'rop': 'ROP medio'},
-    )
-    fig.update_traces(
-        textposition='outside',
-        hovertemplate='Zona %{x}<br>%{customdata[0]}<br>ROP medio: %{y:.2f}<br>Puntos: %{customdata[1]}<extra></extra>',
-    )
-    return prettify(fig, h=430)
-
-
-def build_optimal_window_ranges(zone_stats: dict) -> go.Figure | None:
-    top_cells = zone_stats.get('top_cells') or []
-    if not top_cells:
-        return None
-    top_df = pd.DataFrame(top_cells[:5]).copy()
-    top_df['Zona'] = [f"Zona {i+1}" for i in range(len(top_df))]
-    fig = go.Figure()
-    for _, row in top_df.iterrows():
-        fig.add_trace(
-            go.Scatter(
-                x=[row['wob_low'], row['wob_high']],
-                y=[row['rpm_center'], row['rpm_center']],
-                mode='lines+markers',
-                line=dict(width=10),
-                marker=dict(size=8),
-                name=row['Zona'],
-                hovertemplate=(
-                    f"{row['Zona']}<br>WOB: {row['wob_low']:.1f}–{row['wob_high']:.1f}"
-                    f"<br>RPM centro: {row['rpm_center']:.1f}"
-                    f"<br>ROP medio: {row['rop']:.2f}<extra></extra>"
-                ),
-            )
-        )
-    fig.update_layout(
-        title='Ventanas operativas recomendadas (WOB por nivel de RPM)',
-        xaxis_title='Rango de WOB',
-        yaxis_title='RPM centro de la ventana',
-        showlegend=True,
-    )
-    return prettify(fig, h=400)
-
-
-def build_kpi_smoothed_curves(
-    df_processed: pd.DataFrame,
-    curve_specs: list[tuple[str, str]],
-    depth_col: str | None = None,
-) -> go.Figure | None:
-    series_to_plot = []
-    for base_col, smooth_col in curve_specs:
-        if smooth_col in df_processed.columns:
-            series_to_plot.append((base_col, smooth_col))
-    if not series_to_plot:
-        return None
-
-    x_col = depth_col if depth_col and depth_col in df_processed.columns else None
-    if x_col:
-        x_vals = pd.to_numeric(df_processed[x_col], errors='coerce')
-        x_title = x_col
-    else:
-        x_vals = np.arange(len(df_processed))
-        x_title = 'Índice de muestra'
-
-    fig = go.Figure()
-    for base_col, smooth_col in series_to_plot:
-        raw_vals = pd.to_numeric(df_processed[base_col], errors='coerce') if base_col in df_processed.columns else None
-        sm_vals = pd.to_numeric(df_processed[smooth_col], errors='coerce')
-        if raw_vals is not None:
-            fig.add_trace(
-                go.Scatter(
-                    x=x_vals,
-                    y=raw_vals,
-                    mode='lines',
-                    name=f'{base_col} raw',
-                    line=dict(width=1, dash='dot'),
-                    opacity=0.30,
-                    visible='legendonly',
-                )
-            )
-        fig.add_trace(
-            go.Scatter(
-                x=x_vals,
-                y=sm_vals,
-                mode='lines',
-                name=f'{base_col} suavizado',
-                line=dict(width=2.5),
-            )
-        )
-    fig.update_layout(
-        title='Curvas suavizadas para lectura operativa',
-        xaxis_title=x_title,
-        yaxis_title='Valor',
-        legend_title='Series',
-    )
-    return prettify(fig, h=430)
-
-
-def compute_zone_stability_summary(zone_stats: dict) -> dict:
-    counts = np.asarray(zone_stats.get('counts'), dtype=float)
-    total_points = max(int(zone_stats.get('valid_points', 0)), 1)
-    best_count = max(int(zone_stats.get('best_count', 0)), 0)
-    max_bin_count = max(float(np.nanmax(counts)) if np.isfinite(counts).any() else 0.0, 1.0)
-    highlight_cells = zone_stats.get('highlight_cells') or []
-    highlight_points = sum(int(c.get('count', 0)) for c in highlight_cells)
-    coverage_pct = 100.0 * highlight_points / total_points
-    density_pct = 100.0 * best_count / max_bin_count
-
-    best_std = float(zone_stats.get('best_std', float('nan')) )
-    best_rop = max(float(zone_stats.get('best_rop', 0.0)), 1e-6)
-    cv = (best_std / best_rop) if np.isfinite(best_std) and best_std >= 0 else 1.0
-    consistency_pct = float(np.clip(100.0 * (1.0 - cv), 0.0, 100.0))
-
-    score = float(np.clip(0.38 * coverage_pct + 0.34 * density_pct + 0.28 * consistency_pct, 0.0, 100.0))
-    if score >= 72:
-        label, color, detail = 'Estable', '#22c55e', 'Ventana compacta, repetible y con buena densidad de datos.'
-    elif score >= 45:
-        label, color, detail = 'Media', '#f59e0b', 'La zona óptima existe, pero todavía muestra dispersión o cobertura parcial.'
-    else:
-        label, color, detail = 'Inestable', '#ef4444', 'El óptimo es sensible y conviene validar con más datos o menos ruido.'
-
-    return {
-        'score': score,
-        'label': label,
-        'color': color,
-        'detail': detail,
-        'coverage_pct': coverage_pct,
-        'density_pct': density_pct,
-        'consistency_pct': consistency_pct,
-        'cv': cv,
-        'highlight_points': int(highlight_points),
-    }
-
-
-
-def build_kpi_csv_executive_summary(
-    zone_stats: dict,
-    rop_avg: float,
-    rop_max: float,
-    filled_points: int,
-    total_rows: int,
-    interpolation_method: str,
-    smoothing_method: str,
-    mse_series: pd.Series | None = None,
-) -> str:
-    """Resumen ejecutivo corto, listo para copiar en WhatsApp."""
-    stability = compute_zone_stability_summary(zone_stats)
-    best_rop = float(zone_stats.get("best_rop", float("nan")))
-    best_count = int(zone_stats.get("best_count", 0))
-    wob_low = float(zone_stats.get("best_wob_low", float("nan")))
-    wob_high = float(zone_stats.get("best_wob_high", float("nan")))
-    rpm_low = float(zone_stats.get("best_rpm_low", float("nan")))
-    rpm_high = float(zone_stats.get("best_rpm_high", float("nan")))
-
-    upside_pct = (
-        ((best_rop / max(float(rop_avg), 1e-6)) - 1.0) * 100.0
-        if np.isfinite(best_rop) and np.isfinite(rop_avg)
-        else float("nan")
-    )
-
-    lines = [
-        "Resumen ejecutivo KPI desde CSV",
-        "",
-        (
-            f"Se procesaron {int(total_rows):,} registros. "
-            f"Se rellenaron {int(filled_points):,} huecos usando interpolación {interpolation_method} "
-            f"y suavizado {smoothing_method}."
-        ),
-        (
-            f"La mejor ventana operativa de ROP quedó en WOB {wob_low:.2f}–{wob_high:.2f} "
-            f"y RPM {rpm_low:.2f}–{rpm_high:.2f}, con ROP promedio de {best_rop:.2f} "
-            f"en {best_count} puntos."
-        ),
-        (
-            f"Contra el promedio del dataset ({float(rop_avg):.2f}), esta ventana representa "
-            f"{upside_pct:.1f}% de mejora potencial y el pico observado fue {float(rop_max):.2f}."
-            if np.isfinite(upside_pct) and np.isfinite(rop_max) and np.isfinite(rop_avg)
-            else "No fue posible calcular mejora potencial completa contra el promedio del dataset."
-        ),
-        (
-            f"El semáforo de estabilidad quedó en {stability['label']} "
-            f"({float(stability['score']):.1f}/100), con cobertura {float(stability['coverage_pct']):.1f}%, "
-            f"densidad {float(stability['density_pct']):.1f}% y consistencia {float(stability['consistency_pct']):.1f}%."
-        ),
-    ]
-
-    if mse_series is not None:
-        mse_clean = pd.to_numeric(mse_series, errors="coerce").dropna()
-        if not mse_clean.empty:
-            q10 = float(mse_clean.quantile(0.10))
-            q50 = float(mse_clean.quantile(0.50))
-            q90 = float(mse_clean.quantile(0.90))
-            lines.append(
-                f"En eficiencia mecánica, el MSE quedó con mediana {q50:.2f} ksi y banda central P10–P90 de {q10:.2f}–{q90:.2f} ksi."
-            )
-
-    lines.append(
-        "Recomendación: usar esta ventana como referencia operativa inicial y validarla contra torque, vibración y respuesta de formación antes de estandarizarla."
-    )
-    return "\n\n".join(lines)
-
-
-def render_kpi_executive_dashboard(zone_stats: dict, rop_avg: float, rop_max: float, filled_points: int) -> None:
-    summary = compute_zone_stability_summary(zone_stats)
-    upside_pct = ((float(zone_stats.get('best_rop', 0.0)) / max(float(rop_avg), 1e-6)) - 1.0) * 100.0 if np.isfinite(rop_avg) else float('nan')
-    wob_band = f"{zone_stats['best_wob_low']:.1f}–{zone_stats['best_wob_high']:.1f}"
-    rpm_band = f"{zone_stats['best_rpm_low']:.1f}–{zone_stats['best_rpm_high']:.1f}"
-    semaforo = f"""
-    <div style="background:linear-gradient(135deg, rgba(15,23,42,0.95), rgba(30,41,59,0.88)); border:1px solid rgba(148,163,184,0.20); border-radius:18px; padding:18px 18px 14px 18px; margin:6px 0 14px 0;">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">
-        <div>
-          <div style="font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:#94a3b8; margin-bottom:6px;">Dashboard ejecutivo de la zona óptima</div>
-          <div style="font-size:26px; font-weight:700; color:#f8fafc;">Ventana recomendada: WOB {wob_band} | RPM {rpm_band}</div>
-          <div style="font-size:13px; color:#cbd5e1; margin-top:6px;">{summary['detail']}</div>
-        </div>
-        <div style="min-width:210px;">
-          <div style="font-size:12px; color:#94a3b8; margin-bottom:6px;">Semáforo de estabilidad</div>
-          <div style="display:flex; align-items:center; gap:10px;">
-            <div style="width:14px; height:14px; border-radius:999px; background:{summary['color']}; box-shadow:0 0 16px {summary['color']};"></div>
-            <div style="font-size:22px; font-weight:700; color:#f8fafc;">{summary['label']}</div>
-            <div style="font-size:18px; color:#cbd5e1;">{summary['score']:.0f}/100</div>
-          </div>
-          <div style="margin-top:10px; height:10px; border-radius:999px; background:rgba(255,255,255,0.08); overflow:hidden;">
-            <div style="height:100%; width:{summary['score']:.1f}%; background:{summary['color']}; border-radius:999px;"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-    """
-    st.markdown(semaforo, unsafe_allow_html=True)
-
-    cards = [
-        ('ROP óptimo', f"{zone_stats['best_rop']:.2f}", f"P90 {zone_stats.get('best_p90', float('nan')):.2f}" if np.isfinite(zone_stats.get('best_p90', float('nan'))) else 'P90 n/d', '#38bdf8'),
-        ('Upside vs promedio', f"{upside_pct:.1f}%" if np.isfinite(upside_pct) else 'n/d', f"ROP promedio {rop_avg:.2f}", '#a78bfa'),
-        ('Cobertura top', f"{summary['coverage_pct']:.1f}%", f"{summary['highlight_points']:,} pts en zona alta", '#22c55e'),
-        ('Ruido rellenado', f"{filled_points:,}", f"CV mejor celda {summary['cv']:.2f}" if np.isfinite(summary['cv']) else 'CV n/d', '#f59e0b'),
-    ]
-    cols = st.columns(len(cards))
-    for col, (title, value, subtitle, accent) in zip(cols, cards):
-        with col:
-            st.markdown(
-                f"""
-                <div style="background:rgba(15,23,42,0.72); border:1px solid rgba(148,163,184,0.16); border-left:4px solid {accent}; border-radius:16px; padding:16px 16px 14px 16px; min-height:120px;">
-                  <div style="font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#94a3b8; margin-bottom:10px;">{title}</div>
-                  <div style="font-size:28px; font-weight:700; color:#f8fafc; line-height:1.1;">{value}</div>
-                  <div style="font-size:13px; color:#cbd5e1; margin-top:10px;">{subtitle}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-
-def build_stability_components_chart(zone_stats: dict) -> go.Figure | None:
-    summary = compute_zone_stability_summary(zone_stats)
-    labels = ['Cobertura', 'Densidad', 'Consistencia']
-    values = [summary['coverage_pct'], summary['density_pct'], summary['consistency_pct']]
-    fig = px.bar(
-        x=labels,
-        y=values,
-        text=[f'{v:.0f}%' for v in values],
-        title='Componentes del semáforo de estabilidad',
-        labels={'x': 'Componente', 'y': 'Score (%)'},
-    )
-    fig.update_traces(textposition='outside', hovertemplate='%{x}: %{y:.1f}%<extra></extra>')
-    fig.update_yaxes(range=[0, 110])
-    return prettify(fig, h=360)
-
-
-def build_top_zone_profile_curve(zone_stats: dict) -> go.Figure | None:
-    top_cells = zone_stats.get('top_cells') or []
-    if not top_cells:
-        return None
-    top_df = pd.DataFrame(top_cells[:8]).copy().sort_values(['rpm_center', 'wob_center']).reset_index(drop=True)
-    top_df['Zona'] = [f'Z{i+1}' for i in range(len(top_df))]
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=top_df['rpm_center'],
-            y=top_df['rop'],
-            mode='lines+markers+text',
-            text=top_df['Zona'],
-            textposition='top center',
-            name='ROP por ventana top',
-            line=dict(width=3),
-            marker=dict(size=np.clip(top_df['count'].to_numpy() * 1.2, 10, 26), sizemode='diameter'),
-            customdata=top_df[['wob_low', 'wob_high', 'count']],
-            hovertemplate='RPM centro: %{x:.1f}<br>ROP medio: %{y:.2f}<br>WOB: %{customdata[0]:.1f}–%{customdata[1]:.1f}<br>Puntos: %{customdata[2]}<extra></extra>',
-        )
-    )
-    fig.update_layout(
-        title='Curva de desempeño de las mejores ventanas',
-        xaxis_title='RPM centro',
-        yaxis_title='ROP medio',
-        showlegend=False,
-    )
-    return prettify(fig, h=380)
+    fig.update_layout(title=title, xaxis_title="WOB", yaxis_title="RPM")
+    return prettify_heatmap_auto(fig, h=640)
 
 
 def render_kpi_csv_optimizer() -> None:
@@ -8907,23 +9540,12 @@ def render_kpi_csv_optimizer() -> None:
     with cols2[4]:
         min_points = st.number_input("Mín. puntos/bin", min_value=1, max_value=25, value=3, step=1, key="kpi_csv_min_points")
 
-    cols3 = st.columns([1.1, 1, 2.2])
-    with cols3[0]:
-        bit_diameter_in = st.number_input(
-            "Diámetro de barrena para MSE (in)",
-            min_value=1.0,
-            max_value=36.0,
-            value=8.5,
-            step=0.25,
-            key="kpi_csv_mse_bit_diameter",
-        )
-    with cols3[1]:
-        show_mse_charts = st.checkbox("Mostrar gráficas MSE", value=True, key="kpi_csv_show_mse")
-    with cols3[2]:
-        st.caption(
-            "MSE necesita WOB, RPM, ROP, Torque y Profundidad. "
-            "Se usa para leer eficiencia mecánica: a menor MSE, mejor aprovechamiento de energía si el ROP se mantiene alto."
-        )
+    focus_dense_cloud = st.checkbox(
+        "Enfocar heatmap en núcleo de datos (P2–P98 WOB y RPM)",
+        value=False,
+        key="kpi_csv_focus_dense_hm",
+        help="Quita outliers en el plano WOB×RPM antes de armar la grilla: el mapa usa el rango donde está la mayoría de puntos y se reduce el área negra vacía.",
+    )
 
     selected_numeric = [c for c in [rop_col, wob_col, rpm_col] if c and c != "<ninguna>"]
     if depth_col != "<ninguna>":
@@ -8942,11 +9564,6 @@ def render_kpi_csv_optimizer() -> None:
     rop_work_col = f"{rop_col}_smooth" if f"{rop_col}_smooth" in df_processed.columns else rop_col
     wob_work_col = f"{wob_col}_smooth" if f"{wob_col}_smooth" in df_processed.columns else wob_col
     rpm_work_col = f"{rpm_col}_smooth" if f"{rpm_col}_smooth" in df_processed.columns else rpm_col
-    torque_work_col = (
-        f"{torque_col}_smooth"
-        if torque_col != "<ninguna>" and f"{torque_col}_smooth" in df_processed.columns
-        else torque_col
-    )
 
     zone_stats = compute_rop_zone_stats(
         df_processed,
@@ -8955,38 +9572,27 @@ def render_kpi_csv_optimizer() -> None:
         rop_col=rop_work_col,
         bins=int(bins),
         min_points_per_bin=int(min_points),
+        density_percentile_trim=(2.0, 98.0) if focus_dense_cloud else None,
     )
 
     na_counts = df_raw[[c for c in [rop_col, wob_col, rpm_col] if c in df_raw.columns]].isna().sum()
     filled_points = int(na_counts.sum())
 
-    rop_avg_value = pd.to_numeric(df_processed[rop_work_col], errors="coerce").mean()
-    rop_max_value = pd.to_numeric(df_processed[rop_work_col], errors="coerce").max()
-
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Filas útiles", f"{len(df_processed):,}")
     m2.metric("Huecos detectados", f"{filled_points:,}")
-    m3.metric("ROP promedio", format_num(rop_avg_value))
-    m4.metric("ROP máximo", format_num(rop_max_value))
+    m3.metric("ROP promedio", format_num(pd.to_numeric(df_processed[rop_work_col], errors="coerce").mean()))
+    m4.metric("ROP máximo", format_num(pd.to_numeric(df_processed[rop_work_col], errors="coerce").max()))
 
     stats_cols = [c for c in [depth_col if depth_col != "<ninguna>" else None, rop_col, wob_col, rpm_col, torque_col if torque_col != "<ninguna>" else None] if c]
     stats_df = df_processed[stats_cols].agg(["min", "mean", "max"]).T.reset_index().rename(columns={"index": "Parámetro", "min": "Mínimo", "mean": "Promedio", "max": "Máximo"})
     st.dataframe(stats_df, use_container_width=True, hide_index=True)
-
-    df_mse = None
-    mse_value_col = None
-    if depth_col != "<ninguna>" and torque_col != "<ninguna>":
-        df_mse = compute_mse(
-            df_processed,
-            wob_col=wob_work_col,
-            rpm_col=rpm_work_col,
-            rop_col=rop_work_col,
-            torque_col=torque_work_col,
-            bit_diameter_in=float(bit_diameter_in),
-            depth_col=depth_col,
-        )
-        if df_mse is not None and not df_mse.empty:
-            mse_value_col = "MSE_ksi" if "MSE_ksi" in df_mse.columns else "MSE_MPa"
+    _rop_opt_cols = [wob_work_col, rpm_work_col, rop_work_col]
+    _st_rop = heatmap_numeric_stats(df_processed, _rop_opt_cols)
+    _ch_rop = stats_df_to_heatmap_chips(_st_rop, max_chips=8)
+    if _ch_rop:
+        st.caption("**Chips — min–max y media (WOB, RPM, ROP trabajados)**")
+        _render_chips_row(_ch_rop)
 
     if zone_stats is None:
         st.warning("No encontré suficiente data válida para calcular la mejor zona de ROP. Revisa columnas, bins o cantidad mínima por celda.")
@@ -8997,185 +9603,96 @@ def render_kpi_csv_optimizer() -> None:
             f"RPM {zone_stats['best_rpm_low']:.2f}–{zone_stats['best_rpm_high']:.2f}, "
             f"ROP medio {zone_stats['best_rop']:.2f} ({zone_stats['best_count']} puntos)."
         )
-        render_kpi_executive_dashboard(
-            zone_stats=zone_stats,
-            rop_avg=float(rop_avg_value) if np.isfinite(rop_avg_value) else float('nan'),
-            rop_max=float(rop_max_value) if np.isfinite(rop_max_value) else float('nan'),
-            filled_points=filled_points,
+        _dash_chips = rop_zone_dashboard_chips(zone_stats)
+        if _dash_chips:
+            st.caption("**Resumen rápido (mejor zona y grilla)**")
+            _render_chips_row(_dash_chips)
+        fig_dash = build_optimal_rop_heatmap_with_marginals(
+            zone_stats,
+            title="Heatmap de mejor zona de ROP",
         )
-
-        mse_summary_series = None
-        if df_mse is not None and not df_mse.empty and mse_value_col is not None and mse_value_col in df_mse.columns:
-            mse_summary_series = df_mse[mse_value_col]
-
-        wa_kpi_csv = build_kpi_csv_executive_summary(
-            zone_stats=zone_stats,
-            rop_avg=float(rop_avg_value) if np.isfinite(rop_avg_value) else float("nan"),
-            rop_max=float(rop_max_value) if np.isfinite(rop_max_value) else float("nan"),
-            filled_points=filled_points,
-            total_rows=len(df_processed),
-            interpolation_method=str(interpolation_method),
-            smoothing_method=str(smoothing_method),
-            mse_series=mse_summary_series,
-        )
-
-        st.markdown("#### Resumen ejecutivo listo para WhatsApp")
-        st.caption(
-            "Texto corto, ejecutivo y copiable para compartir la lectura del CSV con operaciones, ingeniería o supervisión."
-        )
-        st.text_area(
-            "Resumen ejecutivo CSV",
-            value=wa_kpi_csv,
-            height=220,
-            key="kpi_csv_whatsapp_summary",
-        )
-
-        fig_hm = build_optimal_rop_heatmap(zone_stats, title="Mapa operativo pro de la mejor zona de ROP")
-        st.plotly_chart(fig_hm, use_container_width=True, config=PLOTLY_CONFIG)
-        st.caption(
-            "El mapa recorta automáticamente el espacio vacío, muestra la zona top como clúster operativo y deja la mejor ventana lista para lectura ejecutiva."
-        )
-
-        c1, c2 = st.columns(2)
-        with c1:
-            fig_bar = build_top_rop_zones_bar(zone_stats)
-            if fig_bar is not None:
-                st.plotly_chart(fig_bar, use_container_width=True, config=PLOTLY_CONFIG)
-            fig_stability = build_stability_components_chart(zone_stats)
-            if fig_stability is not None:
-                st.plotly_chart(fig_stability, use_container_width=True, config=PLOTLY_CONFIG)
-        with c2:
-            fig_win = build_optimal_window_ranges(zone_stats)
-            if fig_win is not None:
-                st.plotly_chart(fig_win, use_container_width=True, config=PLOTLY_CONFIG)
-            fig_profile = build_top_zone_profile_curve(zone_stats)
-            if fig_profile is not None:
-                st.plotly_chart(fig_profile, use_container_width=True, config=PLOTLY_CONFIG)
-
-        curve_specs = [
-            (rop_col, rop_work_col),
-            (wob_col, wob_work_col),
-            (rpm_col, rpm_work_col),
-        ]
-        fig_curves = build_kpi_smoothed_curves(
-            df_processed,
-            curve_specs=curve_specs,
-            depth_col=(depth_col if depth_col != "<ninguna>" else None),
-        )
-        if fig_curves is not None:
-            st.plotly_chart(fig_curves, use_container_width=True, config=PLOTLY_CONFIG)
-
-        st.markdown("#### Lectura de eficiencia mecánica (MSE)")
-        st.caption(
-            "Pongo MSE después del semáforo y del heatmap para que primero veas la mejor ventana de ROP "
-            "y luego valides si esa zona también trabaja con buena eficiencia energética."
-        )
-        if depth_col == "<ninguna>" or torque_col == "<ninguna>":
-            st.info("Para mostrar MSE aquí necesitas seleccionar columnas de Profundidad y Torque.")
-        elif df_mse is None or df_mse.empty or mse_value_col is None:
-            st.info("No hubo datos suficientes para calcular MSE con las columnas seleccionadas.")
-        else:
-            mse_series = pd.to_numeric(df_mse[mse_value_col], errors="coerce").dropna()
-            if mse_series.empty:
-                st.info("No hubo valores válidos de MSE después de limpiar los datos.")
-            else:
-                q10 = float(mse_series.quantile(0.10))
-                q50 = float(mse_series.quantile(0.50))
-                q90 = float(mse_series.quantile(0.90))
-                mse_mean = float(mse_series.mean())
-                mse_std = float(mse_series.std()) if len(mse_series) > 1 else 0.0
-                mse_min = float(mse_series.min())
-                mse_max = float(mse_series.max())
-                depth_mse_min = df_mse["Depth_MSE"].min() if "Depth_MSE" in df_mse.columns else np.nan
-                depth_mse_max = df_mse["Depth_MSE"].max() if "Depth_MSE" in df_mse.columns else np.nan
-
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric("MSE promedio (ksi)", format_num(mse_mean))
-                k2.metric("MSE mediana (ksi)", format_num(q50))
-                k3.metric("MSE P10 (ksi)", format_num(q10))
-                k4.metric("MSE P90 (ksi)", format_num(q90))
-
-                st.markdown(
-                    f"""
-                    <div style="padding:0.8rem 1rem;border-radius:12px;border:1px solid rgba(148,163,184,0.25);margin:0.4rem 0 1rem 0;">
-                        <b>Cómo leer esta sección:</b> valores más bajos de MSE suelen indicar mejor eficiencia mecánica,
-                        siempre que el ROP siga siendo bueno. En este caso, el 80% central del comportamiento está entre
-                        <b>{q10:.2f}</b> y <b>{q90:.2f}</b> ksi.
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                mse_stats_table = pd.DataFrame(
-                    [
-                        {
-                            "Métrica": "MSE (ksi)",
-                            "Mínimo": round(mse_min, 2),
-                            "Promedio": round(mse_mean, 2),
-                            "Mediana": round(q50, 2),
-                            "P10": round(q10, 2),
-                            "P90": round(q90, 2),
-                            "Máximo": round(mse_max, 2),
-                            "Std": round(mse_std, 2),
-                            "Puntos": int(len(mse_series)),
-                        }
-                    ]
-                )
-                st.dataframe(mse_stats_table, use_container_width=True, hide_index=True)
-
-                g1, g2 = st.columns(2)
-                fig_mse_depth = build_mse_vs_depth(df_mse, "KPI CSV", "Depth_MSE", "DEPTH")
-                fig_mse_hist = build_mse_hist(df_mse, "KPI CSV")
-                with g1:
-                    if fig_mse_depth is not None and show_mse_charts:
-                        st.plotly_chart(fig_mse_depth, use_container_width=True, config=PLOTLY_CONFIG)
-                    st.caption(
-                        f"Profundidad analizada: {format_num(depth_mse_min)} a {format_num(depth_mse_max)}. "
-                        "Úsalo para ver dónde sube o baja la energía específica."
-                    )
-                with g2:
-                    if fig_mse_hist is not None and show_mse_charts:
-                        st.plotly_chart(fig_mse_hist, use_container_width=True, config=PLOTLY_CONFIG)
-                    st.caption(
-                        "La distribución te ayuda a ver si el comportamiento está concentrado en una banda eficiente "
-                        "o si hay picos aislados de sobre-esfuerzo."
-                    )
-
-        top_rows = []
-        for idx, cell in enumerate(zone_stats.get('top_cells', [])[:5], start=1):
-            top_rows.append(
-                {
-                    'Ranking': idx,
-                    'WOB min': round(cell['wob_low'], 2),
-                    'WOB max': round(cell['wob_high'], 2),
-                    'RPM min': round(cell['rpm_low'], 2),
-                    'RPM max': round(cell['rpm_high'], 2),
-                    'ROP medio': round(cell['rop'], 2),
-                    'Puntos': int(cell['count']),
-                }
+        if fig_dash is not None:
+            st.plotly_chart(fig_dash, use_container_width=True, config=PLOTLY_CONFIG_ROP_DASH)
+            st.caption(
+                "**Heatmap:** degradado azul → teal → amarillo/naranja; marginales = ROP máx/mín por bin de WOB y de RPM."
             )
-        if top_rows:
-            st.markdown('#### Ranking de ventanas operativas')
-            st.dataframe(pd.DataFrame(top_rows), use_container_width=True, hide_index=True)
+            st.caption(
+                "**Zonas vacías (negro):** en ese bin WOB×RPM no hubo puntos **o** hay menos muestras que tu **mín. puntos/bin** "
+                "(la media no se muestra para no inflar ruido). Además la grilla abarca el **rango completo** de WOB/RPM del archivo: "
+                "si casi todo el trabajo fue en una “nube” (p. ej. alto RPM y WOB medio), el resto del rectángulo se ve vacío. "
+                "Activa **Enfocar heatmap en núcleo P2–P98** arriba para recortar outliers y ampliar la zona útil. "
+                "En el gráfico, **no hay tooltip** al pasar el mouse por celdas sin datos (evita el mensaje confuso ROP NaN / 0 puntos)."
+            )
+        else:
+            fig_hm = build_optimal_rop_heatmap(zone_stats, title="Heatmap de mejor zona de ROP")
+            st.plotly_chart(fig_hm, use_container_width=True, config=PLOTLY_CONFIG)
+            st.caption(
+                "**Zonas vacías:** igual que en el dashboard — pocos puntos por celda o combinación WOB×RPM no usada; opción **P2–P98** para enfocar el núcleo."
+            )
 
-    preview_df = df_processed.copy()
-    if df_mse is not None and not df_mse.empty and mse_value_col is not None and mse_value_col in df_mse.columns:
-        preview_df = preview_df.join(df_mse[[mse_value_col]], how="left")
+    _depth_sel = depth_col if depth_col != "<ninguna>" else None
+    _fig_top_zones = build_rop_top_zones_bar_figure(zone_stats, top_n=8) if zone_stats is not None else None
+    _fig_depth_curves, _depth_franja_chips = build_kpi_depth_curves_figure(
+        df_processed,
+        _depth_sel,
+        rop_work_col,
+        wob_work_col,
+        rpm_work_col,
+        zone_stats=zone_stats,
+    )
+    if _fig_top_zones is not None or _fig_depth_curves is not None:
+        st.markdown("#### Contexto operativo")
+        _ctx_lines = []
+        if zone_stats is not None:
+            _ctx_lines.append(
+                "En el heatmap, la **estrella** marca el pico operativo y el **recuadro blanco** la celda óptima; "
+                f"solo se etiquetan celdas del **top {int(ROP_HEATMAP_LABEL_TOP_FRACTION * 100)} %** por ROP."
+            )
+            _ctx_lines.append(
+                "En **curvas vs profundidad**, las **franjas naranjas** marcan tramos donde WOB y RPM caen en esa misma celda óptima."
+            )
+        _ctx_lines.append(
+            "**Top zonas** y **curvas suavizadas** usan **valores reales** (ROP, WOB, RPM en sus unidades), sin normalizar el eje Y."
+        )
+        st.caption(" ".join(_ctx_lines))
+        if _fig_top_zones is not None and _fig_depth_curves is not None:
+            _z1, _z2 = st.columns(2)
+            with _z1:
+                st.plotly_chart(_fig_top_zones, use_container_width=True, config=PLOTLY_CONFIG_ROP_DASH)
+            with _z2:
+                if _depth_franja_chips:
+                    st.caption("**Chips — franja de mejor ROP (celda WOB×RPM)**")
+                    _render_chips_row(_depth_franja_chips)
+                st.plotly_chart(_fig_depth_curves, use_container_width=True, config=PLOTLY_CONFIG_ROP_DASH)
+        elif _fig_depth_curves is not None:
+            if _depth_franja_chips:
+                st.caption("**Chips — franja de mejor ROP (celda WOB×RPM)**")
+                _render_chips_row(_depth_franja_chips)
+            st.plotly_chart(_fig_depth_curves, use_container_width=True, config=PLOTLY_CONFIG_ROP_DASH)
+        else:
+            st.plotly_chart(_fig_top_zones, use_container_width=True, config=PLOTLY_CONFIG_ROP_DASH)
 
-    preview_cols = [c for c in [
-        depth_col if depth_col != "<ninguna>" else None,
-        rop_col,
-        rop_work_col if rop_work_col != rop_col else None,
-        wob_col,
-        wob_work_col if wob_work_col != wob_col else None,
-        rpm_col,
-        rpm_work_col if rpm_work_col != rpm_col else None,
-        torque_col if torque_col != "<ninguna>" else None,
-        torque_work_col if torque_col != "<ninguna>" and torque_work_col != torque_col else None,
-        mse_value_col if mse_value_col in preview_df.columns else None,
-    ] if c and c in preview_df.columns]
+    with st.expander("Perfil min–media–max (comparación normalizada)", expanded=False):
+        st.caption(
+            "**Qué hace el normalizado:** para cada variable (WOB, RPM, ROP) se toma el **mínimo y máximo** del archivo y se dibuja una escala **0 → 1**. "
+            "La **línea gris** va de min a max; el **punto azul** es la **media** en ese rango. Sirve para comparar *dónde cae la media* entre parámetros de distinta magnitud; "
+            "**el eje Y no son unidades físicas**. Para magnitudes reales usa la tabla, el heatmap y **Curvas suavizadas** arriba."
+        )
+        _sp_rop = build_minmax_mean_spine_figure(
+            _st_rop,
+            title="Perfil min · media · max — WOB, RPM, ROP (normalizado 0–1 por variable)",
+        )
+        if _sp_rop is not None:
+            st.plotly_chart(_sp_rop, use_container_width=True, config=PLOTLY_CONFIG)
+
+    if zone_stats is not None:
+        st.caption(
+            "La celda óptima del heatmap es la combinación WOB–RPM con mayor ROP promedio por bin, tras interpolar y suavizar."
+        )
+
+    preview_cols = [c for c in [depth_col if depth_col != "<ninguna>" else None, rop_col, rop_work_col if rop_work_col != rop_col else None, wob_col, wob_work_col if wob_work_col != wob_col else None, rpm_col, rpm_work_col if rpm_work_col != rpm_col else None] if c]
     with st.expander("Vista previa de datos procesados", expanded=False):
-        st.dataframe(preview_df[preview_cols].head(200), use_container_width=True, hide_index=True)
+        st.dataframe(df_processed[preview_cols].head(200), use_container_width=True, hide_index=True)
 
 
 def render_kpi_module() -> None:
@@ -10239,8 +10756,9 @@ MUD_PROPERTY_ALIASES = {
     "Marsh": ["marsh", "visc. marsh", "viscosidad marsh"],
     "Temperature": ["temperatura salida", "temp. de salida", "temperatura", "temp. de analisis", "temp. de análisis", "temp de analisis"],
     "VA": ["va", "visc.aparente", "visc. aparente", "viscosidad aparente"],
-    "PV": ["pv", "pv (cp)", "pv @ c", "plastic viscosity", "viscosidad plástica", "viscoplastic", "visc. plastica", "visc.plastica"],
-    "YP": ["yp", "yv", "fv", "yield point", "punto de cedencia", "yp (lb/100ft2)", "lb/100ft²", "pc"],
+    "FV": ["fv", "fv @ c", "fv @ °c", "funnel viscosity", "viscosidad embudo"],
+    "PV": ["pv", "pv (cp)", "pv @ c", "pv @ °c", "plastic viscosity", "viscosidad plástica", "viscoplastic", "visc. plastica", "visc.plastica"],
+    "YP": ["yp", "yv", "yield point", "punto de cedencia", "yp (lb/100ft2)", "lb/100ft²", "pc"],
     "Gel_10s": ["gel 10s", "gel 10s/10m/30m", "gels 10s", "10s", "gel (10s)", "gel 10s/10m", "geles"],
     "Gel_10min": ["gel 10m", "gel 10min", "10min", "10m"],
     "Gel_30min": ["gel 30m", "gel 30min", "30min", "30m"],
@@ -10261,16 +10779,80 @@ MUD_PROPERTY_ALIASES = {
     "RAA": ["raa", "r. aceite / agua", "rel. aceite/agua", "aceite/agua"],
     "AgNO3": ["agno3"],
     "Salinity": ["salinidad"],
-    "Electrical_Stability": ["est. electrica", "estabilidad", "est. elect"],
+    "Electrical_Stability": ["est. electrica", "estabilidad", "est. elect", "elec. stability"],
     "Alkalinity": ["alcalinidad"],
     "Excess_Cal": ["exceso de cal", "exc.cal", "exc cal"],
 }
 MUD_CANONICAL_ORDER = [
-    "Date", "Density", "Marsh", "Temperature", "VA", "PV", "YP",
-    "Gel_10s", "Gel_10min", "Gel_30min",
+    "Date", "DateTime", "Properties", "Depth (MD)", "Depth (TVD)", "Fluid set", "Source", "Time", "FL Temp",
+    "Density @ °C", "FV", "FV Temp", "FV @ °C", "PV", "PV Temp", "PV @ °C", "YP",
+    "Gel_10s", "Gel_10min", "Gel_30min", "tau0",
     "L600", "L300", "L200", "L100", "L6", "L3",
-    "Filtrado", "Enjarre", "LGS", "HGS", "Chlorides", "Solids", "Oil", "Water", "RAA",
-    "AgNO3", "Salinity", "Electrical_Stability", "Alkalinity", "Excess_Cal",
+    "HTHP", "HTHP @ °C", "Corr Solid", "NAP", "Water", "NAP Ratio", "Water Ratio",
+    "Sand", "Cake (HTHP)", "Chlorides", "Calcium", "CaCl2", "Water Phase Salinity",
+    "NaCL (Sol/Insol)", "Excess Lime", "Electrical_Stability",
+    "LGS (%)", "HGS (%)", "LGS (kg/m³)", "HGS (kg/m³)", "ASG",
+    "Additional Properties", "n (HB)", "K (HB)", "Viscometer Sag Shoe Test", "(VSST)",
+    "Marsh", "Temperature", "VA", "Filtrado", "Enjarre", "LGS", "HGS", "Solids", "Oil", "RAA",
+    "AgNO3", "Salinity", "Alkalinity", "Excess_Cal",
+]
+MUD_METADATA_COLUMNS = {
+    "Date", "DateTime", "Properties", "Depth (MD)", "Depth (TVD)", "Fluid set", "Source", "Time",
+    "Additional Properties",
+}
+MUD_ANALYTIC_EXCLUDE = {
+    "DateTime", "Properties", "Depth (MD)", "Depth (TVD)", "Fluid set", "Source", "Time",
+    "Density @ °C", "FV @ °C", "PV @ °C",
+}
+MUD_EXPORT_HEADER_SPECS = [
+    ("Depth (MD)", "Depth (MD)", "m"),
+    ("Depth (TVD)", "Depth (TVD)", "m"),
+    ("Properties", "Properties", "N°"),
+    ("Fluid set", "Fluid set", "Fluid"),
+    ("Source", "Source", "Source"),
+    ("Time", "Time", "time"),
+    ("DateTime", "DateTime", "YYYY-MM-DDTHH:MM:SS"),
+    ("FL Temp", "FL Temp", "°C"),
+    ("Density @ °C", "D @ °C", "kg/m³"),
+    ("FV @ °C", "Fv @ °C", "s/qt"),
+    ("PV @ °C", "PV @ °C", "cP"),
+    ("YP", "YP", "lb/100ft²"),
+    ("Gel_10s", "GELS 10s", "lb/100ft²"),
+    ("Gel_10min", "GELS 10min", "lb/100ft²"),
+    ("Gel_30min", "GELS 30min", "lb/100ft²"),
+    ("tau0", "tau0", "lb/100ft²"),
+    ("L600", "600", "600"),
+    ("L300", "300", "300"),
+    ("L200", "200", "200"),
+    ("L100", "100", "100"),
+    ("L6", "6", "6"),
+    ("L3", "3", "3"),
+    ("HTHP", "HTHP", "HTHP"),
+    ("HTHP @ °C", "°C", "°C"),
+    ("Corr Solid", "Corr Solid", "%"),
+    ("NAP", "NAP", "%"),
+    ("Water", "Water", "%"),
+    ("NAP Ratio", "NAP", "%"),
+    ("Water Ratio", "Water Ratio", "%"),
+    ("Sand", "Sand", "%"),
+    ("Cake (HTHP)", "Cake (HTHP)", "32nd"),
+    ("Chlorides", "Chlorides", "mg/L"),
+    ("Calcium", "Calcium", "mg/L"),
+    ("CaCl2", "CaCl2", "mg/L"),
+    ("Water Phase Salinity", "Water Phase Salinity", "ppm"),
+    ("NaCL (Sol/Insol)", "NaCL (Sol/Insol)", "kg/m³"),
+    ("Excess Lime", "Excess Lime", "kg/m³"),
+    ("Electrical_Stability", "Elec. Stability", "V"),
+    ("LGS (%)", "LGS", "%"),
+    ("HGS (%)", "HGS", "%"),
+    ("LGS (kg/m³)", "LGS", "kg/m³"),
+    ("HGS (kg/m³)", "HGS", "kg/m³"),
+    ("ASG", "ASG", "SG"),
+    ("Additional Properties", "Additional Properties", "Properties"),
+    ("n (HB)", "n (HB)", "dec"),
+    ("K (HB)", "K (HB)", "lb*s^n'/100ft2"),
+    ("Viscometer Sag Shoe Test", "Viscometer Sag Shoe Test", "lbm/gal"),
+    ("(VSST)", "(VSST)", ""),
 ]
 
 
@@ -10351,6 +10933,15 @@ def _extract_date_from_text(text: str) -> pd.Timestamp | None:
         "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
         "jul": 7, "ago": 8, "sep": 9, "oct": 10, "nov": 11, "dic": 12,
     }
+    # yyyy-mm-dd / yyyy.mm.dd / yyyy/mm/dd
+    m = re.search(r"((?:19|20)\d{2})[./-](\d{1,2})[./-](\d{1,2})", text)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            return pd.Timestamp(y, mo, d).normalize()
+        except ValueError:
+            pass
+    # dd-mm-yyyy / dd/mm/yyyy
     m = re.search(r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})", text)
     if m:
         d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -10381,6 +10972,307 @@ def _date_from_filename_or_today(name: str) -> pd.Timestamp:
         return pd.Timestamp.now().normalize()
     d = _extract_date_from_text(name)
     return d if d is not None else pd.Timestamp.now().normalize()
+
+
+def _mud_num_to_text(val) -> str:
+    num = _extract_numeric(val)
+    if num is None:
+        s = str(val).strip() if val is not None else ""
+        return s
+    if abs(num - round(num)) < 1e-9:
+        return str(int(round(num)))
+    return f"{num:.12g}"
+
+
+def _mud_clean_cell_text(val) -> str:
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return ""
+    if isinstance(val, pd.Timestamp):
+        return val.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        import datetime as _dt
+        if isinstance(val, _dt.time):
+            return val.strftime("%H:%M")
+    except Exception:
+        pass
+    return str(val).strip().replace("\u00a0", " ")
+
+
+def _mud_parse_time_value(val):
+    s = _mud_clean_cell_text(val)
+    if not s:
+        return None
+    try:
+        import datetime as _dt
+        if hasattr(val, "hour") and hasattr(val, "minute") and not isinstance(val, pd.Timestamp):
+            return _dt.time(val.hour, val.minute, getattr(val, "second", 0))
+    except Exception:
+        pass
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(s, fmt).time()
+        except Exception:
+            pass
+    dt = pd.to_datetime(s, errors="coerce")
+    if pd.notna(dt):
+        return dt.time()
+    return None
+
+
+def _mud_compose_datetime(date_value, time_value) -> pd.Timestamp | None:
+    base_date = pd.to_datetime(date_value, errors="coerce")
+    if pd.isna(base_date):
+        return None
+    t = _mud_parse_time_value(time_value)
+    if t is None:
+        return base_date
+    return pd.Timestamp.combine(base_date.normalize().date(), t)
+
+
+def _mud_isoformat_no_tz(ts) -> str:
+    ts = pd.to_datetime(ts, errors="coerce")
+    if pd.isna(ts):
+        return ""
+    return ts.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _mud_pair_string(raw_value) -> str:
+    nums = _extract_all_numbers(raw_value)
+    if len(nums) >= 2:
+        return f"{_mud_num_to_text(nums[0])} @ {_mud_num_to_text(nums[1])}"
+    if len(nums) == 1:
+        return _mud_num_to_text(nums[0])
+    return _mud_clean_cell_text(raw_value)
+
+
+def _mud_apply_daily_property(row_record: dict, label: str, unit: str, raw_value) -> None:
+    low = re.sub(r"\s+", " ", _mud_clean_cell_text(label).lower())
+    unit_low = re.sub(r"\s+", " ", _mud_clean_cell_text(unit).lower())
+    nums = _extract_all_numbers(raw_value)
+    if not low:
+        return
+    if low.startswith("depth"):
+        if len(nums) >= 1:
+            row_record["Depth (MD)"] = nums[0]
+        if len(nums) >= 2:
+            row_record["Depth (TVD)"] = nums[1]
+        return
+    if low.startswith("fl temp"):
+        if nums:
+            row_record["FL Temp"] = nums[0]
+        return
+    if low.startswith("density"):
+        row_record["Density @ °C"] = _mud_pair_string(raw_value)
+        if nums:
+            row_record["Density"] = nums[0]
+        if len(nums) >= 2:
+            row_record["Density Temp"] = nums[1]
+        return
+    if low.startswith("fv @"):
+        if nums:
+            row_record["FV"] = nums[0]
+        if len(nums) >= 2:
+            row_record["FV Temp"] = nums[1]
+        row_record["FV @ °C"] = _mud_pair_string(raw_value)
+        return
+    if low.startswith("pv @"):
+        if nums:
+            row_record["PV"] = nums[0]
+        if len(nums) >= 2:
+            row_record["PV Temp"] = nums[1]
+        row_record["PV @ °C"] = _mud_pair_string(raw_value)
+        return
+    if low == "yp" or low.startswith("yp "):
+        if nums:
+            row_record["YP"] = nums[0]
+        return
+    if low.startswith("gels"):
+        g1, g2, g3 = _parse_gel_triple(raw_value)
+        if g1 is not None:
+            row_record["Gel_10s"] = g1
+        if g2 is not None:
+            row_record["Gel_10min"] = g2
+        if g3 is not None:
+            row_record["Gel_30min"] = g3
+        return
+    if low == "tau0":
+        if nums:
+            row_record["tau0"] = nums[0]
+        return
+    if low.startswith("600/300"):
+        if len(nums) >= 1:
+            row_record["L600"] = nums[0]
+        if len(nums) >= 2:
+            row_record["L300"] = nums[1]
+        return
+    if low.startswith("200/100"):
+        if len(nums) >= 1:
+            row_record["L200"] = nums[0]
+        if len(nums) >= 2:
+            row_record["L100"] = nums[1]
+        return
+    if low.startswith("6/3"):
+        if len(nums) >= 1:
+            row_record["L6"] = nums[0]
+        if len(nums) >= 2:
+            row_record["L3"] = nums[1]
+        return
+    if low.startswith("hthp"):
+        if nums:
+            row_record["HTHP"] = nums[0]
+        if len(nums) >= 2:
+            row_record["HTHP @ °C"] = nums[1]
+        return
+    if low.startswith("corr solid"):
+        if nums:
+            row_record["Corr Solid"] = nums[0]
+        return
+    if low.startswith("nap / water ratio"):
+        if len(nums) >= 1:
+            row_record["NAP Ratio"] = nums[0]
+        if len(nums) >= 2:
+            row_record["Water Ratio"] = nums[1]
+        return
+    if low.startswith("nap / water"):
+        if len(nums) >= 1:
+            row_record["NAP"] = nums[0]
+        if len(nums) >= 2:
+            row_record["Water"] = nums[1]
+        return
+    if low == "sand" or low.startswith("sand "):
+        if nums:
+            row_record["Sand"] = nums[0]
+        return
+    if low.startswith("cake"):
+        if nums:
+            row_record["Cake (HTHP)"] = nums[0]
+        return
+    if low.startswith("chlorides / calcium"):
+        if len(nums) >= 1:
+            row_record["Chlorides"] = nums[0]
+        if len(nums) >= 2:
+            row_record["Calcium"] = nums[1]
+        return
+    if low == "cacl2" or low.startswith("cacl2 "):
+        if nums:
+            row_record["CaCl2"] = nums[0]
+        return
+    if low.startswith("water phase salinity"):
+        if nums:
+            row_record["Water Phase Salinity"] = nums[0]
+        return
+    if low.startswith("nacl"):
+        txt = _mud_clean_cell_text(raw_value)
+        if txt and txt != "/":
+            row_record["NaCL (Sol/Insol)"] = txt
+        return
+    if low.startswith("excess lime"):
+        if nums:
+            row_record["Excess Lime"] = nums[0]
+        return
+    if low.startswith("elec. stability"):
+        if nums:
+            row_record["Electrical_Stability"] = nums[0]
+        return
+    if low.startswith("lgs / hgs"):
+        if len(nums) >= 1:
+            target_lgs = "LGS (kg/m³)" if "kg/" in unit_low else "LGS (%)"
+            row_record[target_lgs] = nums[0]
+        if len(nums) >= 2:
+            target_hgs = "HGS (kg/m³)" if "kg/" in unit_low else "HGS (%)"
+            row_record[target_hgs] = nums[1]
+        return
+    if low == "asg":
+        if nums:
+            row_record["ASG"] = nums[0]
+        return
+    if low.startswith("n (hb)"):
+        if nums:
+            row_record["n (HB)"] = nums[0]
+        return
+    if low.startswith("k (hb)"):
+        if nums:
+            row_record["K (HB)"] = nums[0]
+        return
+    if low.startswith("viscometer sag shoe test"):
+        if nums:
+            row_record["Viscometer Sag Shoe Test"] = nums[0]
+        return
+    if low.startswith("(vsst)"):
+        if nums:
+            row_record["(VSST)"] = nums[0]
+        else:
+            txt = _mud_clean_cell_text(raw_value)
+            if txt:
+                row_record["(VSST)"] = txt
+        return
+    canonical = _normalize_mud_property_name(label)
+    if canonical:
+        _mud_apply_canonical_value(row_record, canonical, raw_value)
+
+
+def _parse_mud_daily_report_sheet(df_raw: pd.DataFrame, source_name: str = "") -> list[dict]:
+    df = df_raw.copy()
+    if df.empty or df.shape[0] < 6 or df.shape[1] < 5:
+        return []
+    cell_a1 = _mud_clean_cell_text(df.iat[0, 0]) if df.shape[0] > 0 else ""
+    cell_a2 = _mud_clean_cell_text(df.iat[1, 0]) if df.shape[0] > 1 else ""
+    cell_a5 = _mud_clean_cell_text(df.iat[4, 0]) if df.shape[0] > 4 else ""
+    if "daily fluid properties" not in cell_a1.lower() or "properties" not in cell_a2.lower() or "time" not in cell_a5.lower():
+        return []
+
+    report_date = _extract_date_from_text(cell_a1) or _date_from_filename_or_today(source_name)
+    sample_cols = []
+    for j in range(2, df.shape[1]):
+        prop_txt = _mud_clean_cell_text(df.iat[1, j]) if df.shape[0] > 1 else ""
+        fluid_txt = _mud_clean_cell_text(df.iat[2, j]) if df.shape[0] > 2 else ""
+        src_txt = _mud_clean_cell_text(df.iat[3, j]) if df.shape[0] > 3 else ""
+        time_txt = _mud_clean_cell_text(df.iat[4, j]) if df.shape[0] > 4 else ""
+        if time_txt or fluid_txt or src_txt or (prop_txt and (fluid_txt or src_txt)):
+            sample_cols.append(j)
+    if not sample_cols:
+        return []
+
+    records: list[dict] = []
+    for idx, j in enumerate(sample_cols, start=1):
+        prop_id = _extract_numeric(df.iat[1, j]) if df.shape[0] > 1 else None
+        time_raw = df.iat[4, j] if df.shape[0] > 4 else None
+        ts = _mud_compose_datetime(report_date, time_raw)
+        rec = {
+            "Date": ts if ts is not None else report_date,
+            "DateTime": _mud_isoformat_no_tz(ts if ts is not None else report_date),
+            "Properties": int(prop_id) if prop_id is not None else idx,
+            "Fluid set": _mud_clean_cell_text(df.iat[2, j]) if df.shape[0] > 2 else "",
+            "Source": _mud_clean_cell_text(df.iat[3, j]) if df.shape[0] > 3 else source_name,
+            "Time": _mud_parse_time_value(time_raw).strftime("%H:%M") if _mud_parse_time_value(time_raw) else _mud_clean_cell_text(time_raw),
+            "Additional Properties": int(prop_id) if prop_id is not None else idx,
+        }
+        records.append(rec)
+
+    row_texts = []
+    for i in range(df.shape[0]):
+        row_texts.append(" ".join(_mud_clean_cell_text(df.iat[i, c]) for c in range(df.shape[1]) if _mud_clean_cell_text(df.iat[i, c])))
+
+    for i in range(5, df.shape[0]):
+        label = _mud_clean_cell_text(df.iat[i, 0])
+        if not label:
+            continue
+        unit = _mud_clean_cell_text(df.iat[i, 1]) if df.shape[1] > 1 else ""
+        raw_vals = [df.iat[i, j] for j in sample_cols]
+        whole_nums = _extract_all_numbers(row_texts[i])
+        use_sequence = len(whole_nums) == len(sample_cols) and any(
+            (not _mud_clean_cell_text(v)) or len(_extract_all_numbers(v)) != 1 for v in raw_vals
+        )
+        for idx, rec in enumerate(records):
+            raw_value = whole_nums[idx] if use_sequence else raw_vals[idx]
+            if not _mud_clean_cell_text(raw_value) and not isinstance(raw_value, (int, float)):
+                continue
+            _mud_apply_daily_property(rec, label, unit, raw_value)
+
+    return [r for r in records if any(
+        k not in MUD_METADATA_COLUMNS and pd.notna(v) and _mud_clean_cell_text(v) not in ("", "/")
+        for k, v in r.items()
+    )]
 
 
 def _mud_apply_canonical_value(row_record: dict, canonical: str, raw_value) -> None:
@@ -10470,7 +11362,10 @@ def _parse_mud_lines(text: str, row_record: dict) -> None:
             continue
 
         if low.startswith("densidad") or low.startswith("density"):
-            row_record["Density"] = nums[-1]
+            row_record["Density @ °C"] = _mud_pair_string(line)
+            row_record["Density"] = nums[0] if nums else row_record.get("Density")
+            if len(nums) >= 2:
+                row_record["Density Temp"] = nums[1]
         elif low.startswith("visc. marsh") or low.startswith("viscosidad marsh"):
             row_record["Marsh"] = nums[-1]
         elif low.startswith("temperatura salida") or low.startswith("temp. de salida"):
@@ -10537,6 +11432,10 @@ def _parse_mud_lines(text: str, row_record: dict) -> None:
             row_record["Excess_Cal"] = nums[-1]
 def _parse_mud_excel_sheet(df_raw: pd.DataFrame, source_name: str = "") -> list[dict]:
     """Parsea una hoja Excel de propiedades de lodo (formato filas propiedad/valor o tabla)."""
+    daily_rows = _parse_mud_daily_report_sheet(df_raw, source_name)
+    if daily_rows:
+        return daily_rows
+
     out: list[dict] = []
     date = _date_from_filename_or_today(source_name)
     row_record: dict = {"Date": date, "Source": source_name}
@@ -10710,23 +11609,169 @@ def _build_mud_bitacora(parsed_rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame()
     all_keys = set()
     for r in parsed_rows:
-        all_keys.update(k for k in r if k not in ("Source",))
-    cols = ["Date"] + [c for c in MUD_CANONICAL_ORDER if c != "Date" and c in all_keys]
-    for c in MUD_CANONICAL_ORDER:
-        if c != "Date" and c not in cols and c in all_keys:
+        all_keys.update(r.keys())
+    cols = [c for c in MUD_CANONICAL_ORDER if c in all_keys]
+    for c in sorted(all_keys):
+        if c not in cols:
             cols.append(c)
     rows = []
     for r in parsed_rows:
-        row = {"Date": r.get("Date")}
+        row = {}
         for k in cols:
-            if k == "Date":
-                continue
             row[k] = r.get(k)
         rows.append(row)
     df = pd.DataFrame(rows)
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    df = df.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+    if "DateTime" in df.columns:
+        df["DateTime"] = df["DateTime"].fillna("")
     return df
+
+
+def _mud_numeric_property_columns(bitacora: pd.DataFrame) -> list[str]:
+    preferred = [
+        "FL Temp", "Density @ °C", "FV", "FV Temp", "PV", "PV Temp", "YP",
+        "Gel_10s", "Gel_10min", "Gel_30min", "tau0",
+        "L600", "L300", "L200", "L100", "L6", "L3",
+        "HTHP", "HTHP @ °C", "Corr Solid", "NAP", "Water", "NAP Ratio", "Water Ratio",
+        "Sand", "Cake (HTHP)", "Chlorides", "Calcium", "CaCl2", "Water Phase Salinity",
+        "Excess Lime", "Electrical_Stability", "LGS (%)", "HGS (%)", "LGS (kg/m³)", "HGS (kg/m³)",
+        "ASG", "n (HB)", "K (HB)", "Viscometer Sag Shoe Test", "(VSST)",
+        "Marsh", "Temperature", "VA", "Filtrado", "Enjarre", "LGS", "HGS", "Solids", "Oil", "RAA",
+        "AgNO3", "Salinity", "Alkalinity", "Excess_Cal",
+    ]
+    cols = []
+    for c in preferred:
+        if c in bitacora.columns and pd.api.types.is_numeric_dtype(bitacora[c]):
+            cols.append(c)
+    for c in bitacora.columns:
+        if c in cols or c == "Date" or c in MUD_ANALYTIC_EXCLUDE:
+            continue
+        if pd.api.types.is_numeric_dtype(bitacora[c]):
+            cols.append(c)
+    return cols
+
+
+def _mud_build_view_df(bitacora: pd.DataFrame) -> pd.DataFrame:
+    if bitacora is None or bitacora.empty:
+        return pd.DataFrame()
+    view = bitacora.copy()
+    if "DateTime" not in view.columns and "Date" in view.columns:
+        view["DateTime"] = pd.to_datetime(view["Date"], errors="coerce").dt.strftime("%Y-%m-%dT%H:%M:%S")
+    else:
+        dt_series = pd.to_datetime(view.get("Date"), errors="coerce")
+        mask = view["DateTime"].astype(str).str.strip().eq("")
+        if mask.any():
+            view.loc[mask, "DateTime"] = dt_series.loc[mask].dt.strftime("%Y-%m-%dT%H:%M:%S")
+    if "Time" not in view.columns and "Date" in view.columns:
+        view["Time"] = pd.to_datetime(view["Date"], errors="coerce").dt.strftime("%H:%M")
+    if "FV @ °C" not in view.columns and "FV" in view.columns:
+        if "FV Temp" in view.columns:
+            view["FV @ °C"] = view.apply(lambda r: f"{_mud_num_to_text(r['FV'])} @ {_mud_num_to_text(r['FV Temp'])}" if pd.notna(r.get("FV")) and pd.notna(r.get("FV Temp")) else (_mud_num_to_text(r['FV']) if pd.notna(r.get("FV")) else ""), axis=1)
+        else:
+            view["FV @ °C"] = view["FV"].map(_mud_num_to_text)
+    if "PV @ °C" not in view.columns and "PV" in view.columns:
+        if "PV Temp" in view.columns:
+            view["PV @ °C"] = view.apply(lambda r: f"{_mud_num_to_text(r['PV'])} @ {_mud_num_to_text(r['PV Temp'])}" if pd.notna(r.get("PV")) and pd.notna(r.get("PV Temp")) else (_mud_num_to_text(r['PV']) if pd.notna(r.get("PV")) else ""), axis=1)
+        else:
+            view["PV @ °C"] = view["PV"].map(_mud_num_to_text)
+    if "Properties" not in view.columns:
+        view["Properties"] = np.arange(1, len(view) + 1)
+    if "Additional Properties" not in view.columns:
+        view["Additional Properties"] = view["Properties"]
+    export_cols = [c for c, _, _ in MUD_EXPORT_HEADER_SPECS if c in view.columns]
+    for c in export_cols:
+        if c in ("DateTime", "Time"):
+            view[c] = view[c].fillna("")
+    return view[export_cols]
+
+
+def _export_mud_bitacora_excel(view_df: pd.DataFrame) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Table 1.1"
+
+    headers = [(c, h1, h2) for c, h1, h2 in MUD_EXPORT_HEADER_SPECS if c in view_df.columns]
+    last_col = len(headers)
+    if last_col == 0:
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.getvalue()
+
+    title_date = ""
+    if "Date" in view_df.columns:
+        dt0 = pd.to_datetime(view_df["Date"], errors="coerce")
+        if hasattr(dt0, "notna") and dt0.notna().any():
+            title_date = dt0.dropna().min().strftime("%Y-%m-%d")
+    elif "DateTime" in view_df.columns:
+        dt0 = pd.to_datetime(view_df["DateTime"], errors="coerce")
+        if hasattr(dt0, "notna") and dt0.notna().any():
+            title_date = dt0.dropna().min().strftime("%Y-%m-%d")
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+    ws.cell(1, 1).value = f"Daily Fluid Properties Daily Report\nReport: {title_date}" if title_date else "Daily Fluid Properties Daily Report"
+    ws.cell(1, 1).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.cell(1, 1).font = Font(size=14, bold=True)
+    ws.row_dimensions[1].height = 34
+
+    fill_header = PatternFill("solid", fgColor="D9D9D9")
+    fill_sub = PatternFill("solid", fgColor="EDEDED")
+    thin_gray = Side(style="thin", color="BFBFBF")
+    border = Border(top=thin_gray, bottom=thin_gray)
+
+    for idx, (_, h1, h2) in enumerate(headers, start=1):
+        c2 = ws.cell(2, idx, h1)
+        c3 = ws.cell(3, idx, h2)
+        for cell in (c2, c3):
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.font = Font(bold=True)
+            cell.border = border
+        c2.fill = fill_header
+        c3.fill = fill_sub
+
+    widths = {
+        "Depth (MD)": 11, "Depth (TVD)": 11, "Properties": 10, "Fluid set": 16, "Source": 14,
+        "Time": 10, "DateTime": 22, "FL Temp": 10, "Density @ °C": 14,
+        "FV @ °C": 12, "PV @ °C": 12, "YP": 10, "Gel_10s": 10, "Gel_10min": 11,
+        "Gel_30min": 11, "tau0": 10, "L600": 9, "L300": 9, "L200": 9, "L100": 9, "L6": 9, "L3": 9,
+        "HTHP": 10, "HTHP @ °C": 9, "Corr Solid": 11, "NAP": 9, "Water": 9, "NAP Ratio": 10,
+        "Water Ratio": 12, "Sand": 9, "Cake (HTHP)": 12, "Chlorides": 12, "Calcium": 12,
+        "CaCl2": 11, "Water Phase Salinity": 16, "NaCL (Sol/Insol)": 16, "Excess Lime": 12,
+        "Electrical_Stability": 13, "LGS (%)": 10, "HGS (%)": 10, "LGS (kg/m³)": 12, "HGS (kg/m³)": 12,
+        "ASG": 9, "Additional Properties": 16, "n (HB)": 12, "K (HB)": 12,
+        "Viscometer Sag Shoe Test": 20, "(VSST)": 10,
+    }
+    num_format = "0.00"
+    int_format = "0"
+    row_start = 4
+    for r_idx, (_, row) in enumerate(view_df.iterrows(), start=row_start):
+        for c_idx, (col_name, _, _) in enumerate(headers, start=1):
+            val = row.get(col_name)
+            cell = ws.cell(r_idx, c_idx, val)
+            if pd.isna(val):
+                cell.value = None
+            elif col_name == "DateTime" and str(val).strip():
+                cell.number_format = "@"
+            elif isinstance(val, (int, np.integer)):
+                cell.number_format = int_format
+            elif isinstance(val, (float, np.floating)) and np.isfinite(float(val)):
+                cell.number_format = num_format if abs(float(val) - round(float(val))) > 1e-9 else int_format
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[r_idx].height = 21
+
+    for idx, (col_name, _, _) in enumerate(headers, start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = widths.get(col_name, 12)
+    ws.freeze_panes = "A4"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 
 
 def render_mud_report() -> None:
@@ -10933,6 +11978,7 @@ def render_mud_report() -> None:
     if bitacora is None or bitacora.empty:
         st.info("Sube uno o más reportes (PDF, Excel o CSV) para generar la bitácora.")
         return
+    bitacora_view = _mud_build_view_df(bitacora)
 
     # Chips pro Rogii sobre la bitácora
     n_reg = len(bitacora)
@@ -10960,22 +12006,20 @@ def render_mud_report() -> None:
 
     with tab_bitacora:
         st.subheader("Bitácora de propiedades de fluidos")
-        st.dataframe(bitacora, use_container_width=True, hide_index=True)
+        st.dataframe(bitacora_view, use_container_width=True, hide_index=True)
         col1, col2 = st.columns(2)
         with col1:
             buf_csv = io.BytesIO()
-            bitacora.to_csv(buf_csv, index=False, encoding="utf-8-sig")
+            bitacora_view.to_csv(buf_csv, index=False, encoding="utf-8-sig")
             buf_csv.seek(0)
             st.download_button("Exportar bitácora (CSV)", data=buf_csv.getvalue(), file_name="mud_bitacora.csv", mime="text/csv", key="mud_export_csv")
         with col2:
-            buf_xlsx = io.BytesIO()
-            bitacora.to_excel(buf_xlsx, index=False, engine="openpyxl")
-            buf_xlsx.seek(0)
-            st.download_button("Exportar bitácora (Excel)", data=buf_xlsx.getvalue(), file_name="mud_bitacora.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="mud_export_xlsx")
+            xlsx_bytes = _export_mud_bitacora_excel(bitacora_view)
+            st.download_button("Exportar bitácora (Excel)", data=xlsx_bytes, file_name="mud_bitacora.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="mud_export_xlsx")
 
     with tab_graficas:
         st.subheader("Evolución de propiedades por día")
-        props = [c for c in bitacora.columns if c != "Date" and pd.api.types.is_numeric_dtype(bitacora[c])]
+        props = _mud_numeric_property_columns(bitacora)
         if not props:
             st.info("No hay columnas numéricas para graficar.")
         else:
@@ -11058,6 +12102,13 @@ def render_mud_report() -> None:
                 st.markdown("**Correlación entre propiedades**")
                 corr_mud = bitacora[props].corr()
                 if not corr_mud.isna().all().all():
+                    _mud_hm_stats = heatmap_numeric_stats(bitacora, props)
+                    _mud_chips = stats_df_to_heatmap_chips(_mud_hm_stats, max_chips=10)
+                    if _mud_chips:
+                        st.caption("**Chips — min–max y media por propiedad (base del heatmap)**")
+                        _render_chips_row(_mud_chips)
+                    with st.expander("Min / media / max por propiedad (lodo)", expanded=False):
+                        st.dataframe(_mud_hm_stats, use_container_width=True, hide_index=True)
                     corr_pct = (corr_mud * 100).round(0)
                     text_arr = np.where(
                         np.isnan(corr_pct.values),
@@ -11079,8 +12130,15 @@ def render_mud_report() -> None:
                         ygap=1,
                     )
                     fig_corr_mud.update_layout(coloraxis_colorbar=dict(title="Corr (-1 a 1)"))
-                    fig_corr_mud = prettify_heatmap(fig_corr_mud, h=420)
+                    fig_corr_mud = prettify_heatmap_auto(fig_corr_mud, h=420)
                     st.plotly_chart(fig_corr_mud, use_container_width=True, config=PLOTLY_CONFIG)
+                    _sp_mud = build_minmax_mean_spine_figure(
+                        _mud_hm_stats,
+                        title="Perfil min · media · max — propiedades de lodo (normalizado)",
+                    )
+                    if _sp_mud is not None:
+                        st.caption("**Curvas pro:** rango observado por variable (● = media en el rango min–max).")
+                        st.plotly_chart(_sp_mud, use_container_width=True, config=PLOTLY_CONFIG)
                     st.caption("Rojo = correlación positiva, azul = negativa. Valores en % de fuerza lineal.")
                 else:
                     st.info("No hay suficientes datos para calcular correlaciones.")
@@ -11200,7 +12258,7 @@ def render_mud_report() -> None:
 
     with tab_stats:
         st.subheader("Estadísticas por propiedad")
-        props = [c for c in bitacora.columns if c != "Date" and pd.api.types.is_numeric_dtype(bitacora[c])]
+        props = _mud_numeric_property_columns(bitacora)
         if not props:
             st.info("No hay columnas numéricas.")
         else:
