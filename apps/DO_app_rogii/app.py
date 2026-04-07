@@ -34,6 +34,8 @@ def _combine_value_temp(value, temp):
 from typing import Iterable, List, Tuple
 from urllib.parse import urlencode
 from textwrap import wrap
+import smtplib
+from email.message import EmailMessage
 
 import numpy as np
 import pandas as pd
@@ -586,6 +588,22 @@ _load_dotenv_files()
 
 API_DEFAULT_BASE_URL = os.getenv("SOLO_BASE_URL", "https://solo.cloud").rstrip("/")
 API_DEFAULT_TOKEN = os.getenv("SOLO_ACCESS_TOKEN")
+
+# SMTP para envío de bitácora de lodo (usando st.secrets)
+def _secret(name, default=""):
+    try:
+        if name in st.secrets:
+            return st.secrets[name]
+    except Exception:
+        pass
+    return os.getenv(name, default)
+
+MUD_SMTP_SERVER = _secret("MUD_SMTP_SERVER", "smtp.gmail.com")
+MUD_SMTP_PORT = int(_secret("MUD_SMTP_PORT", "587"))
+MUD_SMTP_USER = _secret("MUD_SMTP_USER", "")
+MUD_SMTP_PASS = _secret("MUD_SMTP_PASS", "")
+MUD_SMTP_FROM = _secret("MUD_SMTP_FROM", MUD_SMTP_USER)
+MUD_SMTP_TO = _secret("MUD_SMTP_TO", "solobox+pemex@rogii.com")
 
 
 def get_solo_credentials(prefix: str = "solo") -> tuple[str, str]:
@@ -11798,6 +11816,42 @@ def _export_mud_bitacora_excel(view_df: pd.DataFrame) -> bytes:
     return buf.getvalue()
 
 
+def _send_mud_bitacora_email(
+    attachment_bytes: bytes,
+    to_email: str,
+    subject: str,
+    body: str,
+    filename: str = "mud_bitacora.xlsx",
+    smtp_server: str = MUD_SMTP_SERVER,
+    smtp_port: int = MUD_SMTP_PORT,
+    smtp_user: str = MUD_SMTP_USER,
+    smtp_pass: str = MUD_SMTP_PASS,
+    from_email: str = MUD_SMTP_FROM,
+) -> tuple[bool, str]:
+    """Envía la bitácora Excel por correo como adjunto."""
+    if not smtp_user or not smtp_pass:
+        return False, "Faltan credenciales SMTP. Configura MUD_SMTP_USER y MUD_SMTP_PASS en secrets."
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = from_email
+        msg["To"] = to_email
+        msg.set_content(body)
+        msg.add_attachment(
+            attachment_bytes,
+            maintype="application",
+            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=filename,
+        )
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        return True, f"Bitácora enviada correctamente a {to_email}."
+    except Exception as e:
+        return False, str(e)
+
+
 def render_mud_report() -> None:
     _ms = st.session_state.get("mud_data_source")
     if _ms == "Correo electrónico":
@@ -12031,15 +12085,68 @@ def render_mud_report() -> None:
     with tab_bitacora:
         st.subheader("Bitácora de propiedades de fluidos")
         st.dataframe(bitacora_view, use_container_width=True, hide_index=True)
-        col1, col2 = st.columns(2)
+
+        buf_csv = io.BytesIO()
+        bitacora_view.to_csv(buf_csv, index=False, encoding="utf-8-sig")
+        buf_csv.seek(0)
+        xlsx_bytes = _export_mud_bitacora_excel(bitacora_view)
+
+        col1, col2, col3 = st.columns(3)
         with col1:
-            buf_csv = io.BytesIO()
-            bitacora_view.to_csv(buf_csv, index=False, encoding="utf-8-sig")
-            buf_csv.seek(0)
-            st.download_button("Exportar bitácora (CSV)", data=buf_csv.getvalue(), file_name="mud_bitacora.csv", mime="text/csv", key="mud_export_csv")
+            st.download_button(
+                "Exportar bitácora (CSV)",
+                data=buf_csv.getvalue(),
+                file_name="mud_bitacora.csv",
+                mime="text/csv",
+                key="mud_export_csv",
+            )
         with col2:
-            xlsx_bytes = _export_mud_bitacora_excel(bitacora_view)
-            st.download_button("Exportar bitácora (Excel)", data=xlsx_bytes, file_name="mud_bitacora.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="mud_export_xlsx")
+            st.download_button(
+                "Exportar bitácora (Excel)",
+                data=xlsx_bytes,
+                file_name="mud_bitacora.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="mud_export_xlsx",
+            )
+        with col3:
+            if st.button("Enviar bitácora por correo", key="mud_send_email_btn", type="secondary"):
+                date_label = ""
+                try:
+                    if "Date" in bitacora.columns and bitacora["Date"].notna().any():
+                        dmax = pd.to_datetime(bitacora["Date"], errors="coerce").dropna().max()
+                        if pd.notna(dmax):
+                            date_label = dmax.strftime("%Y-%m-%d")
+                except Exception:
+                    date_label = ""
+                subject = f"Mud bitácora {date_label}".strip()
+                body = (
+                    "Hola,\n\n"
+                    "Adjunto la bitácora de propiedades de fluidos generada desde la app.\n\n"
+                    "Saludos."
+                )
+                ok, msg = _send_mud_bitacora_email(
+                    attachment_bytes=xlsx_bytes,
+                    to_email=MUD_SMTP_TO,
+                    subject=subject,
+                    body=body,
+                    filename="mud_bitacora.xlsx",
+                )
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(f"No se pudo enviar la bitácora por correo: {msg}")
+
+        with st.expander("Configuración de envío por correo", expanded=False):
+            st.caption("Estos valores se leen desde st.secrets o variables de entorno.")
+            e1, e2 = st.columns(2)
+            with e1:
+                st.text_input("SMTP server", value=MUD_SMTP_SERVER, disabled=True, key="mud_smtp_server_view")
+                st.text_input("SMTP user", value=MUD_SMTP_USER, disabled=True, key="mud_smtp_user_view")
+                st.text_input("From", value=MUD_SMTP_FROM, disabled=True, key="mud_smtp_from_view")
+            with e2:
+                st.text_input("SMTP port", value=str(MUD_SMTP_PORT), disabled=True, key="mud_smtp_port_view")
+                st.text_input("To", value=MUD_SMTP_TO, disabled=True, key="mud_smtp_to_view")
+                st.text_input("SMTP password", value=("********" if MUD_SMTP_PASS else ""), type="password", disabled=True, key="mud_smtp_pass_view")
 
     with tab_graficas:
         st.subheader("Evolución de propiedades por día")
