@@ -3987,9 +3987,19 @@ def heatmap_legend_text(scope: str) -> str:
     )
 
 
+def _corr_abs_zero_diagonal(corr_df: pd.DataFrame) -> pd.DataFrame:
+    """|corr| con diagonal en 0. Evita np.fill_diagonal (falla con no cuadrada / dtype / solo lectura)."""
+    out = corr_df.abs().copy()
+    if out.empty:
+        return out
+    n = min(int(out.shape[0]), int(out.shape[1]))
+    for k in range(n):
+        out.iloc[k, k] = 0.0
+    return out
+
+
 def summarize_heatmap(corr_df: pd.DataFrame) -> str:
-    corr_abs = corr_df.abs().copy()
-    np.fill_diagonal(corr_abs.values, 0)
+    corr_abs = _corr_abs_zero_diagonal(corr_df)
     if (corr_abs.values == 0).all():
         return "No se observa correlación lineal fuerte entre variables."
 
@@ -4011,8 +4021,7 @@ def summarize_heatmap_engineering_pct(corr_df: pd.DataFrame) -> str:
     """
     if corr_df is None or corr_df.empty:
         return "No hay datos de correlación."
-    corr_abs = corr_df.abs().copy()
-    np.fill_diagonal(corr_abs.values, 0)
+    corr_abs = _corr_abs_zero_diagonal(corr_df)
     # Pares (|r|, r, var_a, var_b) sin diagonal, ordenados por |r| desc
     pairs: list[tuple[float, float, str, str]] = []
     for i in range(len(corr_df.index)):
@@ -10539,8 +10548,7 @@ def render_kpi_module() -> None:
                         cols = ["ROP", "WOB", "RPM", "DLS"]
                         cols = [c for c in cols if c in df_run.columns]
                         corr_df = df_run[cols].corr()
-                        corr_abs = corr_df.abs().copy()
-                        np.fill_diagonal(corr_abs.values, 0)
+                        corr_abs = _corr_abs_zero_diagonal(corr_df)
                         if (corr_abs.values == 0).all():
                             summary = "Sin correlaciones fuertes visibles."
                         else:
