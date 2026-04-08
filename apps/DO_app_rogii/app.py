@@ -1594,6 +1594,7 @@ div[data-testid="stHorizontalBlock"]{
 div[data-testid="stPlotlyChart"]{
     margin-top: 0px !important;
     margin-bottom: 26px !important;
+    background: transparent !important;
 }
 section.main > div{
     padding-top: 0.5rem !important;
@@ -2893,6 +2894,45 @@ def stats_df_to_heatmap_chips(stats_df: pd.DataFrame, max_chips: int = 12) -> li
     return items
 
 
+def _marginal_peak_xy(x_arr, y_arr) -> tuple[float, float] | None:
+    """Coordenadas del punto donde ``y`` es máximo (ignora no finitos)."""
+    xa = np.asarray(x_arr, dtype=float)
+    ya = np.asarray(y_arr, dtype=float)
+    ok = np.isfinite(xa) & np.isfinite(ya)
+    if not np.any(ok):
+        return None
+    ya_eff = np.where(ok, ya, -np.inf)
+    i = int(np.argmax(ya_eff))
+    return float(xa[i]), float(ya[i])
+
+
+def marginal_max_curve_chips(
+    zone_stats: dict | None,
+    z_short: str = "ROP",
+) -> list[tuple[str, str]]:
+    """Chips con picos de las curvas marginales (máx a lo largo de WOB y de RPM)."""
+    if zone_stats is None:
+        return []
+    stat = zone_stats.get("stat")
+    x_c = zone_stats.get("x_centers")
+    y_c = zone_stats.get("y_centers")
+    if stat is None or x_c is None or y_c is None:
+        return []
+    stat = np.asarray(stat, dtype=float)
+    if stat.size == 0:
+        return []
+    max_along_rpm = np.nanmax(stat, axis=1)
+    max_along_wob = np.nanmax(stat, axis=0)
+    items: list[tuple[str, str]] = []
+    pw = _marginal_peak_xy(np.asarray(x_c, dtype=float), np.asarray(max_along_rpm, dtype=float))
+    pr = _marginal_peak_xy(np.asarray(y_c, dtype=float), np.asarray(max_along_wob, dtype=float))
+    if pw is not None:
+        items.append((f"Máx {z_short} (curva WOB): {pw[1]:.1f} @ WOB {pw[0]:.0f}", "blue"))
+    if pr is not None:
+        items.append((f"Máx {z_short} (curva RPM): {pr[1]:.1f} @ RPM {pr[0]:.0f}", "orange"))
+    return items
+
+
 def build_heatmap_marginal_max_curves(
     zone_stats: dict,
     x_label: str = "WOB (centro de bin)",
@@ -2901,6 +2941,10 @@ def build_heatmap_marginal_max_curves(
 ) -> go.Figure | None:
     """
     Curvas adicionales: máximo de ROP a lo largo de cada eje del heatmap 2D (por bin).
+
+    Siempre usa el estilo oscuro del dashboard (#0b0d14, texto claro): no se usa
+    ``is_streamlit_dark_mode()`` porque ``theme.base`` en config suele ser "light"
+    aunque la app se vea oscura, y entonces Plotly quedaba en blanco.
     """
     stat = zone_stats.get("stat")
     x_c = zone_stats.get("x_centers")
@@ -2913,13 +2957,31 @@ def build_heatmap_marginal_max_curves(
     # stat[i,j] = valor en bin x_i, y_j
     max_along_rpm = np.nanmax(stat, axis=1)
     max_along_wob = np.nanmax(stat, axis=0)
+    x_ca = np.asarray(x_c, dtype=float)
+    y_ca = np.asarray(y_c, dtype=float)
+    mar = np.asarray(max_along_rpm, dtype=float)
+    maw = np.asarray(max_along_wob, dtype=float)
+
+    peak_wob = _marginal_peak_xy(x_ca, mar)
+    peak_rpm = _marginal_peak_xy(y_ca, maw)
     from plotly.subplots import make_subplots
+
+    # Siempre dashboard oscuro (mismo criterio que build_optimal_rop_heatmap_with_marginals).
+    _dash_bg = "#0b0d14"
+    _paper = _dash_bg
+    _plot = _dash_bg
+    _fg = "#E2E8F0"
+    _tick = "#CBD5E1"
+    _grid = "rgba(255,255,255,0.07)"
+    _line_wob = "#38BDF8"
+    _line_rpm = "#FB923C"
+    _mk_line = "rgba(15,23,42,0.85)"
 
     fig = make_subplots(
         rows=2,
         cols=1,
         row_heights=[0.45, 0.55],
-        vertical_spacing=0.14,
+        vertical_spacing=0.12,
         subplot_titles=(
             f"{z_label} vs {x_label.split('(')[0].strip()} (máx. por bin WOB)",
             f"{z_label} vs {y_label.split('(')[0].strip()} (máx. por bin RPM)",
@@ -2931,8 +2993,14 @@ def build_heatmap_marginal_max_curves(
             y=max_along_rpm,
             mode="lines+markers",
             name="Máx por WOB",
-            line=dict(color="#2563EB", width=2.5),
-            marker=dict(size=6),
+            line=dict(color=_line_wob, width=2.8, shape="spline", smoothing=1.15),
+            marker=dict(
+                size=8,
+                symbol="circle",
+                color=_line_wob,
+                line=dict(width=1.5, color=_mk_line),
+            ),
+            hovertemplate="%{x:.2f}<br>" + z_label + ": %{y:.2f}<extra></extra>",
         ),
         row=1,
         col=1,
@@ -2943,30 +3011,167 @@ def build_heatmap_marginal_max_curves(
             y=max_along_wob,
             mode="lines+markers",
             name="Máx por RPM",
-            line=dict(color="#F59E0B", width=2.5),
-            marker=dict(size=6),
+            line=dict(color=_line_rpm, width=2.8, shape="spline", smoothing=1.15),
+            marker=dict(
+                size=8,
+                symbol="circle",
+                color=_line_rpm,
+                line=dict(width=1.5, color=_mk_line),
+            ),
+            hovertemplate="%{x:.2f}<br>" + z_label + ": %{y:.2f}<extra></extra>",
         ),
         row=2,
         col=1,
     )
-    fig.update_xaxes(title_text=x_label, row=1, col=1)
-    fig.update_yaxes(title_text=z_label, row=1, col=1)
-    fig.update_xaxes(title_text=y_label, row=2, col=1)
-    fig.update_yaxes(title_text=z_label, row=2, col=1)
-    fig.update_layout(
-        height=520,
-        showlegend=False,
-        margin=dict(l=55, r=25, t=56, b=48),
-        font=dict(family="Segoe UI", size=11),
-    )
-    if is_streamlit_dark_mode():
-        fig.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(17,24,39,0.85)",
+    if peak_wob is not None:
+        pw_x, pw_y = peak_wob
+        fig.add_trace(
+            go.Scatter(
+                x=[pw_x],
+                y=[pw_y],
+                mode="markers",
+                name="Pico",
+                marker=dict(
+                    symbol="star",
+                    size=17,
+                    color=_line_wob,
+                    line=dict(width=1.5, color=_mk_line),
+                ),
+                showlegend=False,
+                hovertemplate="Pico marginal WOB<br>WOB: %{x:.2f}<br>"
+                + z_label
+                + ": %{y:.2f}<extra></extra>",
+            ),
+            row=1,
+            col=1,
         )
-    else:
-        fig.update_layout(template=PLOTLY_TEMPLATE, plot_bgcolor="rgba(248,250,252,0.9)")
+    if peak_rpm is not None:
+        pr_x, pr_y = peak_rpm
+        fig.add_trace(
+            go.Scatter(
+                x=[pr_x],
+                y=[pr_y],
+                mode="markers",
+                name="Pico",
+                marker=dict(
+                    symbol="star",
+                    size=17,
+                    color=_line_rpm,
+                    line=dict(width=1.5, color=_mk_line),
+                ),
+                showlegend=False,
+                hovertemplate="Pico marginal RPM<br>RPM: %{x:.2f}<br>"
+                + z_label
+                + ": %{y:.2f}<extra></extra>",
+            ),
+            row=2,
+            col=1,
+        )
+    fig.update_xaxes(
+        title=dict(text=x_label, font=dict(size=12, color=_fg)),
+        tickfont=dict(size=11, color=_tick),
+        showgrid=True,
+        gridcolor=_grid,
+        zeroline=False,
+        showline=False,
+        row=1,
+        col=1,
+    )
+    fig.update_yaxes(
+        title=dict(text=z_label, font=dict(size=12, color=_fg)),
+        tickfont=dict(size=11, color=_tick),
+        showgrid=True,
+        gridcolor=_grid,
+        zeroline=False,
+        showline=False,
+        row=1,
+        col=1,
+    )
+    fig.update_xaxes(
+        title=dict(text=y_label, font=dict(size=12, color=_fg)),
+        tickfont=dict(size=11, color=_tick),
+        showgrid=True,
+        gridcolor=_grid,
+        zeroline=False,
+        showline=False,
+        row=2,
+        col=1,
+    )
+    fig.update_yaxes(
+        title=dict(text=z_label, font=dict(size=12, color=_fg)),
+        tickfont=dict(size=11, color=_tick),
+        showgrid=True,
+        gridcolor=_grid,
+        zeroline=False,
+        showline=False,
+        row=2,
+        col=1,
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        height=540,
+        showlegend=False,
+        margin=dict(l=58, r=28, t=72, b=52),
+        paper_bgcolor=_paper,
+        plot_bgcolor=_plot,
+        # Sin título global (solo subplot_titles); evita el texto "undefined" del tema Streamlit.
+        title="",
+        font=dict(family="Segoe UI", size=12, color=_fg),
+        title_font=dict(size=13, color=_fg),
+        hoverlabel=dict(
+            bgcolor="rgba(15,23,42,0.95)",
+            bordercolor="rgba(148,163,184,0.35)",
+            font_size=13,
+            font_family="Segoe UI",
+        ),
+    )
+    fig.for_each_annotation(
+        lambda a: a.update(font=dict(size=13, color="#F1F5F9", family="Segoe UI"))
+    )
+    _chip_bg = "rgba(15,23,42,0.92)"
+    _chip_fg = "#F8FAFC"
+    if peak_wob is not None:
+        pw_x, pw_y = peak_wob
+        fig.add_annotation(
+            x=pw_x,
+            y=pw_y,
+            text=f"Máx {pw_y:.1f}  ·  WOB {pw_x:.0f}",
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=1,
+            arrowwidth=1.5,
+            arrowcolor=_line_wob,
+            ax=0,
+            ay=-46,
+            bgcolor=_chip_bg,
+            bordercolor=_line_wob,
+            borderwidth=1,
+            borderpad=6,
+            font=dict(color=_chip_fg, size=12, family="Segoe UI"),
+            row=1,
+            col=1,
+        )
+    if peak_rpm is not None:
+        pr_x, pr_y = peak_rpm
+        fig.add_annotation(
+            x=pr_x,
+            y=pr_y,
+            text=f"Máx {pr_y:.1f}  ·  RPM {pr_x:.0f}",
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=1,
+            arrowwidth=1.5,
+            arrowcolor=_line_rpm,
+            ax=0,
+            ay=-46,
+            bgcolor=_chip_bg,
+            bordercolor=_line_rpm,
+            borderwidth=1,
+            borderpad=6,
+            font=dict(color=_chip_fg, size=12, family="Segoe UI"),
+            row=2,
+            col=1,
+        )
     return fig
 
 
@@ -5457,7 +5662,17 @@ def render_bha_module() -> None:
         )
         if _marg_bha is not None:
             st.caption("**Curvas de máximo por eje:** pico de la variable coloreada a lo largo de WOB y de RPM.")
-            st.plotly_chart(_marg_bha, use_container_width=True, config=PLOTLY_CONFIG)
+            # theme=None: el tema "streamlit" fuerza fondo claro y puede mostrar "undefined" sin título global.
+            st.plotly_chart(
+                _marg_bha,
+                use_container_width=True,
+                config=PLOTLY_CONFIG,
+                theme=None,
+            )
+            _mm_chips = marginal_max_curve_chips(_zs_bha, z_short=str(color_by))
+            if _mm_chips:
+                st.caption("**Picos en curvas marginales**")
+                _render_chips_row(_mm_chips)
         _sp_bha = build_minmax_mean_spine_figure(
             _st_bha,
             title="Min · media · max (variables del heatmap WOB–RPM)",
