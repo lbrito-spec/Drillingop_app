@@ -6154,6 +6154,7 @@ def _trip_normalize_and_clean(df: pd.DataFrame) -> pd.DataFrame:
     """
     Preprocesamiento estándar para Tripping Analysis:
     Limpia nombres, fuerza Bit depth y Hookload a numérico, elimina NaN, convierte Timestamp a datetime.
+    Si existen Gamma Ray o DLS, también los convierte a numérico pero sin volverlos obligatorios.
     """
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
@@ -6161,6 +6162,9 @@ def _trip_normalize_and_clean(df: pd.DataFrame) -> pd.DataFrame:
         df["Bit depth"] = pd.to_numeric(df["Bit depth"], errors="coerce")
     if "Hookload" in df.columns:
         df["Hookload"] = pd.to_numeric(df["Hookload"], errors="coerce")
+    for extra_col in ("Gamma Ray", "DLS"):
+        if extra_col in df.columns:
+            df[extra_col] = pd.to_numeric(df[extra_col], errors="coerce")
     df = df.dropna(subset=["Bit depth", "Hookload"])
     if "Timestamp" in df.columns:
         df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
@@ -6941,8 +6945,8 @@ def render_tripping_analysis() -> None:
                 st.session_state.pop("trip_ff_family_df", None)
                 st.session_state.pop("trip_ff_family_map", None)
         else:
-            st.session_state.pop("trip_ff_family_df", None)
-            st.session_state.pop("trip_ff_family_map", None)
+            if st.session_state.get("trip_ff_family_df") is not None and st.session_state.get("trip_ff_family_map"):
+                st.info("Usando el último modelo broomstick por FF cargado. Los cambios del slider y offset se aplican en vivo.")
     else:
         # No borrar curvas generadas: así persisten al abrir la pestaña Broomstick y se dibujan
         with st.expander("Parámetros del modelo simplificado (soft-string)", expanded=True):
@@ -7084,15 +7088,20 @@ def render_tripping_analysis() -> None:
                 return
             raw_df.columns = [str(c).strip() for c in raw_df.columns]
             cols = raw_df.columns.tolist()
+            cols_opt = ["(ninguna)"] + cols
 
             tcol_auto = _trip_pick_time_col(raw_df)
             hk_col_auto = _trip_pick_value_col(raw_df, prefer_names=["hookload", "hl", "load", "weight"])
             dp_col_auto = _trip_pick_value_col(raw_df, prefer_names=["bit depth", "depth", "md", "measured_depth", "block position"])
+            gr_col_auto = _trip_pick_value_col(raw_df, prefer_names=["gamma ray", "gamma", "gr", "gammaray"])
+            dls_col_auto = _trip_pick_value_col(raw_df, prefer_names=["dls", "dogleg", "dog leg", "dogleg severity"])
 
             with st.expander("Configurar columnas", expanded=True):
                 idx_t = cols.index(tcol_auto) if tcol_auto in cols else 0
                 idx_h = cols.index(hk_col_auto) if hk_col_auto in cols else 0
                 idx_d = cols.index(dp_col_auto) if dp_col_auto in cols else 0
+                idx_gr = cols_opt.index(gr_col_auto) if gr_col_auto in cols_opt else 0
+                idx_dls = cols_opt.index(dls_col_auto) if dls_col_auto in cols_opt else 0
                 tcol = st.selectbox(
                     "Columna Timestamp",
                     cols,
@@ -7114,31 +7123,75 @@ def render_tripping_analysis() -> None:
                     key="trip_col_bitdepth",
                     help="Columna de profundidad (m).",
                 )
+                col_gr_ui, col_dls_ui = st.columns(2)
+                with col_gr_ui:
+                    gr_col = st.selectbox(
+                        "Columna Gamma Ray (opcional)",
+                        cols_opt,
+                        index=idx_gr,
+                        key="trip_col_gamma_ray",
+                        help="Si existe, se graficará como track lateral junto al broomstick.",
+                    )
+                with col_dls_ui:
+                    dls_col = st.selectbox(
+                        "Columna DLS (opcional)",
+                        cols_opt,
+                        index=idx_dls,
+                        key="trip_col_dls",
+                        help="Dog Leg Severity opcional para agregar un segundo track lateral.",
+                    )
 
-            if not st.button("▶️ Ejecutar análisis", key="trip_run"):
-                return
+            # Sin esto, cada rerun (p. ej. al mover el slider FF en Broomstick) vuelve aquí, el botón
+            # es False y se hace return → desaparece todo el análisis. Si ya hay datos CSV en sesión,
+            # reutilizarlos hasta que el usuario pulse de nuevo «Ejecutar análisis».
+            trip_run_clicked = st.button("▶️ Ejecutar análisis", key="trip_run")
+            if not trip_run_clicked:
+                cached_df = st.session_state.get("trip_analysis_df")
+                cached_src = st.session_state.get("trip_analysis_data_source")
+                if cached_src == "CSV" and cached_df is not None and not cached_df.empty:
+                    df = cached_df.copy()
+                    used_type_hk = "CSV"
+                    used_type_dp = "CSV"
+                    used_params_hk = {}
+                    used_params_dp = {}
+                else:
+                    return
+            else:
+                required_cols = [tcol, hk_col, dp_col]
+                if len(set(required_cols)) < 3:
+                    st.error("Elija columnas distintas para Timestamp, Hookload y Bit depth.")
+                    return
 
-            if tcol == dp_col or tcol == hk_col or dp_col == hk_col:
-                st.error("Elija columnas distintas para Timestamp, Hookload y Bit depth.")
-                return
+                selected_cols = [tcol, hk_col, dp_col]
+                rename_map = {tcol: "Timestamp", hk_col: "Hookload", dp_col: "Bit depth"}
+                if gr_col != "(ninguna)" and gr_col not in selected_cols:
+                    selected_cols.append(gr_col)
+                    rename_map[gr_col] = "Gamma Ray"
+                if dls_col != "(ninguna)" and dls_col not in selected_cols:
+                    selected_cols.append(dls_col)
+                    rename_map[dls_col] = "DLS"
 
-            df = raw_df[[tcol, hk_col, dp_col]].copy()
-            df = df.rename(columns={tcol: "Timestamp", hk_col: "Hookload", dp_col: "Bit depth"})
-            df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
-            df["Hookload"] = _trip_to_numeric(df, "Hookload")
-            df["Bit depth"] = _trip_to_numeric(df, "Bit depth")
-            df = df.dropna(subset=["Timestamp", "Hookload", "Bit depth"]).sort_values("Timestamp")
-            if df.empty:
-                st.error(
-                    "El CSV quedó vacío tras limpiar NaNs. Compruebe que Bit depth y Hookload tengan valores numéricos válidos."
-                )
-                return
-            st.session_state["trip_analysis_df"] = df
-            st.session_state["trip_analysis_data_source"] = "CSV"
-            used_type_hk = "CSV"
-            used_type_dp = "CSV"
-            used_params_hk = {}
-            used_params_dp = {}
+                df = raw_df[selected_cols].copy()
+                df = df.rename(columns=rename_map)
+                df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
+                df["Hookload"] = _trip_to_numeric(df, "Hookload")
+                df["Bit depth"] = _trip_to_numeric(df, "Bit depth")
+                if "Gamma Ray" in df.columns:
+                    df["Gamma Ray"] = _trip_to_numeric(df, "Gamma Ray")
+                if "DLS" in df.columns:
+                    df["DLS"] = _trip_to_numeric(df, "DLS")
+                df = df.dropna(subset=["Timestamp", "Hookload", "Bit depth"]).sort_values("Timestamp")
+                if df.empty:
+                    st.error(
+                        "El CSV quedó vacío tras limpiar NaNs. Compruebe que Bit depth y Hookload tengan valores numéricos válidos."
+                    )
+                    return
+                st.session_state["trip_analysis_df"] = df
+                st.session_state["trip_analysis_data_source"] = "CSV"
+                used_type_hk = "CSV"
+                used_type_dp = "CSV"
+                used_params_hk = {}
+                used_params_dp = {}
     else:
         # --- API (flujo alineado con Ingeniería BHA: Proyecto → Pozo → Lateral → Trazas)
         with st.expander("Configuración API", expanded=False):
@@ -7498,9 +7551,31 @@ def render_tripping_analysis() -> None:
             if lab_dp and lab_dp in labels_sorted:
                 idx_dp = labels_sorted.index(lab_dp)
 
+        gamma_kw = ["gamma ray", "gamma", "gr", "gammaray"]
+        dls_kw = ["dls", "dogleg", "dog leg", "dogleg severity"]
+        suggested_gr = suggested_dls = None
+        for uuid, data in trip_trace_map_by_uuid.items():
+            label = (data.get("label") or "").lower()
+            if suggested_gr is None and any(kw in label for kw in gamma_kw):
+                suggested_gr = uuid
+            if suggested_dls is None and any(kw in label for kw in dls_kw):
+                suggested_dls = uuid
+
         st.markdown("**Configurar trazas**")
-        st.caption("Elige la traza que corresponde a Hookload y la que corresponde a Bit depth.")
-        col_hl, col_dp = st.columns(2)
+        st.caption("Elige Hookload y Bit depth. Opcionalmente agrega Gamma Ray y DLS como tracks laterales en el broomstick.")
+        labels_sorted_opt = ["(ninguna)"] + labels_sorted
+        idx_gr = 0
+        idx_dls = 0
+        if suggested_gr:
+            lab_gr = trip_trace_map_by_uuid.get(suggested_gr, {}).get("label")
+            if lab_gr and lab_gr in labels_sorted_opt:
+                idx_gr = labels_sorted_opt.index(lab_gr)
+        if suggested_dls:
+            lab_dls = trip_trace_map_by_uuid.get(suggested_dls, {}).get("label")
+            if lab_dls and lab_dls in labels_sorted_opt:
+                idx_dls = labels_sorted_opt.index(lab_dls)
+
+        col_hl, col_dp, col_gr, col_dls = st.columns(4)
         with col_hl:
             selected_hookload_label = st.selectbox(
                 "Traza Hookload",
@@ -7515,8 +7590,24 @@ def render_tripping_analysis() -> None:
                 index=min(idx_dp, len(labels_sorted) - 1) if labels_sorted else 0,
                 key="trip_depth_trace_label",
             )
+        with col_gr:
+            selected_gamma_label = st.selectbox(
+                "Traza Gamma Ray (opcional)",
+                options=labels_sorted_opt,
+                index=min(idx_gr, len(labels_sorted_opt) - 1) if labels_sorted_opt else 0,
+                key="trip_gamma_trace_label",
+            )
+        with col_dls:
+            selected_dls_label = st.selectbox(
+                "Traza DLS (opcional)",
+                options=labels_sorted_opt,
+                index=min(idx_dls, len(labels_sorted_opt) - 1) if labels_sorted_opt else 0,
+                key="trip_dls_trace_label",
+            )
         hookload_trace_uuid = trip_label_to_uuid.get(selected_hookload_label)
         depth_trace_uuid = trip_label_to_uuid.get(selected_depth_label)
+        gamma_trace_uuid = trip_label_to_uuid.get(selected_gamma_label) if selected_gamma_label != "(ninguna)" else None
+        dls_trace_uuid = trip_label_to_uuid.get(selected_dls_label) if selected_dls_label != "(ninguna)" else None
         if not hookload_trace_uuid or not depth_trace_uuid:
             st.error("No se pudo resolver UUID de Hookload o Bit depth.")
             return
@@ -7581,8 +7672,12 @@ def render_tripping_analysis() -> None:
                 page_indices_trip = list(range(int(trip_num_pages))) if int(trip_num_pages) > 1 else [int(trip_page_number)]
             list_hk_pages: list[pd.DataFrame] = []
             list_dp_pages: list[pd.DataFrame] = []
+            list_gr_pages: list[pd.DataFrame] = []
+            list_dls_pages: list[pd.DataFrame] = []
             used_type_hk = used_type_dp = "TIME"
             used_params_hk = used_params_dp = {}
+            used_type_gr = used_type_dls = "TIME"
+            used_params_gr = used_params_dls = {}
             try:
                 page_idx = 0
                 while True:
@@ -7608,11 +7703,35 @@ def render_tripping_analysis() -> None:
                         prefer_type="TIME",
                         user_params=user_params,
                     )
+                    d_gr = pd.DataFrame()
+                    d_dls = pd.DataFrame()
+                    if gamma_trace_uuid:
+                        d_gr, used_type_gr, used_params_gr = probe_well_trace_data(
+                            base_url=base_url,
+                            token=token,
+                            well_uuid=well_uuid,
+                            trace_uuid=gamma_trace_uuid,
+                            prefer_type="TIME",
+                            user_params=user_params,
+                        )
+                    if dls_trace_uuid:
+                        d_dls, used_type_dls, used_params_dls = probe_well_trace_data(
+                            base_url=base_url,
+                            token=token,
+                            well_uuid=well_uuid,
+                            trace_uuid=dls_trace_uuid,
+                            prefer_type="TIME",
+                            user_params=user_params,
+                        )
                     if not d_hk.empty:
                         list_hk_pages.append(d_hk)
                     if not d_dp.empty:
                         list_dp_pages.append(d_dp)
-                    if d_hk.empty and d_dp.empty:
+                    if not d_gr.empty:
+                        list_gr_pages.append(d_gr)
+                    if not d_dls.empty:
+                        list_dls_pages.append(d_dls)
+                    if d_hk.empty and d_dp.empty and d_gr.empty and d_dls.empty:
                         break
                     if trip_load_all_pages:
                         n_hk = len(d_hk)
@@ -7624,6 +7743,8 @@ def render_tripping_analysis() -> None:
                     page_idx += 1
                 df_hk = pd.concat(list_hk_pages, ignore_index=True) if list_hk_pages else pd.DataFrame()
                 df_dp = pd.concat(list_dp_pages, ignore_index=True) if list_dp_pages else pd.DataFrame()
+                df_gr = pd.concat(list_gr_pages, ignore_index=True) if list_gr_pages else pd.DataFrame()
+                df_dls = pd.concat(list_dls_pages, ignore_index=True) if list_dls_pages else pd.DataFrame()
                 if len(list_hk_pages) > 1 and not df_hk.empty:
                     tcol = _trip_pick_time_col(df_hk)
                     if tcol:
@@ -7632,6 +7753,14 @@ def render_tripping_analysis() -> None:
                     tcol = _trip_pick_time_col(df_dp)
                     if tcol:
                         df_dp = df_dp.drop_duplicates(subset=[tcol], keep="first").sort_values(tcol).reset_index(drop=True)
+                if len(list_gr_pages) > 1 and not df_gr.empty:
+                    tcol = _trip_pick_time_col(df_gr)
+                    if tcol:
+                        df_gr = df_gr.drop_duplicates(subset=[tcol], keep="first").sort_values(tcol).reset_index(drop=True)
+                if len(list_dls_pages) > 1 and not df_dls.empty:
+                    tcol = _trip_pick_time_col(df_dls)
+                    if tcol:
+                        df_dls = df_dls.drop_duplicates(subset=[tcol], keep="first").sort_values(tcol).reset_index(drop=True)
             except Exception as e:
                 st.error(f"No pude leer trazas: {e}")
                 return
@@ -7703,6 +7832,34 @@ def render_tripping_analysis() -> None:
                 tolerance=pd.Timedelta("2s"),
             ).dropna(subset=["Hookload", "Bit depth"])
 
+            def _merge_optional_trace(base_df: pd.DataFrame, extra_df: pd.DataFrame, out_name: str, prefer_names: list[str]) -> pd.DataFrame:
+                if extra_df is None or extra_df.empty:
+                    return base_df
+                extra_df = extra_df.copy()
+                extra_df.columns = [str(c).strip() for c in extra_df.columns]
+                tcol_extra = _trip_pick_time_col(extra_df)
+                vcol_extra = _trip_pick_value_col(extra_df, prefer_names=prefer_names)
+                if not tcol_extra or not vcol_extra:
+                    return base_df
+                extra = extra_df[[tcol_extra, vcol_extra]].rename(columns={tcol_extra: "Timestamp", vcol_extra: out_name}).copy()
+                extra["Timestamp"] = pd.to_datetime(extra["Timestamp"], errors="coerce")
+                extra[out_name] = _trip_to_numeric(extra, out_name)
+                extra = extra.dropna(subset=["Timestamp", out_name]).sort_values("Timestamp")
+                if extra.empty:
+                    return base_df
+                return pd.merge_asof(
+                    base_df.sort_values("Timestamp"),
+                    extra,
+                    on="Timestamp",
+                    direction="nearest",
+                    tolerance=pd.Timedelta("2s"),
+                )
+
+            if gamma_trace_uuid:
+                df = _merge_optional_trace(df, df_gr, "Gamma Ray", ["gamma ray", "gamma", "gr", "value"])
+            if dls_trace_uuid:
+                df = _merge_optional_trace(df, df_dls, "DLS", ["dls", "dogleg", "dog leg", "value"])
+
             if df.empty:
                 st.error("No pude alinear Hookload y Depth por tiempo (merge_asof).")
                 return
@@ -7754,7 +7911,8 @@ def render_tripping_analysis() -> None:
         df = df_reindexed.reset_index()
         if df.columns[0] != "Timestamp":
             df = df.rename(columns={df.columns[0]: "Timestamp"})
-        df = df[["Timestamp", "Hookload", "Bit depth"]].dropna(subset=["Hookload", "Bit depth"])
+        keep_cols = [c for c in ["Timestamp", "Hookload", "Bit depth", "Gamma Ray", "DLS"] if c in df.columns]
+        df = df[keep_cols].dropna(subset=["Hookload", "Bit depth"])
     if use_direction_filter:
         df = df.sort_values("Timestamp")
         df["_d"] = df["Bit depth"].diff()
@@ -8333,10 +8491,36 @@ def render_tripping_analysis() -> None:
         if alert_lines:
             st.warning(" | ".join(alert_lines))
 
+        # --- Controles visuales (tracks laterales + capas)
+        model_df = st.session_state.get("trip_ff_family_df")
+        fam_map = st.session_state.get("trip_ff_family_map") or {}
+        has_model = model_df is not None and not model_df.empty and bool(fam_map)
+        show_gamma_track = "Gamma Ray" in df_rt.columns and df_rt["Gamma Ray"].notna().any()
+        show_dls_track = "DLS" in df_rt.columns and df_rt["DLS"].notna().any()
+        show_gamma_track = st.checkbox(
+            "Mostrar track Gamma Ray",
+            value=show_gamma_track,
+            key="trip_broom_show_gamma",
+            disabled=not show_gamma_track,
+        )
+        show_dls_track = st.checkbox(
+            "Mostrar track DLS",
+            value=show_dls_track,
+            key="trip_broom_show_dls",
+            disabled=not show_dls_track,
+        )
+        ctl1, ctl2, ctl3 = st.columns(3)
+        with ctl1:
+            show_measured = st.checkbox("Mostrar medido", value=True, key="trip_broom_show_measured")
+        with ctl2:
+            show_model = st.checkbox("Mostrar modelo FF", value=has_model, key="trip_broom_show_model", disabled=not has_model)
+        with ctl3:
+            show_limits = st.checkbox("Mostrar límites", value=has_limits, key="trip_broom_show_limits", disabled=not has_limits)
+
         fig = go.Figure()
 
         # Scatter medido
-        if not df_rt.empty:
+        if show_measured and not df_rt.empty:
             pu_pts = df_rt[df_rt["Dir"] == "PU"]
             so_pts = df_rt[df_rt["Dir"] == "SO"]
             if not pu_pts.empty:
@@ -8344,29 +8528,28 @@ def render_tripping_analysis() -> None:
                     x=pu_pts["Hookload"], y=pu_pts["Bit depth"],
                     mode="markers",
                     name="Medido PU (Trip Out)",
-                    marker=dict(size=5, opacity=0.6),
+                    marker=dict(size=5, opacity=0.68, color="#636EFA"),
                 ))
             if not so_pts.empty:
                 fig.add_trace(go.Scatter(
                     x=so_pts["Hookload"], y=so_pts["Bit depth"],
                     mode="markers",
                     name="Medido SO (Trip In)",
-                    marker=dict(size=5, opacity=0.6),
+                    marker=dict(size=5, opacity=0.68, color="#EF553B"),
                 ))
 
         # Curvas del modelo por FF (familia)
-        model_df = st.session_state.get("trip_ff_family_df")
-        fam_map = st.session_state.get("trip_ff_family_map") or {}
-        if model_df is None or model_df.empty or not fam_map:
+        if not has_model:
             st.info("Carga un CSV de **Modelo Broomstick por FF** para habilitar el slider que mueve las curvas.")
         else:
             ff_min = float(st.session_state.get("trip_ff_min", 0.1))
             ff_max = float(st.session_state.get("trip_ff_max", 0.5))
-            ff_val = st.slider("Factor de fricción (FF)", min_value=ff_min, max_value=ff_max, value=float((ff_min+ff_max)/2), step=0.01, key="trip_broom_ff")
+            ff_default = float(st.session_state.get("trip_broom_ff", float((ff_min + ff_max) / 2)))
+            ff_val = st.slider("Factor de fricción (FF)", min_value=ff_min, max_value=ff_max, value=min(max(ff_default, ff_min), ff_max), step=0.01, key="trip_broom_ff")
             st.caption("**Mover curvas del modelo:**")
             curve_offset_klb = st.number_input(
                 "Offset de curvas (klb) — sube/baja las líneas PU, SO y ROT",
-                value=0.0,
+                value=float(st.session_state.get("trip_broom_curve_offset", 0.0)),
                 min_value=-300.0,
                 max_value=300.0,
                 step=5.0,
@@ -8374,43 +8557,42 @@ def render_tripping_analysis() -> None:
                 help="Negativo = bajar curvas (acercar a los puntos). Positivo = subir. Se aplica al instante.",
             )
 
-            # Curvas interpoladas para el FF seleccionado
-            pu_curve = interp_ff_curve(model_df, fam_map, "PU", float(ff_val))
-            so_curve = interp_ff_curve(model_df, fam_map, "SO", float(ff_val))
-            rot_curve = interp_ff_curve(model_df, fam_map, "ROT", float(ff_val))
-            if pu_curve is not None and curve_offset_klb != 0:
-                pu_curve = pu_curve + float(curve_offset_klb)
-            if so_curve is not None and curve_offset_klb != 0:
-                so_curve = so_curve + float(curve_offset_klb)
-            if rot_curve is not None and curve_offset_klb != 0:
-                rot_curve = rot_curve + float(curve_offset_klb)
+            if show_model:
+                pu_curve = interp_ff_curve(model_df, fam_map, "PU", float(ff_val))
+                so_curve = interp_ff_curve(model_df, fam_map, "SO", float(ff_val))
+                rot_curve = interp_ff_curve(model_df, fam_map, "ROT", float(ff_val))
+                if pu_curve is not None and curve_offset_klb != 0:
+                    pu_curve = pu_curve + float(curve_offset_klb)
+                if so_curve is not None and curve_offset_klb != 0:
+                    so_curve = so_curve + float(curve_offset_klb)
+                if rot_curve is not None and curve_offset_klb != 0:
+                    rot_curve = rot_curve + float(curve_offset_klb)
 
-            if pu_curve is not None and not pu_curve.empty:
-                fig.add_trace(go.Scatter(
-                    x=pu_curve, y=model_df["Depth"],
-                    mode="lines",
-                    name=f"Modelo PU @ FF={ff_val:.2f}",
-                    line=dict(width=2, shape="spline", smoothing=1.3),
-                ))
-            if so_curve is not None and not so_curve.empty:
-                fig.add_trace(go.Scatter(
-                    x=so_curve, y=model_df["Depth"],
-                    mode="lines",
-                    name=f"Modelo SO @ FF={ff_val:.2f}",
-                    line=dict(width=2, shape="spline", smoothing=1.3),
-                ))
-            # ROT opcional
-            if rot_curve is not None and not rot_curve.empty and rot_curve.notna().any():
-                fig.add_trace(go.Scatter(
-                    x=rot_curve, y=model_df["Depth"],
-                    mode="lines",
-                    name=f"Modelo ROT @ FF={ff_val:.2f}",
-                    line=dict(width=2, shape="spline", smoothing=1.3),
-                ))
+                if pu_curve is not None and not pu_curve.empty:
+                    fig.add_trace(go.Scatter(
+                        x=pu_curve, y=model_df["Depth"],
+                        mode="lines",
+                        name=f"Modelo PU @ FF={ff_val:.2f}",
+                        line=dict(width=2.1, shape="spline", smoothing=1.2, color="#00E5C7"),
+                    ))
+                if so_curve is not None and not so_curve.empty:
+                    fig.add_trace(go.Scatter(
+                        x=so_curve, y=model_df["Depth"],
+                        mode="lines",
+                        name=f"Modelo SO @ FF={ff_val:.2f}",
+                        line=dict(width=2.1, shape="spline", smoothing=1.2, color="#AB63FA"),
+                    ))
+                if rot_curve is not None and not rot_curve.empty and rot_curve.notna().any():
+                    fig.add_trace(go.Scatter(
+                        x=rot_curve, y=model_df["Depth"],
+                        mode="lines",
+                        name=f"Modelo ROT @ FF={ff_val:.2f}",
+                        line=dict(width=2.1, shape="spline", smoothing=1.2, color="#FFA15A"),
+                    ))
 
         # Límites simples (una curva continua por límite; x=Hookload, y=Depth)
         limits_df = st.session_state.get("trip_limits_df")
-        if limits_df is not None and not limits_df.empty:
+        if show_limits and limits_df is not None and not limits_df.empty:
             lim_broom = _trip_prepare_limits_for_continuous_line(limits_df, rolling_window=25)
             if not lim_broom.empty:
                 if "TripOut" in lim_broom.columns and lim_broom["TripOut"].notna().any():
@@ -8419,7 +8601,7 @@ def render_tripping_analysis() -> None:
                         y=lim_broom["Depth"].values,
                         mode="lines",
                         name="Límite Trip Out",
-                        line=dict(width=2, shape="spline", smoothing=1.3),
+                        line=dict(width=1.9, shape="spline", smoothing=1.2, color="#00E5C7", dash="solid"),
                         connectgaps=True,
                     ))
                 if "TripIn" in lim_broom.columns and lim_broom["TripIn"].notna().any():
@@ -8428,7 +8610,7 @@ def render_tripping_analysis() -> None:
                         y=lim_broom["Depth"].values,
                         mode="lines",
                         name="Límite Trip In",
-                        line=dict(width=2, shape="spline", smoothing=1.3),
+                        line=dict(width=1.9, shape="spline", smoothing=1.2, color="#AB63FA", dash="solid"),
                         connectgaps=True,
                     ))
                 if "Rotating" in lim_broom.columns and lim_broom["Rotating"].notna().any():
@@ -8437,22 +8619,85 @@ def render_tripping_analysis() -> None:
                         y=lim_broom["Depth"].values,
                         mode="lines",
                         name="Límite Rotating",
-                        line=dict(width=2, shape="spline", smoothing=1.3),
+                        line=dict(width=1.9, shape="spline", smoothing=1.2, color="#FFA15A", dash="solid"),
                         connectgaps=True,
                     ))
 
+        if show_gamma_track:
+            gamma_df = df_rt.dropna(subset=["Gamma Ray", "Bit depth"]).sort_values("Bit depth")
+            if not gamma_df.empty:
+                fig.add_trace(go.Scatter(
+                    x=gamma_df["Gamma Ray"],
+                    y=gamma_df["Bit depth"],
+                    mode="lines",
+                    name="Gamma Ray",
+                    xaxis="x2",
+                    line=dict(width=1.7, color="#19D3F3"),
+                    opacity=0.95,
+                ))
+        if show_dls_track:
+            dls_df = df_rt.dropna(subset=["DLS", "Bit depth"]).sort_values("Bit depth")
+            if not dls_df.empty:
+                fig.add_trace(go.Scatter(
+                    x=dls_df["DLS"],
+                    y=dls_df["Bit depth"],
+                    mode="lines",
+                    name="DLS",
+                    xaxis="x3",
+                    line=dict(width=1.7, color="#FF6692", dash="dot"),
+                    opacity=0.95,
+                ))
+
+        aux_tracks = int(show_gamma_track) + int(show_dls_track)
+        if aux_tracks == 2:
+            main_domain = [0.24, 1.0]
+            xaxis2_cfg = dict(domain=[0.00, 0.11], title=dict(text="Gamma Ray", standoff=4), side="top", showgrid=True, gridcolor="rgba(255,255,255,0.07)", zeroline=False, anchor="y")
+            xaxis3_cfg = dict(domain=[0.12, 0.23], title=dict(text="DLS", standoff=4), side="top", showgrid=True, gridcolor="rgba(255,255,255,0.07)", zeroline=False, anchor="y")
+        elif aux_tracks == 1 and show_gamma_track:
+            main_domain = [0.13, 1.0]
+            xaxis2_cfg = dict(domain=[0.00, 0.12], title=dict(text="Gamma Ray", standoff=4), side="top", showgrid=True, gridcolor="rgba(255,255,255,0.07)", zeroline=False, anchor="y")
+            xaxis3_cfg = None
+        elif aux_tracks == 1 and show_dls_track:
+            main_domain = [0.13, 1.0]
+            xaxis2_cfg = None
+            xaxis3_cfg = dict(domain=[0.00, 0.12], title=dict(text="DLS", standoff=4), side="top", showgrid=True, gridcolor="rgba(255,255,255,0.07)", zeroline=False, anchor="y")
+        else:
+            main_domain = [0.0, 1.0]
+            xaxis2_cfg = None
+            xaxis3_cfg = None
+
         fig.update_layout(
-            xaxis_title="Hookload",
-            yaxis_title="Profundidad (m)",
+            xaxis=dict(
+                title="Hookload",
+                domain=main_domain,
+                side="bottom",
+                showgrid=True,
+                gridcolor="rgba(255,255,255,0.08)",
+                zeroline=False,
+                tickfont=dict(size=11),
+            ),
+            yaxis=dict(
+                title="Profundidad (m)",
+                showgrid=True,
+                gridcolor="rgba(255,255,255,0.08)",
+                zeroline=False,
+            ),
             template="plotly_dark",
-            height=650,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=690,
+            margin=dict(l=70, r=30, t=50, b=40),
+            legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+            xaxis2=xaxis2_cfg,
+            xaxis3=xaxis3_cfg,
+            hovermode="closest",
         )
         fig.update_yaxes(autorange="reversed")
         st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
         st.caption(
             "**Leyenda:** PU = Trip Out (sacar tubería), SO = Trip In (meter tubería), ROT = rotando. "
-            "Puntos = mediciones reales; líneas = modelo por factor de fricción (FF); límites = curvas de diseño/simulador."
+            "Puntos = mediciones reales; líneas = modelo por factor de fricción (FF); límites = curvas de diseño/simulador. "
+            "Si hay datos, Gamma Ray y DLS pueden mostrarse como tracks laterales a la izquierda del Hookload."
         )
 
         with st.expander("Datos usados (puntos medidos)", expanded=False):
