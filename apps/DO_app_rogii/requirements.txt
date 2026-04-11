@@ -12,3 +12,5 @@ streamlit-drawable-canvas
 pdfplumber
 openpyxl
 kaleido
+statsmodels
+
