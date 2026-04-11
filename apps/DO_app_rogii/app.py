@@ -2422,6 +2422,339 @@ def apply_line_area_fill(
     return fig
 
 
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    try:
+        from plotly.colors import hex_to_rgb
+
+        t = hex_to_rgb(hex_color)
+        return f"rgba({int(t[0])},{int(t[1])},{int(t[2])},{alpha})"
+    except Exception:
+        return f"rgba(37,99,235,{alpha})"
+
+
+def apply_chart_frame_axes(fig: go.Figure, line_color: str = "rgba(148,163,184,0.5)") -> go.Figure:
+    """Marco visible alrededor del área de trazado (ejes con mirror)."""
+    fig.update_xaxes(
+        mirror=True,
+        showline=True,
+        linewidth=1.2,
+        linecolor=line_color,
+        zeroline=False,
+    )
+    fig.update_yaxes(
+        mirror=True,
+        showline=True,
+        linewidth=1.2,
+        linecolor=line_color,
+        zeroline=False,
+    )
+    return fig
+
+
+# Frío (azul) = valores bajos · cálido (rojo) = valores altos (Plotly estándar)
+COLORSCALE_COLD_WARM = "RdYlBu_r"
+
+# Misma lógica frío→cálido que RdYlBu_r, con paradas más saturadas (mejor contraste en tema oscuro / barras)
+COLORSCALE_MAGNITUDE_VIVID: list[list[float | str]] = [
+    [0.0, "#38BDF8"],
+    [0.2, "#3B82F6"],
+    [0.45, "#6366F1"],
+    [0.65, "#FB923C"],
+    [0.85, "#F97316"],
+    [1.0, "#EF4444"],
+]
+
+
+def _add_cold_warm_trapezoid_fill(
+    fig: go.Figure,
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    y0: float = 0.0,
+    color_values: np.ndarray | None = None,
+    cmin: float | None = None,
+    cmax: float | None = None,
+    colorscale: str = COLORSCALE_COLD_WARM,
+    fill_alpha: float = 0.42,
+    max_segments: int = 200,
+) -> tuple[float, float]:
+    """
+    Relleno bajo la curva como bandas trapezoidales; el color sigue color_values
+    (típicamente Y o X según la gráfica). Devuelve (cmin, cmax) usados.
+    """
+    from plotly.colors import sample_colorscale
+
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    x, y = x[ok], y[ok]
+    if len(x) < 2:
+        return (0.0, 1.0)
+
+    cv = np.asarray(color_values if color_values is not None else y, dtype=float)
+    if len(cv) != len(x):
+        cv = y.copy()
+    else:
+        cv = cv[ok]
+
+    if cmin is None:
+        cmin = float(np.nanmin(cv))
+    if cmax is None:
+        cmax = float(np.nanmax(cv))
+    span = max(cmax - cmin, 1e-9)
+
+    if len(x) > max_segments + 1:
+        idx = np.linspace(0, len(x) - 1, max_segments + 1, dtype=int)
+        x, y, cv = x[idx], y[idx], cv[idx]
+
+    for i in range(len(x) - 1):
+        xa, xb = x[i], x[i + 1]
+        ya, yb = y[i], y[i + 1]
+        v_mid = 0.5 * (cv[i] + cv[i + 1])
+        t = float(np.clip((v_mid - cmin) / span, 0.0, 1.0))
+        hex_c = sample_colorscale(colorscale, [t])[0]
+        rgba = _hex_to_rgba(hex_c, fill_alpha)
+        fig.add_trace(
+            go.Scatter(
+                x=[xa, xb, xb, xa],
+                y=[y0, y0, yb, ya],
+                fill="toself",
+                fillcolor=rgba,
+                line=dict(width=0),
+                mode="lines",
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+    return (cmin, cmax)
+
+
+def build_depth_trend_cold_warm_figure(
+    df_trend: pd.DataFrame,
+    y_col: str,
+    title: str,
+    y_axis_title: str,
+) -> go.Figure:
+    """Tendencia vs profundidad: área con degradado frío→cálido según la magnitud (Y)."""
+    if "Depth" not in df_trend.columns or y_col not in df_trend.columns:
+        return go.Figure()
+    d = df_trend.dropna(subset=["Depth", y_col]).copy()
+    if d.empty:
+        return go.Figure()
+    x = d["Depth"].to_numpy(dtype=float)
+    y = d[y_col].to_numpy(dtype=float)
+    fig = go.Figure()
+    cmin, cmax = _add_cold_warm_trapezoid_fill(fig, x, y, y0=0.0, color_values=y)
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="lines+markers",
+            name=y_col,
+            line=dict(width=2.5, color="rgba(255,255,255,0.5)"),
+            marker=dict(
+                size=4,
+                color=y,
+                colorscale=COLORSCALE_COLD_WARM,
+                cmin=cmin,
+                cmax=cmax,
+                showscale=True,
+                colorbar=dict(
+                    title=dict(text=y_axis_title, side="right"),
+                    thickness=14,
+                    len=0.65,
+                    outlinewidth=0,
+                ),
+                line=dict(width=0),
+            ),
+            hovertemplate=(
+                "Profundidad: %{x:.1f} m<br>"
+                + y_axis_title
+                + ": %{y:.2f}<extra></extra>"
+            ),
+        )
+    )
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=15)),
+        xaxis_title="Depth (m)",
+        yaxis_title=y_axis_title,
+        xaxis=dict(autorange="reversed"),
+        hovermode="x unified",
+        margin=dict(l=58, r=88, t=56, b=72),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    apply_chart_frame_axes(fig)
+    fig.update_yaxes(rangemode="tozero")
+    return fig
+
+
+def _mode_line_color(mode: str, idx: int) -> str:
+    m = str(mode).upper().strip()
+    if "ROTARY" in m:
+        return "#2563EB"
+    if "SLIDE" in m:
+        return "#F59E0B"
+    palette = ["#10B981", "#8B5CF6", "#EC4899", "#06B6D4", "#64748B"]
+    return palette[idx % len(palette)]
+
+
+_METRIC_YAXIS_LABEL = {
+    "ROP": "ROP (m/hr)",
+    "WOB": "WOB (kgf)",
+    "RPM": "RPM",
+    "DLS": "DLS (°/30m)",
+}
+
+
+def build_metric_curves_by_mode(df_run: pd.DataFrame, col: str, title: str) -> go.Figure | None:
+    """
+    Curvas del indicador vs profundidad, una serie por Mode_norm.
+    Relleno degradado frío→cálido bajo cada curva; tendencia lineal (mínimos cuadrados vs MD) en discontinua;
+    marcadores y escala por magnitud; línea principal con spline si hay suficientes puntos.
+    """
+    depth_col: str | None = None
+    if "Depth_X" in df_run.columns:
+        depth_col = "Depth_X"
+    elif "Survey MD" in df_run.columns:
+        depth_col = "Survey MD"
+    else:
+        return None
+
+    df_plot = df_run.dropna(subset=[col, "Mode_norm", depth_col]).copy()
+    df_plot[col] = pd.to_numeric(df_plot[col], errors="coerce")
+    df_plot[depth_col] = pd.to_numeric(df_plot[depth_col], errors="coerce")
+    df_plot = df_plot.dropna(subset=[col, depth_col])
+    if df_plot.empty:
+        return None
+
+    df_plot = df_plot.sort_values(depth_col, kind="mergesort")
+    y_all = df_plot[col].to_numpy(dtype=float)
+    cmin = float(np.nanmin(y_all))
+    cmax = float(np.nanmax(y_all))
+    if not np.isfinite(cmin) or not np.isfinite(cmax):
+        return None
+    if cmax <= cmin:
+        cmax = cmin + 1e-9
+
+    modes = sorted(df_plot["Mode_norm"].dropna().unique(), key=lambda x: str(x))
+    y_label = _METRIC_YAXIS_LABEL.get(col, col)
+    x_label = "Profundidad MD (m)" if depth_col == "Depth_X" else "Measured Depth (m)"
+
+    fig = go.Figure()
+    for mi, mode in enumerate(modes):
+        sub = df_plot[df_plot["Mode_norm"] == mode].sort_values(depth_col, kind="mergesort")
+        if sub.empty:
+            continue
+        xv = sub[depth_col].to_numpy(dtype=float)
+        yv = sub[col].to_numpy(dtype=float)
+        line_c = _mode_line_color(str(mode), mi)
+        n_pts = len(xv)
+        if n_pts < 2:
+            continue
+        use_spline = n_pts >= 4
+        line_kw: dict = dict(color=line_c, width=2.6)
+        if use_spline:
+            line_kw["shape"] = "spline"
+            line_kw["smoothing"] = 0.35
+        else:
+            line_kw["shape"] = "linear"
+
+        # Relleno degradado (frío=bajo, cálido=alto) bajo la curva de este modo
+        _add_cold_warm_trapezoid_fill(
+            fig,
+            xv,
+            yv,
+            y0=0.0,
+            color_values=yv,
+            cmin=cmin,
+            cmax=cmax,
+            fill_alpha=0.36,
+            max_segments=200,
+        )
+
+        # Tendencia lineal (mínimos cuadrados vs profundidad)
+        try:
+            if np.ptp(xv) > 1e-9:
+                coef = np.polyfit(xv, yv, 1)
+                x_trend = np.linspace(float(np.min(xv)), float(np.max(xv)), 2)
+                y_trend = np.polyval(coef, x_trend)
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_trend,
+                        y=y_trend,
+                        mode="lines",
+                        name=f"{mode} · tendencia",
+                        line=dict(color=line_c, width=2.2, dash="dash"),
+                        opacity=0.9,
+                        hovertemplate=(
+                            f"<b>{mode}</b> (tendencia lineal)<br>"
+                            + x_label
+                            + ": %{x:.1f} m<br>"
+                            + f"{col}: %{{y:.3f}}<extra></extra>"
+                        ),
+                    )
+                )
+        except (np.linalg.LinAlgError, ValueError):
+            pass
+
+        marker_kw: dict = dict(
+            size=6,
+            color=yv,
+            colorscale=COLORSCALE_COLD_WARM,
+            cmin=cmin,
+            cmax=cmax,
+            showscale=(mi == 0),
+            line=dict(width=0),
+        )
+        if mi == 0:
+            marker_kw["colorbar"] = dict(
+                title=dict(text=y_label, side="right"),
+                thickness=14,
+                len=0.65,
+                outlinewidth=0,
+            )
+
+        fig.add_trace(
+            go.Scatter(
+                x=xv,
+                y=yv,
+                mode="lines+markers",
+                name=str(mode),
+                line=line_kw,
+                marker=marker_kw,
+                hovertemplate=(
+                    f"<b>{mode}</b><br>"
+                    + x_label
+                    + ": %{x:.1f} m<br>"
+                    + f"{col}: %{{y:.3f}}<extra></extra>"
+                ),
+            )
+        )
+
+    if not fig.data:
+        return None
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=15)),
+        xaxis_title=x_label,
+        yaxis_title=y_label,
+        hovermode="x unified",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=11),
+        ),
+        margin=dict(l=58, r=88 if len(modes) else 58, t=56, b=72),
+    )
+    apply_chart_frame_axes(fig)
+    if col in ("ROP", "WOB", "RPM"):
+        fig.update_yaxes(rangemode="tozero")
+    return fig
+
+
 def build_rotary_slide_figure(
     run_name: str,
     total_rotary: float,
@@ -2431,15 +2764,21 @@ def build_rotary_slide_figure(
     slide_pct: float,
 ):
     """
-    Barras horizontales planas + donut; fondo transparente (tema oscuro Streamlit).
-    Colores alineados con KPI (azul Rotary, ámbar Slide).
+    Barras horizontales + donut; fondo transparente (tema oscuro Streamlit).
+    Rotary=verde, Slide=amarillo (paleta tipo logo Drill Spot); relleno semitransparente y bordes vivos.
+    Donut con chips en el centro (sin subtítulo duplicado arriba para evitar solapamientos).
     """
     from plotly.subplots import make_subplots
 
-    # Paleta alineada con KPI / gauge (azul Rotary, ámbar Slide, slate otros)
-    c_rot = "#2563EB"
-    c_sli = "#F59E0B"
-    c_oth = "#64748B"
+    # Verde Rotary / amarillo Slide (alineado a tonos logo Drill Spot)
+    _ROT_HEX = "#22C55E"
+    _SLI_HEX = "#EAB308"
+    _OTH_HEX = "#64748B"
+    _ROT_LINE = "#4ADE80"
+    _SLI_LINE = "#FEF08A"
+    _OTH_LINE = "#CBD5E1"
+    _fill_a = 0.74
+
     c_txt_bar = "#E2E8F0"
     c_tick = "#94A3B8"
 
@@ -2449,6 +2788,10 @@ def build_rotary_slide_figure(
     other_m = max(0.0, td - tr - ts)
     total_m = tr + ts
     x_max = max(td * 1.06, tr + ts + other_m, 1.0) if td > 0 else max(tr + ts, 1.0) * 1.06
+
+    c_rot = _hex_to_rgba(_ROT_HEX, _fill_a)
+    c_sli = _hex_to_rgba(_SLI_HEX, _fill_a)
+    c_oth = _hex_to_rgba(_OTH_HEX, _fill_a)
 
     fig = make_subplots(
         rows=1,
@@ -2461,7 +2804,7 @@ def build_rotary_slide_figure(
             "Distribución del total perforado",
         ),
     )
-    # Barras planas (sin esquinas redondeadas): línea 0, colores sólidos
+    # Barras: relleno semitransparente + borde brillante por modo
     txt_r = f"{tr:.1f} m  ({rotary_pct:.1f}%)" if td > 0 else f"{tr:.1f} m"
     txt_s = f"{ts:.1f} m  ({slide_pct:.1f}%)" if td > 0 else f"{ts:.1f} m"
     fig.add_trace(
@@ -2472,7 +2815,7 @@ def build_rotary_slide_figure(
             x=[tr, ts],
             marker=dict(
                 color=[c_rot, c_sli],
-                line=dict(width=0),
+                line=dict(width=2.5, color=[_ROT_LINE, _SLI_LINE]),
             ),
             text=[txt_r, txt_s],
             textposition="outside",
@@ -2487,10 +2830,12 @@ def build_rotary_slide_figure(
     # Donut: mismos metros que la tabla (incl. «Otros» si aplica)
     if td <= 0:
         pie_vals, pie_labels, pie_colors, pie_pull = [1.0], ["Sin datos"], ["#94a3b8"], [0.0]
+        _pie_line_colors = ["#94a3b8"]
     elif other_m <= 1e-6:
         pie_vals = [tr, ts]
         pie_labels = ["Rotary", "Slide"]
         pie_colors = [c_rot, c_sli]
+        _pie_line_colors = [_ROT_LINE, _SLI_LINE]
         pull_slide = 0.06 if (ts > 0 and ts < 0.08 * max(total_m, 1e-9)) else 0.0
         pie_pull = [0.0, pull_slide]
         if pie_vals[0] == 0 and pie_vals[1] == 0:
@@ -2499,6 +2844,7 @@ def build_rotary_slide_figure(
         pie_vals = [tr, ts, other_m]
         pie_labels = ["Rotary", "Slide", "Otros modos"]
         pie_colors = [c_rot, c_sli, c_oth]
+        _pie_line_colors = [_ROT_LINE, _SLI_LINE, _OTH_LINE]
         pull_slide = 0.06 if (ts > 0 and ts < 0.08 * max(td, 1e-9)) else 0.0
         pie_pull = [0.0, pull_slide, 0.0]
 
@@ -2506,15 +2852,14 @@ def build_rotary_slide_figure(
         go.Pie(
             labels=pie_labels,
             values=pie_vals,
-            hole=0.64,
+            hole=0.52,
             rotation=90,
             marker=dict(
                 colors=pie_colors,
-                line=dict(color="rgba(226,232,240,0.35)", width=1.0),
+                line=dict(color=_pie_line_colors, width=2.0),
             ),
-            texttemplate="<b>%{percent:.1%}</b><br><span style='font-size:11px'>%{label}</span>",
-            textposition="outside",
-            textfont=dict(size=11, family="Segoe UI"),
+            texttemplate="",
+            textposition="none",
             hovertemplate="<b>%{label}</b><br>%{value:.2f} m<br>%{percent}<extra></extra>",
             sort=False,
             showlegend=False,
@@ -2523,11 +2868,35 @@ def build_rotary_slide_figure(
         row=1,
         col=2,
     )
-    sub = (
-        f"Total perforado (tabla): <b>{td:.1f} m</b> · Rotary+Slide: <b>{total_m:.1f} m</b>"
-        if td > 0
-        else f"Rotary+Slide: <b>{total_m:.1f} m</b>"
-    )
+    # Chips + totales en el hueco (valores representativos sin duplicar texto en el anillo)
+    if td > 0 and pie_labels[0] != "Sin datos":
+        _chip_html = (
+            f"<span style='display:inline-block;background:rgba(34,197,94,0.42);"
+            f"border:1.5px solid {_ROT_LINE};border-radius:10px;padding:5px 12px;margin:3px 0;"
+            f"color:#F0FDF4;font-weight:600;font-size:11px;'>Rotary · {tr:.1f} m · {rotary_pct:.1f}%</span><br>"
+            f"<span style='display:inline-block;background:rgba(234,179,8,0.45);"
+            f"border:1.5px solid {_SLI_LINE};border-radius:10px;padding:5px 12px;margin:3px 0;"
+            f"color:#1E293B;font-weight:600;font-size:11px;'>Slide · {ts:.1f} m · {slide_pct:.1f}%</span>"
+        )
+        if other_m > 1e-6:
+            _chip_html += (
+                f"<br><span style='display:inline-block;background:rgba(100,116,139,0.45);"
+                f"border:1.5px solid {_OTH_LINE};border-radius:10px;padding:5px 12px;margin:3px 0;"
+                f"color:#F8FAFC;font-weight:600;font-size:11px;'>Otros · {other_m:.1f} m</span>"
+            )
+        fig.add_annotation(
+            xref="x2 domain",
+            yref="y2 domain",
+            x=0.5,
+            y=0.52,
+            text=(
+                f"<b style='color:#F8FAFC;font-size:12px'>Total R+S</b> "
+                f"<span style='color:#E2E8F0;font-size:12px'>{total_m:.1f} m</span><br><br>{_chip_html}"
+            ),
+            showarrow=False,
+            font=dict(size=10),
+            align="center",
+        )
     fig.update_layout(
         barmode="overlay",
         bargap=0.42,
@@ -2538,11 +2907,10 @@ def build_rotary_slide_figure(
             x=0.02,
             xanchor="left",
             font=dict(size=16, family="Segoe UI"),
-            subtitle=dict(text=sub, font=dict(size=12)),
         ),
         showlegend=False,
-        margin=dict(l=96, r=28, t=100, b=56),
-        height=420,
+        margin=dict(l=100, r=32, t=88, b=64),
+        height=440,
     )
     fig.update_xaxes(
         title=dict(text="Metros (m)", font=dict(size=12)),
@@ -2550,19 +2918,26 @@ def build_rotary_slide_figure(
         showgrid=True,
         gridcolor="rgba(148,163,184,0.28)",
         zeroline=False,
+        mirror=True,
+        showline=True,
+        linewidth=1.2,
+        linecolor="rgba(148,163,184,0.45)",
         row=1,
         col=1,
     )
     fig.update_yaxes(
         type="category",
         autorange="reversed",
-        showline=False,
+        mirror=True,
+        showline=True,
+        linewidth=1.2,
+        linecolor="rgba(148,163,184,0.45)",
         zeroline=False,
         tickfont=dict(size=14, color=c_tick, family="Segoe UI"),
         row=1,
         col=1,
     )
-    fig.update_annotations(font=dict(size=12, family="Segoe UI"))
+    fig.update_annotations(font=dict(size=12, family="Segoe UI", color="#E2E8F0"))
     return fig
 
 
@@ -2603,13 +2978,15 @@ def save_and_show_plotly(
     is_heatmap: bool = False,
     use_auto_theme: bool = False,
     theme_height: int = 420,
+    skip_theme: bool = False,
 ) -> None:
-    if is_heatmap:
-        fig = prettify_heatmap(fig)
-    elif use_auto_theme:
-        fig = prettify_auto(fig, h=theme_height)
-    else:
-        fig = prettify_hist(fig) if is_hist else prettify(fig)
+    if not skip_theme:
+        if is_heatmap:
+            fig = prettify_heatmap(fig)
+        elif use_auto_theme:
+            fig = prettify_auto(fig, h=theme_height)
+        else:
+            fig = prettify_hist(fig) if is_hist else prettify(fig)
     ok_png = add_plotly_figure_slide(prs, title, fig)
     if not ok_png and show_plots:
         if not st.session_state.get("_kaleido_pptx_warn_shown"):
@@ -3911,19 +4288,67 @@ def build_corr_heatmap(df_run: pd.DataFrame, run_name: str):
 
 
 def build_dls_vs_md_figure(df_run: pd.DataFrame, run_name: str):
-    df_plot = df_run.dropna(subset=["Survey MD", "DLS"])
+    df_plot = df_run.dropna(subset=["Survey MD", "DLS"]).copy()
     if df_plot.empty:
         return None
+    df_plot["Survey MD"] = pd.to_numeric(df_plot["Survey MD"], errors="coerce")
+    df_plot["DLS"] = pd.to_numeric(df_plot["DLS"], errors="coerce")
+    df_plot = df_plot.dropna(subset=["Survey MD", "DLS"])
+    if df_plot.empty:
+        return None
+    df_plot = df_plot.sort_values("Survey MD", kind="mergesort")
+    x = df_plot["Survey MD"].to_numpy(dtype=float)
+    y = df_plot["DLS"].to_numpy(dtype=float)
+    cmin = float(np.nanmin(y))
+    cmax = float(np.nanmax(y))
+    if cmax <= cmin:
+        cmax = cmin + 1e-9
+    use_spline = len(x) >= 4
+    line_kw: dict = dict(color="rgba(129, 140, 248, 0.92)", width=2.8)
+    if use_spline:
+        line_kw["shape"] = "spline"
+        line_kw["smoothing"] = 0.35
+    else:
+        line_kw["shape"] = "linear"
 
-    fig = px.line(
-        df_plot,
-        x="Survey MD",
-        y="DLS",
-        title=f"{run_name} – DLS vs MD",
-        labels={"Survey MD": "Measured Depth (m)", "DLS": "DLS (°/30m)"},
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="lines+markers",
+            name="DLS",
+            line=line_kw,
+            marker=dict(
+                size=7,
+                color=y,
+                colorscale=COLORSCALE_COLD_WARM,
+                cmin=cmin,
+                cmax=cmax,
+                showscale=True,
+                colorbar=dict(
+                    title=dict(text="DLS (°/30m)", side="right"),
+                    thickness=14,
+                    len=0.65,
+                    outlinewidth=0,
+                ),
+                line=dict(width=0),
+            ),
+            fill="tozeroy",
+            fillcolor="rgba(129, 140, 248, 0.14)",
+            hovertemplate="Measured Depth: %{x:.1f} m<br>DLS: %{y:.2f} °/30m<extra></extra>",
+        )
     )
-    fig.update_traces(mode="lines+markers", marker=dict(size=4, opacity=0.75))
-    apply_line_area_fill(fig, line_color="#6366F1", fill_alpha=0.2)
+    fig.update_layout(
+        title=dict(text=f"{run_name} – DLS vs MD", font=dict(size=15)),
+        xaxis_title="Measured Depth (m)",
+        yaxis_title="DLS (°/30m)",
+        hovermode="x unified",
+        margin=dict(l=58, r=88, t=56, b=72),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    apply_chart_frame_axes(fig)
+    fig.update_yaxes(rangemode="tozero")
     return fig
 
 
@@ -3941,50 +4366,192 @@ def compute_effective_time_hours(df_run: pd.DataFrame) -> float:
     return float(df_time.loc[effective_mask, "Duration_h"].sum())
 
 
-def build_boxplot_by_mode(df_run: pd.DataFrame, col: str, title: str):
-    df_plot = df_run.dropna(subset=[col, "Mode_norm"])
-    if df_plot.empty:
-        return None
-    fig = px.box(
-        df_plot,
-        x="Mode_norm",
-        y=col,
-        points="outliers",
-        title=title,
-        labels={"Mode_norm": "Mode", col: col},
-        color="Mode_norm",
-    )
-    fig.update_traces(marker=dict(size=4, opacity=0.65))
-    return fig
-
-
 def build_control_chart(df_run: pd.DataFrame, col: str, run_name: str):
-    df_plot = df_run.dropna(subset=[col, "Depth_X"])
+    """
+    Carta de control vs profundidad: puntos ordenados por MD, relleno degradado frío→cálido bajo la curva,
+    tendencia lineal (mínimos cuadrados vs MD), línea principal clara, media ±3σ, outliers en naranja.
+    Para ROP/WOB/RPM el eje Y empieza en 0 (magnitudes físicas ≥ 0).
+    """
+    from plotly.colors import sample_colorscale
+
+    df_plot = df_run.dropna(subset=[col, "Depth_X"]).copy()
     if df_plot.empty:
         return None
-    mean_val = df_plot[col].mean()
-    std_val = df_plot[col].std()
-    upper = mean_val + 3 * std_val
-    lower = mean_val - 3 * std_val
+    df_plot[col] = pd.to_numeric(df_plot[col], errors="coerce")
+    df_plot["Depth_X"] = pd.to_numeric(df_plot["Depth_X"], errors="coerce")
+    df_plot = df_plot.dropna(subset=[col, "Depth_X"])
+    if df_plot.empty:
+        return None
+    df_plot = df_plot.sort_values("Depth_X", kind="mergesort")
+
+    y = df_plot[col].to_numpy(dtype=float)
+    x = df_plot["Depth_X"].to_numpy(dtype=float)
+    mean_val = float(np.mean(y))
+    std_val = float(np.std(y, ddof=0)) if len(y) > 1 else 0.0
+    if not np.isfinite(std_val):
+        std_val = 0.0
+    upper = mean_val + 3.0 * std_val
+    lower = mean_val - 3.0 * std_val
+    out_mask = (y > upper) | (y < lower)
+    n_out = int(np.count_nonzero(out_mask))
+
+    cmin = float(np.nanmin(y))
+    cmax = float(np.nanmax(y))
+    if cmax <= cmin:
+        cmax = cmin + 1e-9
+
+    sizes = [10 if bool(o) else 7 for o in out_mask]
+    symbols = ["diamond" if bool(o) else "circle" for o in out_mask]
+    customdata_rows = ["Fuera de ±3σ" if bool(o) else "Dentro de límites" for o in out_mask]
+    marker_colors: list[str] = []
+    for yi, o in zip(y, out_mask):
+        if o:
+            marker_colors.append("#F97316")
+        else:
+            t = float(np.clip((yi - cmin) / (cmax - cmin), 0.0, 1.0))
+            marker_colors.append(sample_colorscale(COLORSCALE_COLD_WARM, [t])[0])
 
     fig = go.Figure()
+    _add_cold_warm_trapezoid_fill(
+        fig,
+        x,
+        y,
+        y0=0.0,
+        color_values=y,
+        cmin=cmin,
+        cmax=cmax,
+        fill_alpha=0.34,
+        max_segments=220,
+    )
+
+    try:
+        if len(x) >= 2 and np.ptp(x) > 1e-9:
+            coef = np.polyfit(x, y, 1)
+            x_trend = np.linspace(float(np.min(x)), float(np.max(x)), 2)
+            y_trend = np.polyval(coef, x_trend)
+            fig.add_trace(
+                go.Scatter(
+                    x=x_trend,
+                    y=y_trend,
+                    mode="lines",
+                    name="Tendencia lineal",
+                    line=dict(color="rgba(250, 250, 250, 0.72)", width=2.2, dash="dash"),
+                    hovertemplate=(
+                        f"Profundidad: %{{x:.1f}} m<br>{col} (tendencia): %{{y:.2f}}<extra></extra>"
+                    ),
+                )
+            )
+    except (np.linalg.LinAlgError, ValueError):
+        pass
+
     fig.add_trace(
         go.Scatter(
-            x=df_plot["Depth_X"],
-            y=df_plot[col],
-            mode="markers",
+            x=x,
+            y=y,
+            mode="lines+markers",
             name=col,
-            marker=dict(size=5, color="#2563EB", opacity=0.7),
+            line=dict(color="rgba(255, 255, 255, 0.58)", width=2.2),
+            marker=dict(
+                size=sizes,
+                color=marker_colors,
+                opacity=0.92,
+                symbol=symbols,
+                line=dict(width=0),
+            ),
+            hovertemplate=(
+                f"Profundidad: %{{x:.1f}} m<br>{col}: %{{y:.2f}}"
+                "<br>%{customdata}<extra></extra>"
+            ),
+            customdata=customdata_rows,
         )
     )
-    fig.add_hline(y=mean_val, line_dash="dash", line_color="#10B981")
-    fig.add_hline(y=upper, line_dash="dot", line_color="#EF4444")
-    fig.add_hline(y=lower, line_dash="dot", line_color="#EF4444")
-    fig.update_layout(
-        title=f"{run_name} – Control chart {col}",
-        xaxis_title="Depth (m)",
-        yaxis_title=col,
+    fig.add_hline(
+        y=mean_val,
+        line_dash="dash",
+        line_color="#10B981",
+        line_width=2,
+        annotation_text=f"Media {mean_val:.2f}",
+        annotation_position="right",
+        annotation_font_size=11,
     )
+    fig.add_hline(
+        y=upper,
+        line_dash="dot",
+        line_color="#EF4444",
+        line_width=2,
+        annotation_text=f"UCL {upper:.2f}",
+        annotation_position="right",
+        annotation_font_size=11,
+    )
+    fig.add_hline(
+        y=lower,
+        line_dash="dot",
+        line_color="#EF4444",
+        line_width=2,
+        annotation_text=f"LCL {lower:.2f}",
+        annotation_position="right",
+        annotation_font_size=11,
+    )
+
+    summary = (
+        f"Media {mean_val:.2f} · ±3σ [{lower:.2f}, {upper:.2f}] · "
+        f"outliers: {n_out}"
+    )
+    nonneg = col in ("ROP", "WOB", "RPM")
+    y_hi = float(np.nanmax(np.concatenate([[upper], y])))
+    y_lo_data = float(np.nanmin(y))
+    pad = max(1e-6, (y_hi - max(0.0, y_lo_data if nonneg else lower)) * 0.06)
+    if nonneg:
+        y_axis_range = [0.0, y_hi + pad]
+    else:
+        y_axis_range = [
+            float(min(lower, np.nanmin(y)) - pad),
+            float(max(upper, np.nanmax(y)) + pad),
+        ]
+
+    fig.update_layout(
+        title=dict(
+            text=f"{run_name} – Carta de control {col}",
+            font=dict(size=15),
+        ),
+        xaxis_title="Profundidad MD (m)",
+        yaxis_title={
+            "ROP": "ROP (m/hr)",
+            "WOB": "WOB (kgf)",
+            "RPM": "RPM",
+        }.get(col, col),
+        xaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.06)", zeroline=False),
+        yaxis=dict(
+            range=y_axis_range,
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.06)",
+            zeroline=False,
+        ),
+        hovermode="closest",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=11),
+        ),
+        margin=dict(l=58, r=100, t=56, b=88),
+        annotations=[
+            dict(
+                text=f"<b>Resumen:</b> {summary}",
+                xref="paper",
+                yref="paper",
+                x=0.5,
+                y=-0.22,
+                xanchor="center",
+                yanchor="top",
+                showarrow=False,
+                font=dict(size=12, color="#475569"),
+            )
+        ],
+    )
+    apply_chart_frame_axes(fig)
     return fig
 
 
@@ -4003,23 +4570,6 @@ def build_crossplot_dls_rop(df_run: pd.DataFrame, run_name: str):
         color_continuous_scale="Turbo",
     )
     fig.update_traces(marker=dict(opacity=0.75))
-    return fig
-
-
-def build_scatter_matrix(df_run: pd.DataFrame, run_name: str):
-    cols = ["ROP", "WOB", "RPM", "DLS"]
-    cols = [c for c in cols if c in df_run.columns]
-    df_plot = df_run[cols].dropna()
-    if df_plot.empty or len(cols) < 2:
-        return None
-    fig = px.scatter_matrix(
-        df_plot,
-        dimensions=cols,
-        title=f"{run_name} – Scatter Matrix",
-        color="ROP" if "ROP" in cols else None,
-        color_continuous_scale="Turbo",
-    )
-    fig.update_traces(diagonal_visible=False, marker=dict(size=4, opacity=0.7))
     return fig
 
 
@@ -4048,22 +4598,105 @@ def build_depth_heatmap(df_run: pd.DataFrame, run_name: str):
 
 
 def build_cumulative_meters(df_run: pd.DataFrame, run_name: str):
+    """
+    Metros acumulados vs tiempo: relleno degradado frío→cálido según metros acumulados,
+    tendencia lineal en el tiempo (ms), línea clara y barra de color.
+    """
     if "End" not in df_run.columns:
         return None
     df_plot = df_run.dropna(subset=["End", "Distance"]).copy()
     if df_plot.empty:
         return None
+    df_plot["End"] = pd.to_datetime(df_plot["End"], errors="coerce")
+    df_plot = df_plot.dropna(subset=["End"])
+    if df_plot.empty:
+        return None
     df_plot = df_plot.sort_values("End")
     df_plot["Meters_cum"] = df_plot["Distance"].fillna(0).cumsum()
-    fig = px.line(
-        df_plot,
-        x="End",
-        y="Meters_cum",
-        title=f"{run_name} – Metros acumulados vs tiempo",
-        labels={"End": "Time", "Meters_cum": "Meters"},
-        color_discrete_sequence=["#059669"],
+    y = df_plot["Meters_cum"].to_numpy(dtype=float)
+    # Eje X en ms (float) para Plotly type=date y para polyfit
+    t = df_plot["End"]
+    x_ms = t.astype(np.int64).to_numpy(dtype=float) / 1e6
+    ok = np.isfinite(x_ms) & np.isfinite(y)
+    x_ms = x_ms[ok]
+    y = y[ok]
+    if len(y) == 0:
+        return None
+
+    cmin = float(np.nanmin(y))
+    cmax = float(np.nanmax(y))
+    if cmax <= cmin:
+        cmax = cmin + 1e-9
+
+    fig = go.Figure()
+    if len(x_ms) >= 2:
+        _add_cold_warm_trapezoid_fill(
+            fig,
+            x_ms,
+            y,
+            y0=0.0,
+            color_values=y,
+            cmin=cmin,
+            cmax=cmax,
+            colorscale=COLORSCALE_COLD_WARM,
+            fill_alpha=0.46,
+            max_segments=220,
+        )
+
+    try:
+        if len(x_ms) >= 2 and np.ptp(x_ms) > 1e-6:
+            coef = np.polyfit(x_ms, y, 1)
+            xt = np.linspace(float(np.min(x_ms)), float(np.max(x_ms)), 2)
+            yt = np.polyval(coef, xt)
+            fig.add_trace(
+                go.Scatter(
+                    x=xt,
+                    y=yt,
+                    mode="lines",
+                    name="Tendencia lineal",
+                    line=dict(color="rgba(250, 250, 250, 0.72)", width=2.2, dash="dash"),
+                    hovertemplate="Metros (tendencia): %{y:.2f}<extra></extra>",
+                )
+            )
+    except (np.linalg.LinAlgError, ValueError):
+        pass
+
+    fig.add_trace(
+        go.Scatter(
+            x=x_ms,
+            y=y,
+            mode="lines+markers",
+            name="Metros acumulados",
+            line=dict(width=2.5, color="rgba(255, 255, 255, 0.58)"),
+            marker=dict(
+                size=5,
+                color=y,
+                colorscale=COLORSCALE_COLD_WARM,
+                cmin=cmin,
+                cmax=cmax,
+                showscale=True,
+                colorbar=dict(
+                    title=dict(text="Metros (m)", side="right"),
+                    thickness=14,
+                    len=0.65,
+                    outlinewidth=0,
+                ),
+                line=dict(width=0),
+            ),
+            hovertemplate="Tiempo: %{x|%Y-%m-%d %H:%M}<br>Metros acum.: %{y:.1f}<extra></extra>",
+        )
     )
-    apply_line_area_fill(fig, line_color="#059669", fill_alpha=0.22)
+    fig.update_layout(
+        title=dict(text=f"{run_name} – Metros acumulados vs tiempo", font=dict(size=15)),
+        xaxis_title="Tiempo",
+        yaxis_title="Metros (m)",
+        xaxis=dict(type="date"),
+        hovermode="x unified",
+        margin=dict(l=58, r=88, t=56, b=72),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    apply_chart_frame_axes(fig)
+    fig.update_yaxes(rangemode="tozero")
     return fig
 
 
@@ -4184,44 +4817,105 @@ def build_hist_with_trend(
     bar_color: str = "#0ea5e9",
     line_color: str = "#c2410c",
 ) -> go.Figure:
-    """Histograma con línea de tendencia que une los tops de las barras."""
+    """
+    Curva suavizada de la distribución (histograma + spline) con relleno degradado:
+    frío = valores bajos del eje X, cálido = valores altos (WOB/RPM, etc.).
+    """
+    del bar_color, line_color  # compat API; estilo unificado frío/cálido
     vals = pd.Series(values).dropna()
     if vals.empty:
         return go.Figure()
-    counts, bin_edges = np.histogram(vals, bins=nbins)
+    vals_np = vals.to_numpy(dtype=float)
+    vmin = float(np.min(vals_np))
+    vmax = float(np.max(vals_np))
+    if not np.isfinite(vmin) or not np.isfinite(vmax):
+        return go.Figure()
+    if vmax <= vmin:
+        vmax = vmin + 1e-9
+
+    counts, bin_edges = np.histogram(vals_np, bins=nbins)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    try:
+        from scipy.ndimage import gaussian_filter1d
+
+        counts_s = gaussian_filter1d(counts.astype(float), sigma=1.15)
+    except Exception:
+        counts_s = counts.astype(float)
+
+    n_fine = min(256, max(64, nbins * 4))
+    if len(bin_centers) < 2:
+        pad = max((vmax - vmin) * 0.02, 1e-4)
+        x_fine = np.linspace(vmin - pad, vmax + pad, n_fine)
+        y_fine = np.full_like(x_fine, float(np.max(counts_s)))
+    else:
+        x_fine = np.linspace(float(bin_centers[0]), float(bin_centers[-1]), n_fine)
+        try:
+            from scipy.interpolate import interp1d
+
+            f = interp1d(
+                bin_centers.astype(float),
+                counts_s,
+                kind="cubic",
+                bounds_error=False,
+                fill_value=0.0,
+            )
+            y_fine = np.clip(f(x_fine), 0.0, None)
+        except Exception:
+            f = interp1d(
+                bin_centers.astype(float),
+                counts_s,
+                kind="linear",
+                bounds_error=False,
+                fill_value=0.0,
+            )
+            y_fine = np.clip(f(x_fine), 0.0, None)
+
     fig = go.Figure()
-    fig.add_trace(
-        go.Bar(
-            x=bin_centers,
-            y=counts,
-            name="Frecuencia",
-            marker_color=bar_color,
-            marker_line_width=0,
-            opacity=0.85,
-        )
+    _add_cold_warm_trapezoid_fill(
+        fig,
+        x_fine,
+        y_fine,
+        y0=0.0,
+        color_values=x_fine,
+        cmin=vmin,
+        cmax=vmax,
     )
     fig.add_trace(
         go.Scatter(
-            x=bin_centers,
-            y=counts,
+            x=x_fine,
+            y=y_fine,
             mode="lines+markers",
-            name="Tendencia",
-            line=dict(color=line_color, width=2.5, dash="solid"),
-            marker=dict(size=6, color=line_color, symbol="circle"),
+            name="Curva suavizada",
+            line=dict(width=2.5, color="rgba(255,255,255,0.5)"),
+            marker=dict(
+                size=4,
+                color=x_fine,
+                colorscale=COLORSCALE_COLD_WARM,
+                cmin=vmin,
+                cmax=vmax,
+                showscale=True,
+                colorbar=dict(
+                    title=dict(text=x_label, side="right"),
+                    thickness=14,
+                    len=0.65,
+                    outlinewidth=0,
+                ),
+                line=dict(width=0),
+            ),
+            hovertemplate=x_label + ": %{x:.2f}<br>count (suav.): %{y:.2f}<extra></extra>",
         )
     )
     fig.update_layout(
         title=title,
         xaxis_title=x_label,
-        yaxis_title="count",
+        yaxis_title="count (suavizado)",
         template=PLOTLY_TEMPLATE,
-        barmode="overlay",
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     fig.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)", rangemode="tozero")
+    apply_chart_frame_axes(fig)
     return fig
 
 
@@ -9765,16 +10459,10 @@ def _ts_fmt_en(ts) -> str:
     return t.strftime("%B %d, %Y, at %H:%M")
 
 
-def _wob_to_tonf(wob_kgf: float | None) -> float | None:
-    if wob_kgf is None or pd.isna(wob_kgf):
-        return None
-    return float(wob_kgf) / 1000.0
-
-
 def build_kpi_whatsapp_summary_en(run: RunInfo, stats: dict, df_run: pd.DataFrame) -> str:
     """
     Resumen narrativo en inglés (estilo WhatsApp), alineado al ejemplo del usuario.
-    WOB: asume unidades tipo kgf en datos → se muestra en tonf (÷1000).
+    WOB: mismas unidades que el KPI (kgf), como en tablas y gráficas — no dividir por 1000.
     """
     st_t = _ts_fmt_en(run.start_time)
     en_t = _ts_fmt_en(run.end_time)
@@ -9819,12 +10507,11 @@ def build_kpi_whatsapp_summary_en(run: RunInfo, stats: dict, df_run: pd.DataFram
     avg_rop_r = stats.get("avg_rop_rotary")
     avg_rop_r_s = f"{float(avg_rop_r):.2f} m/h" if avg_rop_r is not None and pd.notna(avg_rop_r) else "n/a"
 
-    wmn = _wob_to_tonf(stats.get("wob_min"))
-    wmx = _wob_to_tonf(stats.get("wob_max"))
-    wav = _wob_to_tonf(stats.get("wob_avg"))
+    wmn, wmx, wav = stats.get("wob_min"), stats.get("wob_max"), stats.get("wob_avg")
     wob_line = (
-        f"WOB ranged from {wmn:.2f} to {wmx:.2f} tonf, with an average of {wav:.2f} tonf."
+        f"WOB ranged from {float(wmn):.2f} to {float(wmx):.2f} kgf, with an average of {float(wav):.2f} kgf."
         if wmn is not None and wmx is not None and wav is not None
+        and not any(pd.isna(x) for x in (wmn, wmx, wav))
         else "WOB: n/a."
     )
 
@@ -9894,7 +10581,7 @@ def build_kpi_whatsapp_global_en(
 def build_kpi_whatsapp_summary_es(run: RunInfo, stats: dict, df_run: pd.DataFrame) -> str:
     """
     Resumen narrativo en español (estilo WhatsApp).
-    WOB: asume kgf en datos → tonf (÷1000).
+    WOB: kgf (igual que tablas/gráficas del KPI); no convertir a tonf para no subestimar magnitudes ~0–20.
     """
     st_t = _ts_fmt_es(run.start_time)
     en_t = _ts_fmt_es(run.end_time)
@@ -9947,12 +10634,11 @@ def build_kpi_whatsapp_summary_es(run: RunInfo, stats: dict, df_run: pd.DataFram
         else "n/d"
     )
 
-    wmn = _wob_to_tonf(stats.get("wob_min"))
-    wmx = _wob_to_tonf(stats.get("wob_max"))
-    wav = _wob_to_tonf(stats.get("wob_avg"))
+    wmn, wmx, wav = stats.get("wob_min"), stats.get("wob_max"), stats.get("wob_avg")
     wob_line = (
-        f"El WOB osciló entre {wmn:.2f} y {wmx:.2f} tonf, con un promedio de {wav:.2f} tonf."
+        f"El WOB osciló entre {float(wmn):.2f} y {float(wmx):.2f} kgf, con un promedio de {float(wav):.2f} kgf."
         if wmn is not None and wmx is not None and wav is not None
+        and not any(pd.isna(x) for x in (wmn, wmx, wav))
         else "WOB: n/d."
     )
 
@@ -10951,7 +11637,7 @@ def render_kpi_module() -> None:
                     )
                     vspace(12)
 
-                # Rotary vs Slide (barras horizontales planas + donut)
+                # Rotary vs Slide (barras + donut; verde/amarillo Drill Spot)
                 fig_rot_slide = build_rotary_slide_figure(
                     run.name,
                     stats["drilling_table"][0][1],
@@ -10973,68 +11659,184 @@ def render_kpi_module() -> None:
                     f"({format_num(stats['rotary_pct'])}%) y Slide "
                     f"{format_num(stats['drilling_table'][1][1])} m "
                     f"({format_num(stats['slide_pct'])}%).",
-                    "Barras horizontales por modo + donut (mismos m y % que Drilling Summary; «Otros» si hay modos fuera de R/S).",
+                    "Rotary=verde, Slide=amarillo (relleno semitransparente, bordes vivos); donut con chips en el centro; mismos datos que Drilling Summary.",
                 )
                 vspace(14)
 
-                # Scatter Pair
+                # Scatter Pair: modo Rotary/Slide (verde/amarillo Drill Spot); sin OLS
                 st.subheader(f"{run.name} – ROP Relationships")
                 _render_chips_row(
                     [
-                        (run.name, "gray"),
-                        (f"n={len(df_run):,}", "gray"),
-                        (f"ROP–WOB r={safe_corr(df_run, 'ROP', 'WOB')}", "blue"),
-                        (f"ROP–RPM r={safe_corr(df_run, 'ROP', 'RPM')}", "blue"),
+                        (str(run.name), "gray"),
+                        (f"n={len(df_run):,} intervalos", "gray"),
+                        ("Rotary=verde · Slide=amarillo", "green"),
+                        ("r en anotación = Pearson", "blue"),
                     ]
                 )
                 vspace(6)
                 c1, c2 = st.columns(2, gap="large", vertical_alignment="top")
 
-                fig_rop_wob = px.scatter(
-                    df_run,
-                    x="WOB",
-                    y="ROP",
-                    trendline="ols",
-                    labels={"WOB": "WOB (kgf)", "ROP": "ROP (m/hr)"},
-                    title=f"{run.name} – ROP vs WOB",
+                _scatter_hover = [c for c in ["Mode_norm", "Depth_X", "Distance", "DLS"] if c in df_run.columns]
+                _n = max(len(df_run), 1)
+                _dls_cov = (
+                    float(df_run["DLS"].notna().sum()) / float(_n)
+                    if "DLS" in df_run.columns
+                    else 0.0
                 )
-                fig_rop_rpm = px.scatter(
-                    df_run,
-                    x="RPM",
-                    y="ROP",
-                    trendline="ols",
-                    labels={"RPM": "RPM", "ROP": "ROP (m/hr)"},
-                    title=f"{run.name} – ROP vs RPM",
-                )
-                fig_rop_wob.update_traces(marker=dict(size=6, opacity=0.7))
-                fig_rop_rpm.update_traces(marker=dict(size=6, opacity=0.7))
-                set_trendline_color(fig_rop_wob)
-                set_trendline_color(fig_rop_rpm)
+                if "Mode_norm" in df_run.columns and df_run["Mode_norm"].notna().any():
+                    _scatter_color = "Mode_norm"
+                    _scatter_labels = {"Mode_norm": "Modo"}
+                    _use_cont = False
+                elif "DLS" in df_run.columns and _dls_cov >= 0.35:
+                    _scatter_color = "DLS"
+                    _scatter_labels = {"DLS": "DLS (°/30m)"}
+                    _use_cont = True
+                else:
+                    _scatter_color = None
+                    _scatter_labels = {}
+                    _use_cont = False
+
+                _drill_spot_mode_colors = {"ROTARY": "#22C55E", "SLIDE": "#EAB308"}
+
+                def _rop_scatter(x_col: str, x_lab: str, title_suf: str):
+                    _lab = {"ROP": "ROP (m/hr)", x_col: x_lab, **_scatter_labels}
+                    _kw = dict(
+                        x=x_col,
+                        y="ROP",
+                        hover_data=_scatter_hover,
+                        labels=_lab,
+                        title=f"{run.name} – {title_suf}",
+                    )
+                    if _scatter_color:
+                        _kw["color"] = _scatter_color
+                    if _use_cont:
+                        _kw["color_continuous_scale"] = "Turbo"
+                    elif _scatter_color == "Mode_norm":
+                        _kw["color_discrete_map"] = _drill_spot_mode_colors
+                    return px.scatter(df_run, **_kw)
+
+                fig_rop_wob = _rop_scatter("WOB", "WOB (kgf)", "ROP vs WOB")
+                fig_rop_rpm = _rop_scatter("RPM", "RPM", "ROP vs RPM")
+                for _fig_rs in (fig_rop_wob, fig_rop_rpm):
+                    _fig_rs.update_traces(
+                        marker=dict(
+                            size=12,
+                            opacity=0.9,
+                            line=dict(width=2.0, color="rgba(15,23,42,0.9)"),
+                        ),
+                        selector=dict(mode="markers"),
+                    )
+
+                def _finalize_rop_relationship_figure(fig):
+                    prettify_auto(fig, h=440)
+                    apply_chart_frame_axes(fig)
+                    fig.update_layout(
+                        margin=dict(l=58, r=28, t=96, b=58),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1,
+                            bgcolor="rgba(15,23,42,0.55)",
+                            bordercolor="rgba(148,163,184,0.45)",
+                            borderwidth=1,
+                            font=dict(size=11, color="#E2E8F0"),
+                        ),
+                    )
+                    return fig
+
+                _finalize_rop_relationship_figure(fig_rop_wob)
+                _finalize_rop_relationship_figure(fig_rop_rpm)
 
                 if show_plots:
                     with c1:
                         st.plotly_chart(
-                            prettify(fig_rop_wob),
+                            fig_rop_wob,
                             use_container_width=True,
                             config=PLOTLY_CONFIG,
                         )
-                        chart_notes(
-                            f"Correlación ROP vs WOB: {safe_corr(df_run, 'ROP', 'WOB')}. n = {len(df_run):,} intervalos.",
-                            "X=WOB (kgf), Y=ROP (m/hr). Línea de tendencia OLS.",
+                        st.caption("**Resumen**")
+                        _render_chips_row(
+                            [
+                                (
+                                    f"r ROP–WOB: {safe_corr(df_run, 'ROP', 'WOB')}",
+                                    "green",
+                                ),
+                                (f"n={len(df_run):,}", "gray"),
+                            ]
+                        )
+                        st.caption("**Leyenda**")
+                        _render_chips_row(
+                            [
+                                ("X = WOB (kgf)", "gray"),
+                                ("Y = ROP (m/hr)", "gray"),
+                                (
+                                    (
+                                        "Color=DLS (°/30m)"
+                                        if _use_cont
+                                        else (
+                                            "Color=modo (verde/amarillo)"
+                                            if _scatter_color == "Mode_norm"
+                                            else "Sin color por modo"
+                                        )
+                                    ),
+                                    "blue",
+                                ),
+                            ]
                         )
                     with c2:
                         st.plotly_chart(
-                            prettify(fig_rop_rpm),
+                            fig_rop_rpm,
                             use_container_width=True,
                             config=PLOTLY_CONFIG,
                         )
-                        chart_notes(
-                            f"Correlación ROP vs RPM: {safe_corr(df_run, 'ROP', 'RPM')}. n = {len(df_run):,} intervalos.",
-                            "X=RPM, Y=ROP (m/hr). Línea de tendencia OLS.",
+                        st.caption("**Resumen**")
+                        _render_chips_row(
+                            [
+                                (
+                                    f"r ROP–RPM: {safe_corr(df_run, 'ROP', 'RPM')}",
+                                    "green",
+                                ),
+                                (f"n={len(df_run):,}", "gray"),
+                            ]
+                        )
+                        st.caption("**Leyenda**")
+                        _render_chips_row(
+                            [
+                                ("X = RPM", "gray"),
+                                ("Y = ROP (m/hr)", "gray"),
+                                (
+                                    (
+                                        "Color=DLS (°/30m)"
+                                        if _use_cont
+                                        else (
+                                            "Color=modo (verde/amarillo)"
+                                            if _scatter_color == "Mode_norm"
+                                            else "Sin color por modo"
+                                        )
+                                    ),
+                                    "blue",
+                                ),
+                            ]
                         )
 
-                save_and_show_plotly(prs, f"{run.name} – ROP vs WOB", fig_rop_wob, False)
-                save_and_show_plotly(prs, f"{run.name} – ROP vs RPM", fig_rop_rpm, False)
+                save_and_show_plotly(
+                    prs,
+                    f"{run.name} – ROP vs WOB",
+                    fig_rop_wob,
+                    False,
+                    skip_theme=True,
+                    theme_height=440,
+                )
+                save_and_show_plotly(
+                    prs,
+                    f"{run.name} – ROP vs RPM",
+                    fig_rop_rpm,
+                    False,
+                    skip_theme=True,
+                    theme_height=440,
+                )
                 vspace(18)
 
                 # DLS vs MD
@@ -11057,13 +11859,13 @@ def render_kpi_module() -> None:
                         dls_series = df_run["DLS"].dropna()
                         chart_notes(
                             f"{series_summary(dls_series)}.",
-                            "X=MD (m), Y=DLS (°/30m), línea con marcadores.",
+                            "X=MD (m), Y=DLS (°/30m); curva suavizada, marcadores frío–cálido por magnitud.",
                         )
                     save_and_show_plotly(prs, f"{run.name} – DLS vs MD", fig_dls, False)
                 vspace(18)
 
-                # Boxplots por modo
-                st.subheader(f"{run.name} – Boxplots por modo")
+                # Curvas por modo (vs MD)
+                st.subheader(f"{run.name} – Métricas por modo (curvas vs MD)")
                 vspace(6)
                 box_metrics = [
                     ("ROP", "ROP"),
@@ -11073,15 +11875,15 @@ def render_kpi_module() -> None:
                 ]
                 c1, c2 = st.columns(2, gap="large", vertical_alignment="top")
                 for idx, (col, label) in enumerate(box_metrics):
-                    fig_box = build_boxplot_by_mode(
+                    fig_mode_curves = build_metric_curves_by_mode(
                         df_run, col, f"{run.name} – {label} por modo"
                     )
-                    if fig_box is None:
+                    if fig_mode_curves is None:
                         continue
                     if show_plots:
                         with (c1 if idx % 2 == 0 else c2):
                             st.plotly_chart(
-                                prettify(fig_box),
+                                prettify(fig_mode_curves),
                                 use_container_width=True,
                                 config=PLOTLY_CONFIG,
                             )
@@ -11096,9 +11898,9 @@ def render_kpi_module() -> None:
                             ]
                             chart_notes(
                                 ", ".join(summary_parts) + ".",
-                                "Caja=IQR, línea=mediana, puntos=outliers.",
+                                "Relleno degradado bajo cada curva; línea discontinua = tendencia lineal vs MD; marcadores frío→cálido por magnitud.",
                             )
-                    save_and_show_plotly(prs, f"{run.name} – {label} por modo", fig_box, False)
+                    save_and_show_plotly(prs, f"{run.name} – {label} por modo", fig_mode_curves, False)
                 vspace(18)
 
                 # Control charts
@@ -11110,26 +11912,38 @@ def render_kpi_module() -> None:
                     fig_ctrl = build_control_chart(df_run, col, run.name)
                     if fig_ctrl is None:
                         continue
+                    fig_ctrl_cc = prettify_auto(fig_ctrl, h=440)
+                    fig_ctrl_cc.update_layout(
+                        margin=dict(l=58, r=100, t=52, b=105),
+                    )
+                    if is_streamlit_dark_mode():
+                        fig_ctrl_cc.update_annotations(font=dict(size=12, color="#CBD5E1"))
                     if show_plots:
                         with (c1 if idx % 2 == 0 else c2):
                             st.plotly_chart(
-                                prettify(fig_ctrl),
+                                fig_ctrl_cc,
                                 use_container_width=True,
                                 config=PLOTLY_CONFIG,
                             )
-                            series = df_run[col].dropna()
-                            mean_val = series.mean()
-                            std_val = series.std()
-                            upper = mean_val + 3 * std_val
-                            lower = mean_val - 3 * std_val
-                            outliers = ((series > upper) | (series < lower)).sum()
+                            series = pd.to_numeric(df_run[col], errors="coerce").dropna()
+                            mean_val = float(series.mean()) if len(series) else 0.0
+                            std_val = float(series.std(ddof=0)) if len(series) > 1 else 0.0
+                            upper = mean_val + 3.0 * std_val
+                            lower = mean_val - 3.0 * std_val
+                            outliers = int(((series > upper) | (series < lower)).sum())
                             chart_notes(
                                 f"Media {format_num(mean_val)}, "
                                 f"±3σ [{format_num(lower)}, {format_num(upper)}], "
                                 f"outliers {outliers}.",
-                                "Línea central=media, líneas punteadas=límites.",
+                                "Relleno frío→cálido por magnitud; discontinua blanca=tendencia lineal vs MD; verde=media, rojo=±3σ; naranja=fuera de límites.",
                             )
-                    save_and_show_plotly(prs, f"{run.name} – Control chart {col}", fig_ctrl, False)
+                    save_and_show_plotly(
+                        prs,
+                        f"{run.name} – Control chart {col}",
+                        fig_ctrl_cc,
+                        show_plots=False,
+                        skip_theme=True,
+                    )
                 vspace(18)
 
                 # Crossplot DLS vs ROP
@@ -11152,42 +11966,6 @@ def render_kpi_module() -> None:
                     save_and_show_plotly(prs, f"{run.name} – DLS vs ROP", fig_cross, False)
                 vspace(18)
 
-                # Scatter matrix
-                st.subheader(f"{run.name} – Scatter matrix")
-                vspace(6)
-                fig_matrix = build_scatter_matrix(df_run, run.name)
-                if fig_matrix is None:
-                    st.info("No hay datos suficientes para scatter matrix.")
-                else:
-                    if show_plots:
-                        st.plotly_chart(
-                            prettify(fig_matrix, h=520),
-                            use_container_width=True,
-                            config=PLOTLY_CONFIG,
-                        )
-                        cols = ["ROP", "WOB", "RPM", "DLS"]
-                        cols = [c for c in cols if c in df_run.columns]
-                        corr_df = df_run[cols].corr()
-                        corr_abs = _corr_abs_zero_diagonal(corr_df)
-                        if (corr_abs.values == 0).all():
-                            summary = "Sin correlaciones fuertes visibles."
-                        else:
-                            max_idx = np.unravel_index(
-                                np.argmax(corr_abs.values), corr_abs.shape
-                            )
-                            var_a = corr_abs.index[max_idx[0]]
-                            var_b = corr_abs.columns[max_idx[1]]
-                            summary = (
-                                f"Mayor relación entre {var_a} y {var_b}: "
-                                f"{format_num(corr_df.loc[var_a, var_b])}."
-                            )
-                        chart_notes(
-                            summary,
-                            "Matriz de dispersión entre variables clave.",
-                        )
-                    save_and_show_plotly(prs, f"{run.name} – Scatter Matrix", fig_matrix, False)
-                vspace(18)
-
                 # Metros acumulados vs tiempo
                 st.subheader(f"{run.name} – Metros acumulados vs tiempo")
                 vspace(6)
@@ -11195,9 +11973,15 @@ def render_kpi_module() -> None:
                 if fig_cum is None:
                     st.info("No hay datos suficientes para metros acumulados.")
                 else:
+                    fig_cum = prettify_auto(fig_cum, h=440)
+                    fig_cum.update_layout(
+                        margin=dict(l=58, r=100, t=52, b=88),
+                    )
+                    if is_streamlit_dark_mode():
+                        fig_cum.update_annotations(font=dict(size=12, color="#CBD5E1"))
                     if show_plots:
                         st.plotly_chart(
-                            prettify(fig_cum),
+                            fig_cum,
                             use_container_width=True,
                             config=PLOTLY_CONFIG,
                         )
@@ -11208,9 +11992,15 @@ def render_kpi_module() -> None:
                         t1 = df_cum["End"].max()
                         chart_notes(
                             f"Total {format_num(total_m)} m entre {t0} y {t1}.",
-                            "Curva acumulada de metros perforados en el tiempo.",
+                            "Relleno frío→cálido por metros acumulados; discontinua=tendencia lineal en el tiempo.",
                         )
-                    save_and_show_plotly(prs, f"{run.name} – Metros acumulados", fig_cum, False)
+                    save_and_show_plotly(
+                        prs,
+                        f"{run.name} – Metros acumulados",
+                        fig_cum,
+                        False,
+                        skip_theme=True,
+                    )
                 vspace(18)
 
                 # Real vs Programado (si hay columnas)
@@ -11225,12 +12015,11 @@ def render_kpi_module() -> None:
                 vspace(6)
                 c1, c2 = st.columns(2, gap="large", vertical_alignment="top")
 
-                fig_wob_hist = px.histogram(
-                    df_run,
-                    x="WOB",
-                    nbins=20,
+                fig_wob_hist = build_hist_with_trend(
+                    df_run["WOB"],
                     title=f"{run.name} – WOB Distribution",
-                    labels={"WOB": "WOB (kgf)"},
+                    x_label="WOB (kgf)",
+                    nbins=20,
                 )
                 fig_rpm_hist = build_hist_with_trend(
                     df_run["RPM"],
@@ -11248,7 +12037,7 @@ def render_kpi_module() -> None:
                         )
                         chart_notes(
                             f"{series_summary(df_run['WOB'].dropna())}.",
-                            "Histograma de WOB (kgf).",
+                            "Curva suavizada del histograma; color = magnitud WOB (azul bajo → rojo alto).",
                         )
                     with c2:
                         st.plotly_chart(
@@ -11258,7 +12047,7 @@ def render_kpi_module() -> None:
                         )
                         chart_notes(
                             f"{series_summary(df_run['RPM'].dropna())}.",
-                            "Histograma de RPM.",
+                            "Curva suavizada del histograma; color = magnitud RPM (azul bajo → rojo alto).",
                         )
 
                 save_and_show_plotly(
@@ -11284,25 +12073,18 @@ def render_kpi_module() -> None:
                     }
                 )
 
-                fig_wob_trend = px.line(
+                fig_wob_trend = build_depth_trend_cold_warm_figure(
                     df_trend,
-                    x="Depth",
-                    y="WOB_roll",
+                    "WOB_roll",
                     title=f"{run.name} – WOB Trend (rolling)",
-                    labels={"Depth": "Depth (m)", "WOB_roll": "WOB (kgf)"},
-                    color_discrete_sequence=["#2563EB"],
-                ).update_layout(xaxis_autorange="reversed")
-                apply_line_area_fill(fig_wob_trend, line_color="#2563EB", fill_alpha=0.28)
-
-                fig_rpm_trend = px.line(
+                    y_axis_title="WOB (kgf)",
+                )
+                fig_rpm_trend = build_depth_trend_cold_warm_figure(
                     df_trend,
-                    x="Depth",
-                    y="RPM_roll",
+                    "RPM_roll",
                     title=f"{run.name} – RPM Trend (rolling)",
-                    labels={"Depth": "Depth (m)", "RPM_roll": "RPM"},
-                    color_discrete_sequence=["#0891B2"],
-                ).update_layout(xaxis_autorange="reversed")
-                apply_line_area_fill(fig_rpm_trend, line_color="#0891B2", fill_alpha=0.28)
+                    y_axis_title="RPM",
+                )
 
                 if show_plots:
                     c1, c2 = st.columns(2, gap="large", vertical_alignment="top")
@@ -11315,7 +12097,7 @@ def render_kpi_module() -> None:
                         wob_delta = df_trend["WOB_roll"].iloc[-1] - df_trend["WOB_roll"].iloc[0]
                         chart_notes(
                             f"Cambio neto WOB: {format_num(wob_delta)}.",
-                            "Línea = WOB promedio móvil vs profundidad; área = relleno bajo la curva.",
+                            "Promedio móvil vs profundidad; relleno y marcadores: frío=bajo, cálido=alto.",
                         )
                     with c2:
                         st.plotly_chart(
@@ -11326,7 +12108,7 @@ def render_kpi_module() -> None:
                         rpm_delta = df_trend["RPM_roll"].iloc[-1] - df_trend["RPM_roll"].iloc[0]
                         chart_notes(
                             f"Cambio neto RPM: {format_num(rpm_delta)}.",
-                            "Línea = RPM promedio móvil vs profundidad; área = relleno bajo la curva.",
+                            "Promedio móvil vs profundidad; relleno y marcadores: frío=bajo, cálido=alto.",
                         )
 
                 save_and_show_plotly(prs, f"{run.name} – WOB Trend", fig_wob_trend, False)
@@ -11430,20 +12212,43 @@ def render_kpi_module() -> None:
                     color="Mode",
                     barmode="group",
                     title="Average ROP by Run – Rotary vs Slide",
-                    text="ROP (m/hr)",
-                    color_discrete_map={
-                        "Avg ROP Rotary": "#2563EB",
-                        "Avg ROP Slide": "#F59E0B",
-                    },
                 )
-                fig_rop_sum.update_traces(textposition="outside", marker_line_width=0)
+                _rop_rot_fill = _hex_to_rgba("#22C55E", 0.78)
+                _rop_sli_fill = _hex_to_rgba("#EAB308", 0.82)
+                _rop_rot_line = "#4ADE80"
+                _rop_sli_line = "#FEF08A"
+                for _tr in fig_rop_sum.data:
+                    _nm = getattr(_tr, "name", "") or ""
+                    if "Rotary" in _nm:
+                        _tr.marker.color = _rop_rot_fill
+                        _tr.marker.line = dict(width=2.2, color=_rop_rot_line)
+                    elif "Slide" in _nm:
+                        _tr.marker.color = _rop_sli_fill
+                        _tr.marker.line = dict(width=2.2, color=_rop_sli_line)
+                fig_rop_sum.update_traces(
+                    texttemplate="%{y:.2f}",
+                    textposition="outside",
+                    textfont=dict(size=12, color="#E2E8F0"),
+                )
+                fig_rop_sum.update_layout(
+                    showlegend=True,
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1,
+                        font=dict(size=11, color="#CBD5E1"),
+                    ),
+                )
+                apply_chart_frame_axes(fig_rop_sum)
                 save_and_show_plotly(
                     prs, "Average ROP by Run – Rotary vs Slide", fig_rop_sum, show_plots
                 )
                 if show_plots:
                     chart_notes(
                         "ROP promedio comparado entre Rotary y Slide por corrida.",
-                        "Barras agrupadas por modo de perforación.",
+                        "Rotary=verde, Slide=amarillo (relleno semitransparente, bordes vivos); etiquetas con 2 decimales; leyenda por modo.",
                     )
                 vspace(10)
 
@@ -11452,11 +12257,11 @@ def render_kpi_module() -> None:
                 vspace(6)
                 c1, c2 = st.columns(2, gap="large", vertical_alignment="top")
 
-                fig_wob_global = px.histogram(
-                    x=all_wob,
-                    nbins=25,
+                fig_wob_global = build_hist_with_trend(
+                    all_wob,
                     title="Global WOB Distribution",
-                    labels={"x": "WOB (kgf)"},
+                    x_label="WOB (kgf)",
+                    nbins=25,
                 )
                 fig_rpm_global = build_hist_with_trend(
                     all_rpm,
@@ -11474,7 +12279,7 @@ def render_kpi_module() -> None:
                         )
                         chart_notes(
                             f"{series_summary(pd.Series(all_wob))}.",
-                            "Histograma global de WOB.",
+                            "Curva suavizada global; color = magnitud WOB (azul bajo → rojo alto).",
                         )
                     with c2:
                         st.plotly_chart(
@@ -11484,7 +12289,7 @@ def render_kpi_module() -> None:
                         )
                         chart_notes(
                             f"{series_summary(pd.Series(all_rpm))}.",
-                            "Histograma global de RPM.",
+                            "Curva suavizada global; color = magnitud RPM (azul bajo → rojo alto).",
                         )
 
                 save_and_show_plotly(prs, "Global WOB Distribution", fig_wob_global, False, True)
