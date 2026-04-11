@@ -551,6 +551,57 @@ MODE_NORMALIZATION = {
 }
 
 
+def mode_to_rotary_slide_label(val) -> str | None:
+    """
+    Normaliza modo de perforación a ROTARY o SLIDE.
+
+    Cubre: códigos numéricos (p. ej. Rig Activity 21/22/23 tras `astype(str)`),
+    claves de MODE_NORMALIZATION, etiquetas del mapa de actividad y heurística por texto.
+    """
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    parsed_int: int | None
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        try:
+            parsed_int = int(float(val))
+        except (TypeError, ValueError):
+            parsed_int = None
+    else:
+        s_try = str(val).strip()
+        if not s_try or s_try.upper() in ("NAN", "NONE", "<NA>"):
+            return None
+        try:
+            parsed_int = int(float(s_try))
+        except ValueError:
+            parsed_int = None
+    if parsed_int is not None:
+        if parsed_int == 21:
+            return "ROTARY"
+        if parsed_int in (22, 23):
+            return "SLIDE"
+    s_up = str(val).strip().upper()
+    if not s_up:
+        return None
+    if s_up in MODE_NORMALIZATION:
+        return MODE_NORMALIZATION[s_up]
+    for code, label in RIG_ACTIVITY_CODE_MAP.items():
+        if label.upper() == s_up:
+            if code == 21:
+                return "ROTARY"
+            if code in (22, 23):
+                return "SLIDE"
+            return None
+    for tok in ("SLIDE", "SLIDING", "OSCILL", "OSCIL", "STEER", "ORIENT"):
+        if tok in s_up:
+            return "SLIDE"
+    for tok in ("ROTARY", "ROTATE", "RSS"):
+        if tok in s_up:
+            return "ROTARY"
+    if "DRILL" in s_up:
+        return "ROTARY"
+    return None
+
+
 def _load_dotenv_files() -> None:
     """
     Carga variables desde archivos .env.
@@ -2268,7 +2319,7 @@ def apply_pro_theme(fig, h: int = 420):
 
 
 def apply_pro_theme_dark(fig, h: int = 420):
-    """Tema oscuro consistente con Streamlit dark mode (fondo transparente + texto claro)."""
+    """Tema oscuro: fondo totalmente transparente para fundirse con el canvas de Streamlit."""
     fig.update_layout(
         template="plotly_dark",
         height=h,
@@ -2280,7 +2331,7 @@ def apply_pro_theme_dark(fig, h: int = 420):
         uniformtext_minsize=10,
         uniformtext_mode="hide",
         paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(17,24,39,0.92)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
     fig.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False)
     fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False)
@@ -2321,6 +2372,228 @@ def prettify_hist(fig, h: int = 420):
     return fig
 
 
+def apply_line_area_fill(
+    fig,
+    line_color: str | None = None,
+    fill_alpha: float = 0.22,
+    line_width: float = 2.0,
+    skip_dashed: bool = False,
+) -> go.Figure:
+    """
+    Relleno semitransparente bajo curvas (fill to y=0). Para px.line con una o varias series.
+    """
+    import plotly.colors as plc
+    from plotly.colors import hex_to_rgb
+
+    def _rgba(color, alpha: float) -> str:
+        if not color or not str(color).startswith("#"):
+            return f"rgba(37,99,235,{alpha})"
+        try:
+            t = hex_to_rgb(color)
+            return f"rgba({int(t[0])},{int(t[1])},{int(t[2])},{alpha})"
+        except Exception:
+            return f"rgba(37,99,235,{alpha})"
+
+    palette = list(plc.qualitative.Plotly)
+    for i, tr in enumerate(fig.data):
+        if getattr(tr, "type", None) != "scatter":
+            continue
+        mode = (tr.mode or "lines") or "lines"
+        if "lines" not in mode:
+            continue
+        if skip_dashed and tr.line is not None:
+            dash = getattr(tr.line, "dash", None)
+            if dash is not None and str(dash).lower() not in ("solid", "none", ""):
+                continue
+        lc = None
+        if tr.line is not None:
+            lc = getattr(tr.line, "color", None)
+        if lc in (None, ""):
+            lc = line_color if line_color else palette[i % len(palette)]
+        fc = _rgba(lc, fill_alpha)
+        try:
+            fig.data[i].update(
+                fill="tozeroy",
+                fillcolor=fc,
+                line=dict(width=line_width, color=lc),
+            )
+        except Exception:
+            pass
+    return fig
+
+
+def build_rotary_slide_figure(
+    run_name: str,
+    total_rotary: float,
+    total_slide: float,
+    total_distance: float,
+    rotary_pct: float,
+    slide_pct: float,
+):
+    """
+    Barras horizontales planas + donut; fondo transparente (tema oscuro Streamlit).
+    Colores alineados con KPI (azul Rotary, ámbar Slide).
+    """
+    from plotly.subplots import make_subplots
+
+    # Paleta alineada con KPI / gauge (azul Rotary, ámbar Slide, slate otros)
+    c_rot = "#2563EB"
+    c_sli = "#F59E0B"
+    c_oth = "#64748B"
+    c_txt_bar = "#E2E8F0"
+    c_tick = "#94A3B8"
+
+    tr = float(total_rotary or 0.0)
+    ts = float(total_slide or 0.0)
+    td = float(total_distance or 0.0)
+    other_m = max(0.0, td - tr - ts)
+    total_m = tr + ts
+    x_max = max(td * 1.06, tr + ts + other_m, 1.0) if td > 0 else max(tr + ts, 1.0) * 1.06
+
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        column_widths=[0.62, 0.38],
+        horizontal_spacing=0.08,
+        specs=[[{"type": "bar"}, {"type": "domain"}]],
+        subplot_titles=(
+            "Metros por modo",
+            "Distribución del total perforado",
+        ),
+    )
+    # Barras planas (sin esquinas redondeadas): línea 0, colores sólidos
+    txt_r = f"{tr:.1f} m  ({rotary_pct:.1f}%)" if td > 0 else f"{tr:.1f} m"
+    txt_s = f"{ts:.1f} m  ({slide_pct:.1f}%)" if td > 0 else f"{ts:.1f} m"
+    fig.add_trace(
+        go.Bar(
+            name="Metros",
+            orientation="h",
+            y=["Rotary", "Slide"],
+            x=[tr, ts],
+            marker=dict(
+                color=[c_rot, c_sli],
+                line=dict(width=0),
+            ),
+            text=[txt_r, txt_s],
+            textposition="outside",
+            textfont=dict(size=13, color=c_txt_bar, family="Segoe UI"),
+            cliponaxis=False,
+            hovertemplate="<b>%{y}</b><br>%{x:.2f} m<extra></extra>",
+            showlegend=False,
+        ),
+        row=1,
+        col=1,
+    )
+    # Donut: mismos metros que la tabla (incl. «Otros» si aplica)
+    if td <= 0:
+        pie_vals, pie_labels, pie_colors, pie_pull = [1.0], ["Sin datos"], ["#94a3b8"], [0.0]
+    elif other_m <= 1e-6:
+        pie_vals = [tr, ts]
+        pie_labels = ["Rotary", "Slide"]
+        pie_colors = [c_rot, c_sli]
+        pull_slide = 0.06 if (ts > 0 and ts < 0.08 * max(total_m, 1e-9)) else 0.0
+        pie_pull = [0.0, pull_slide]
+        if pie_vals[0] == 0 and pie_vals[1] == 0:
+            pie_vals = [1.0, 0.0]
+    else:
+        pie_vals = [tr, ts, other_m]
+        pie_labels = ["Rotary", "Slide", "Otros modos"]
+        pie_colors = [c_rot, c_sli, c_oth]
+        pull_slide = 0.06 if (ts > 0 and ts < 0.08 * max(td, 1e-9)) else 0.0
+        pie_pull = [0.0, pull_slide, 0.0]
+
+    fig.add_trace(
+        go.Pie(
+            labels=pie_labels,
+            values=pie_vals,
+            hole=0.64,
+            rotation=90,
+            marker=dict(
+                colors=pie_colors,
+                line=dict(color="rgba(226,232,240,0.35)", width=1.0),
+            ),
+            texttemplate="<b>%{percent:.1%}</b><br><span style='font-size:11px'>%{label}</span>",
+            textposition="outside",
+            textfont=dict(size=11, family="Segoe UI"),
+            hovertemplate="<b>%{label}</b><br>%{value:.2f} m<br>%{percent}<extra></extra>",
+            sort=False,
+            showlegend=False,
+            pull=pie_pull,
+        ),
+        row=1,
+        col=2,
+    )
+    sub = (
+        f"Total perforado (tabla): <b>{td:.1f} m</b> · Rotary+Slide: <b>{total_m:.1f} m</b>"
+        if td > 0
+        else f"Rotary+Slide: <b>{total_m:.1f} m</b>"
+    )
+    fig.update_layout(
+        barmode="overlay",
+        bargap=0.42,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        title=dict(
+            text=f"{run_name} · Rotary vs Slide",
+            x=0.02,
+            xanchor="left",
+            font=dict(size=16, family="Segoe UI"),
+            subtitle=dict(text=sub, font=dict(size=12)),
+        ),
+        showlegend=False,
+        margin=dict(l=96, r=28, t=100, b=56),
+        height=420,
+    )
+    fig.update_xaxes(
+        title=dict(text="Metros (m)", font=dict(size=12)),
+        range=[0, x_max],
+        showgrid=True,
+        gridcolor="rgba(148,163,184,0.28)",
+        zeroline=False,
+        row=1,
+        col=1,
+    )
+    fig.update_yaxes(
+        type="category",
+        autorange="reversed",
+        showline=False,
+        zeroline=False,
+        tickfont=dict(size=14, color=c_tick, family="Segoe UI"),
+        row=1,
+        col=1,
+    )
+    fig.update_annotations(font=dict(size=12, family="Segoe UI"))
+    return fig
+
+
+_PLOTLY_PNG_FALLBACK_MSG = (
+    "No se pudo exportar esta gráfica a PNG en este entorno (Plotly Kaleido / Chromium no disponible, "
+    "típico en Streamlit Cloud). La figura sigue visible en la aplicación web."
+)
+
+
+def plotly_figure_to_png_bytes(fig, scale: int = 2) -> bytes | None:
+    """Convierte una figura Plotly a PNG. Retorna None si Kaleido no puede renderizar (sin Chrome en el servidor)."""
+    try:
+        return fig.to_image(format="png", scale=scale)
+    except (RuntimeError, OSError, ValueError):
+        return None
+    except Exception:
+        return None
+
+
+def add_plotly_figure_slide(prs: Presentation, title: str, fig) -> bool:
+    """Añade diapositiva con imagen generada por Plotly, o diapositiva de texto si la exportación falla."""
+    data = plotly_figure_to_png_bytes(fig)
+    if data is not None:
+        buf = io.BytesIO(data)
+        buf.seek(0)
+        add_image_slide(prs, title, buf)
+        return True
+    add_text_slide(prs, title, _PLOTLY_PNG_FALLBACK_MSG)
+    return False
+
+
 def save_and_show_plotly(
     prs: Presentation,
     title: str,
@@ -2328,15 +2601,23 @@ def save_and_show_plotly(
     show_plots: bool = True,
     is_hist: bool = False,
     is_heatmap: bool = False,
+    use_auto_theme: bool = False,
+    theme_height: int = 420,
 ) -> None:
     if is_heatmap:
         fig = prettify_heatmap(fig)
+    elif use_auto_theme:
+        fig = prettify_auto(fig, h=theme_height)
     else:
         fig = prettify_hist(fig) if is_hist else prettify(fig)
-    png_bytes = fig.to_image(format="png", scale=2)
-    buf = io.BytesIO(png_bytes)
-    buf.seek(0)
-    add_image_slide(prs, title, buf)
+    ok_png = add_plotly_figure_slide(prs, title, fig)
+    if not ok_png and show_plots:
+        if not st.session_state.get("_kaleido_pptx_warn_shown"):
+            st.session_state["_kaleido_pptx_warn_shown"] = True
+            st.info(
+                "El PPTX no puede incrustar imágenes de gráficas en este servidor (falta el motor de exportación "
+                "Plotly/Kaleido). Se añadieron diapositivas de texto en su lugar; las gráficas se muestran abajo."
+            )
 
     if show_plots:
         st.plotly_chart(
@@ -3642,6 +3923,7 @@ def build_dls_vs_md_figure(df_run: pd.DataFrame, run_name: str):
         labels={"Survey MD": "Measured Depth (m)", "DLS": "DLS (°/30m)"},
     )
     fig.update_traces(mode="lines+markers", marker=dict(size=4, opacity=0.75))
+    apply_line_area_fill(fig, line_color="#6366F1", fill_alpha=0.2)
     return fig
 
 
@@ -3779,7 +4061,9 @@ def build_cumulative_meters(df_run: pd.DataFrame, run_name: str):
         y="Meters_cum",
         title=f"{run_name} – Metros acumulados vs tiempo",
         labels={"End": "Time", "Meters_cum": "Meters"},
+        color_discrete_sequence=["#059669"],
     )
+    apply_line_area_fill(fig, line_color="#059669", fill_alpha=0.22)
     return fig
 
 
@@ -3843,6 +4127,7 @@ def build_mse_vs_depth(df_plot: pd.DataFrame, run_name: str, x_col: str, x_label
         color_discrete_sequence=["#0ea5e9"],
     ).update_layout(xaxis_autorange="reversed")
     fig.update_traces(mode="lines", line=dict(width=2.2))
+    apply_line_area_fill(fig, line_color="#0ea5e9", fill_alpha=0.24)
     return fig
 
 
@@ -5943,13 +6228,11 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
 
     # Proximity figure
     fig1 = build_proximity_figure(df, wob_col, rpm_col, analysis, torque_col)
-    buf1 = io.BytesIO(fig1.to_image(format="png", scale=2))
-    add_image_slide(prs, "BHA Proximity to Resonance", buf1)
+    add_plotly_figure_slide(prs, "BHA Proximity to Resonance", fig1)
 
     # Frequency figure
     fig2 = build_frequency_figure(df, wob_col, rpm_col, analysis, torque_col)
-    buf2 = io.BytesIO(fig2.to_image(format="png", scale=2))
-    add_image_slide(prs, "BHA Rotational Frequency Mapping", buf2)
+    add_plotly_figure_slide(prs, "BHA Rotational Frequency Mapping", fig2)
 
     # WOB–RPM binned heatmap (squared bins); color by ROP if available, else MSE, else Shocks & Vibs
     n_bins_pptx = 30
@@ -5977,8 +6260,7 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
                 title=f"WOB–RPM Heatmap (squared bins) · {shocks_col_pptx}",
             )
     if fig_hm_pptx is not None:
-        buf_hm = io.BytesIO(fig_hm_pptx.to_image(format="png", scale=2))
-        add_image_slide(prs, "WOB–RPM Heatmap (squared bins)", buf_hm)
+        add_plotly_figure_slide(prs, "WOB–RPM Heatmap (squared bins)", fig_hm_pptx)
 
     # Heatmap (porcentual)
     corr_cols = [wob_col, rpm_col, torque_col, "Freq_Hz", "Proximity_norm"]
@@ -6002,16 +6284,14 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
     )
     fig_corr.update_layout(coloraxis_colorbar_title="Corr (-1 a 1)")
     fig_corr = prettify_heatmap(fig_corr)
-    buf3 = io.BytesIO(fig_corr.to_image(format="png", scale=2))
-    add_image_slide(prs, "Engineering Correlation Heatmap", buf3)
+    add_plotly_figure_slide(prs, "Engineering Correlation Heatmap", fig_corr)
     _stats_pptx = heatmap_numeric_stats(df, corr_cols)
     _sp_pptx = build_minmax_mean_spine_figure(
         _stats_pptx,
         title="Parámetros – rango min–media–max (normalizado)",
     )
     if _sp_pptx is not None:
-        buf_spine = io.BytesIO(_sp_pptx.to_image(format="png", scale=2))
-        add_image_slide(prs, "Contexto heatmap – min / media / max por parámetro", buf_spine)
+        add_plotly_figure_slide(prs, "Contexto heatmap – min / media / max por parámetro", _sp_pptx)
 
     # Safe windows bar
     if analysis["report"] is not None:
@@ -6024,8 +6304,7 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
         )
         fig_windows.update_traces(marker_line_width=0)
         fig_windows = prettify(fig_windows)
-        buf4 = io.BytesIO(fig_windows.to_image(format="png", scale=2))
-        add_image_slide(prs, "Safe Window Widths", buf4)
+        add_plotly_figure_slide(prs, "Safe Window Widths", fig_windows)
 
     # MSE slides (if columns available)
     if rop_col in df.columns and depth_col in df.columns:
@@ -6043,10 +6322,8 @@ def export_engineering_pptx(analysis, cols) -> tuple[str, Path]:
                 df_mse, "Ingeniería", "Depth_MSE", "Depth (m)"
             )
             fig_mse_hist = build_mse_hist(df_mse, "Ingeniería")
-            buf5 = io.BytesIO(fig_mse_depth.to_image(format="png", scale=2))
-            add_image_slide(prs, "MSE vs Profundidad", buf5)
-            buf6 = io.BytesIO(fig_mse_hist.to_image(format="png", scale=2))
-            add_image_slide(prs, "MSE Distribution", buf6)
+            add_plotly_figure_slide(prs, "MSE vs Profundidad", fig_mse_depth)
+            add_plotly_figure_slide(prs, "MSE Distribution", fig_mse_hist)
 
     tmp_dir = Path(tempfile.mkdtemp())
     pptx_path = tmp_dir / "Engineering_Insights_Report.pptx"
@@ -8760,6 +9037,8 @@ def add_real_vs_planned_section(
         if len(fig.data) >= 2:
             fig.data[1].line.dash = "dash"
 
+        apply_line_area_fill(fig, fill_alpha=0.16, skip_dashed=True)
+
         if show_plots:
             st.plotly_chart(
                 prettify(fig),
@@ -8769,7 +9048,7 @@ def add_real_vs_planned_section(
             mae = (df_plot[real_col] - df_plot[planned_col]).abs().mean()
             chart_notes(
                 f"MAE {metric}: {format_num(mae)}.",
-                "Línea sólida = real, línea discontinua = programado.",
+                "Línea sólida = real (con relleno), discontinua = programado.",
             )
 
         save_and_show_plotly(prs, f"{run_name} – {metric} Real vs Programado", fig, False)
@@ -8923,6 +9202,16 @@ def _combine_date_and_time_columns(date_series: pd.Series, time_series: pd.Serie
 
 
 def _classify_geopark_mode(activity, rpm_surface, rpm_total, meters) -> str:
+    # Prioridad: códigos Rig Activity 21/22/23 (evita que la heurística RPM reclasifique mal el slide)
+    try:
+        if activity is not None and str(activity).strip() != "":
+            a_num = int(float(str(activity).strip()))
+            if a_num == 21:
+                return "ROTARY"
+            if a_num in (22, 23):
+                return "SLIDE"
+    except (ValueError, TypeError):
+        pass
     act = str(activity or "").strip().lower()
     meters_v = pd.to_numeric(pd.Series([meters]), errors="coerce").iloc[0]
     rpm_s = pd.to_numeric(pd.Series([rpm_surface]), errors="coerce").iloc[0]
@@ -9224,12 +9513,103 @@ def parse_runs(runs_df: pd.DataFrame) -> List[RunInfo]:
     return parsed
 
 
+def _mode_norm_override_from_rig_activity(df: pd.DataFrame, mode_norm: pd.Series) -> pd.Series:
+    """
+    Si existe columna de actividad con códigos 21/22/23, sobrescribe ROTARY/SLIDE
+    (la columna Mode del Excel a veces no coincide con el estado real de deslizamiento).
+    """
+    out = mode_norm.copy()
+    for col in (
+        "Rig Activity",
+        "RIG_ACTIVITY",
+        "RigActivity",
+        "Activity",
+        "Actividad",
+        "ACTIVIDAD",
+    ):
+        if col not in df.columns:
+            continue
+        raw = df[col]
+        ac = pd.to_numeric(raw, errors="coerce")
+        if not ac.notna().any():
+            ac = pd.to_numeric(
+                raw.astype(str).str.strip().str.extract(r"^(\d+)", expand=False),
+                errors="coerce",
+            )
+        if not ac.notna().any():
+            continue
+        m21 = ac == 21
+        m22 = ac.isin([22, 23])
+        if m21.any():
+            out.loc[m21] = "ROTARY"
+        if m22.any():
+            out.loc[m22] = "SLIDE"
+        break
+    return out
+
+
+def _mode_norm_fill_from_activity_text(df: pd.DataFrame, mode_norm: pd.Series) -> pd.Series:
+    """Completa ROTARY/SLIDE desde texto de actividad cuando Mode no clasificó (p. ej. filas solo con texto)."""
+    out = mode_norm.copy()
+    for col in ("Activity", "Actividad", "ACTIVIDAD"):
+        if col not in df.columns:
+            continue
+        s = df[col].astype(str).str.lower()
+        has_slide = s.str.contains(
+            r"slide|desliz|oscil|steer|orient",
+            regex=True,
+            na=False,
+        )
+        has_rot = s.str.contains(
+            r"rotary|rotat|drilling|perfora",
+            regex=True,
+            na=False,
+        )
+        m_slide = has_slide & ~has_rot
+        m_rot = has_rot & ~has_slide
+        out.loc[m_slide & out.isna()] = "SLIDE"
+        out.loc[m_rot & out.isna()] = "ROTARY"
+        break
+    return out
+
+
+def _effective_distance_m(df: pd.DataFrame) -> pd.Series:
+    """
+    Metros del intervalo: usa Distance si es > 0; si falta o es 0, |End Depth − Start Depth|.
+    Muchos slide sheets traen Distance vacío pero sí profundidades.
+    """
+    d = pd.to_numeric(df["Distance"], errors="coerce")
+    sd = pd.to_numeric(df.get("Start Depth"), errors="coerce")
+    ed = pd.to_numeric(df.get("End Depth"), errors="coerce")
+    delta = (ed - sd).abs()
+    out = d.where(d.notna() & (d > 0), np.nan)
+    fill = out.isna() & delta.notna() & (delta > 0)
+    out = out.where(~fill, delta)
+    return out
+
+
 # =========================
 # Cálculos por corrida
 # =========================
 def compute_run_stats(df_run: pd.DataFrame, run: RunInfo):
-    df_run["Mode_norm"] = df_run["Mode"].replace(MODE_NORMALIZATION)
+    df_run = df_run.copy()
+    df_run["Mode_norm"] = df_run["Mode"].map(mode_to_rotary_slide_label)
+    df_run["Mode_norm"] = _mode_norm_override_from_rig_activity(df_run, df_run["Mode_norm"])
+    df_run["Mode_norm"] = _mode_norm_fill_from_activity_text(df_run, df_run["Mode_norm"])
     df_run["Depth_X"] = df_run["Survey MD"].fillna(df_run["End Depth"])
+
+    df_run["Distance_eff"] = _effective_distance_m(df_run)
+    # Metros Rotary/Slide: Distance_eff (Distance o ΔMD) aunque falten ROP/WOB/RPM.
+    df_dist = df_run[df_run["Distance_eff"].notna() & (df_run["Distance_eff"] > 0)].copy()
+    if df_dist.empty:
+        return None
+
+    total_rotary = df_dist.loc[df_dist["Mode_norm"] == "ROTARY", "Distance_eff"].sum()
+    total_slide = df_dist.loc[df_dist["Mode_norm"] == "SLIDE", "Distance_eff"].sum()
+    total_distance = df_dist["Distance_eff"].sum()
+    rotary_pct = (total_rotary / total_distance) * 100 if total_distance > 0 else 0
+    slide_pct = (total_slide / total_distance) * 100 if total_distance > 0 else 0
+
     df_run = df_run.dropna(subset=["Depth_X", "ROP", "WOB", "RPM"])
     if df_run.empty:
         return None
@@ -9253,19 +9633,12 @@ def compute_run_stats(df_run: pd.DataFrame, run: RunInfo):
         df_run["RPM"].mean(),
     )
 
-    total_rotary = df_run.loc[df_run["Mode_norm"] == "ROTARY", "Distance"].sum()
-    total_slide = df_run.loc[df_run["Mode_norm"] == "SLIDE", "Distance"].sum()
-    total_distance = df_run["Distance"].sum()
-
-    rotary_pct = (total_rotary / total_distance) * 100 if total_distance > 0 else 0
-    slide_pct = (total_slide / total_distance) * 100 if total_distance > 0 else 0
-
-    slide_data = df_run[df_run["Mode_norm"] == "SLIDE"]
-    slide_start, slide_end = slide_data["Start Depth"].min(), slide_data["End Depth"].max()
-    slide_intervals = slide_data.shape[0]
-    avg_dls_slide = slide_data["DLS"].mean()
-    max_slide_len = slide_data["Distance"].max()
-    max_rotary_len = df_run.loc[df_run["Mode_norm"] == "ROTARY", "Distance"].max()
+    slide_data_dist = df_dist[df_dist["Mode_norm"] == "SLIDE"]
+    slide_start, slide_end = slide_data_dist["Start Depth"].min(), slide_data_dist["End Depth"].max()
+    slide_intervals = slide_data_dist.shape[0]
+    avg_dls_slide = slide_data_dist["DLS"].mean()
+    max_slide_len = slide_data_dist["Distance_eff"].max()
+    max_rotary_len = df_dist.loc[df_dist["Mode_norm"] == "ROTARY", "Distance_eff"].max()
     avg_rop_rotary = df_run.loc[df_run["Mode_norm"] == "ROTARY", "ROP"].mean()
     avg_rop_slide = df_run.loc[df_run["Mode_norm"] == "SLIDE", "ROP"].mean()
 
@@ -10578,27 +10951,29 @@ def render_kpi_module() -> None:
                     )
                     vspace(12)
 
-                # Rotary vs Slide
-                fig_rot_slide = px.bar(
-                    x=["Rotary", "Slide"],
-                    y=[stats["drilling_table"][0][1], stats["drilling_table"][1][1]],
-                    text=[
-                        round(stats["drilling_table"][0][1], 1),
-                        round(stats["drilling_table"][1][1], 1),
-                    ],
-                    labels={"x": "Mode", "y": "Meters Drilled"},
-                    title=f"{run.name} – Rotary vs Slide",
-                    color=["Rotary", "Slide"],
-                    color_discrete_map={"Rotary": "#2563EB", "Slide": "#F59E0B"},
+                # Rotary vs Slide (barras horizontales planas + donut)
+                fig_rot_slide = build_rotary_slide_figure(
+                    run.name,
+                    stats["drilling_table"][0][1],
+                    stats["drilling_table"][1][1],
+                    stats["drilling_table"][2][1],
+                    stats["rotary_pct"],
+                    stats["slide_pct"],
                 )
-                fig_rot_slide.update_traces(textposition="outside", marker_line_width=0)
-                save_and_show_plotly(prs, f"{run.name} – Rotary vs Slide", fig_rot_slide, show_plots)
+                save_and_show_plotly(
+                    prs,
+                    f"{run.name} – Rotary vs Slide",
+                    fig_rot_slide,
+                    show_plots,
+                    use_auto_theme=True,
+                    theme_height=500,
+                )
                 chart_notes(
                     f"Rotary {format_num(stats['drilling_table'][0][1])} m "
                     f"({format_num(stats['rotary_pct'])}%) y Slide "
                     f"{format_num(stats['drilling_table'][1][1])} m "
                     f"({format_num(stats['slide_pct'])}%).",
-                    "Barras comparan metros perforados por modo.",
+                    "Barras horizontales por modo + donut (mismos m y % que Drilling Summary; «Otros» si hay modos fuera de R/S).",
                 )
                 vspace(14)
 
@@ -10915,7 +11290,9 @@ def render_kpi_module() -> None:
                     y="WOB_roll",
                     title=f"{run.name} – WOB Trend (rolling)",
                     labels={"Depth": "Depth (m)", "WOB_roll": "WOB (kgf)"},
+                    color_discrete_sequence=["#2563EB"],
                 ).update_layout(xaxis_autorange="reversed")
+                apply_line_area_fill(fig_wob_trend, line_color="#2563EB", fill_alpha=0.28)
 
                 fig_rpm_trend = px.line(
                     df_trend,
@@ -10923,7 +11300,9 @@ def render_kpi_module() -> None:
                     y="RPM_roll",
                     title=f"{run.name} – RPM Trend (rolling)",
                     labels={"Depth": "Depth (m)", "RPM_roll": "RPM"},
+                    color_discrete_sequence=["#0891B2"],
                 ).update_layout(xaxis_autorange="reversed")
+                apply_line_area_fill(fig_rpm_trend, line_color="#0891B2", fill_alpha=0.28)
 
                 if show_plots:
                     c1, c2 = st.columns(2, gap="large", vertical_alignment="top")
@@ -10936,7 +11315,7 @@ def render_kpi_module() -> None:
                         wob_delta = df_trend["WOB_roll"].iloc[-1] - df_trend["WOB_roll"].iloc[0]
                         chart_notes(
                             f"Cambio neto WOB: {format_num(wob_delta)}.",
-                            "Línea = WOB promedio móvil vs profundidad.",
+                            "Línea = WOB promedio móvil vs profundidad; área = relleno bajo la curva.",
                         )
                     with c2:
                         st.plotly_chart(
@@ -10947,7 +11326,7 @@ def render_kpi_module() -> None:
                         rpm_delta = df_trend["RPM_roll"].iloc[-1] - df_trend["RPM_roll"].iloc[0]
                         chart_notes(
                             f"Cambio neto RPM: {format_num(rpm_delta)}.",
-                            "Línea = RPM promedio móvil vs profundidad.",
+                            "Línea = RPM promedio móvil vs profundidad; área = relleno bajo la curva.",
                         )
 
                 save_and_show_plotly(prs, f"{run.name} – WOB Trend", fig_wob_trend, False)
@@ -11010,6 +11389,7 @@ def render_kpi_module() -> None:
                     title="WOB Summary per Run (Avg/Min/Max)",
                     labels={"value": "WOB (kgf)", "variable": "Metric"},
                 )
+                apply_line_area_fill(fig_wob_sum, fill_alpha=0.12)
                 save_and_show_plotly(
                     prs, "WOB Summary per Run (Avg/Min/Max)", fig_wob_sum, show_plots
                 )
@@ -11027,6 +11407,7 @@ def render_kpi_module() -> None:
                     title="RPM Summary per Run (Avg/Min/Max)",
                     labels={"value": "RPM", "variable": "Metric"},
                 )
+                apply_line_area_fill(fig_rpm_sum, fill_alpha=0.12)
                 save_and_show_plotly(
                     prs, "RPM Summary per Run (Avg/Min/Max)", fig_rpm_sum, show_plots
                 )
@@ -12688,6 +13069,7 @@ def render_mud_report() -> None:
                 if len(s):
                     fig1 = px.line(bitacora, x="Date", y=single_prop, title=f"Evolución – {single_prop}", markers=True)
                     fig1.update_traces(line=dict(width=2), marker=dict(size=10))
+                    apply_line_area_fill(fig1, line_color="#2563EB", fill_alpha=0.22)
                     fig1 = prettify(fig1, h=420)
                     st.plotly_chart(fig1, use_container_width=True, config=PLOTLY_CONFIG)
                     _render_chips_row([(single_prop, "blue"), (f"min {format_num(s.min())}", "gray"), (f"max {format_num(s.max())}", "gray"), (f"promedio {format_num(s.mean())}", "green")])
