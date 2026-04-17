@@ -2,6 +2,7 @@
 import html
 import textwrap
 from pathlib import Path
+from PIL import Image
 
 import numpy as np
 import pandas as pd
@@ -27,6 +28,28 @@ PANEL_BG = "rgba(15,23,42,0.72)"
 GRID = "rgba(148,163,184,0.14)"
 AXIS = "rgba(148,163,184,0.40)"
 TEXT = "#e2e8f0"
+ASSETS_DIR = Path(__file__).parent
+LOGO_CANDIDATES = [
+    ASSETS_DIR / "logo.png",
+    ASSETS_DIR / "ChatGPT Image 17 abr 2026, 09_48_05.png",
+]
+
+def get_logo_path() -> Path | None:
+    for p in LOGO_CANDIDATES:
+        if p.exists():
+            return p
+    return None
+
+def render_logo_banner():
+    logo_path = get_logo_path()
+    if logo_path is not None:
+        st.image(str(logo_path), use_container_width=True)
+
+def render_sidebar_logo():
+    logo_path = get_logo_path()
+    if logo_path is not None:
+        st.sidebar.image(str(logo_path), use_container_width=True)
+
 
 PYTHON_DL = "https://www.python.org/downloads/"
 PIP_GUIDE = "https://packaging.python.org/en/latest/tutorials/installing-packages/"
@@ -271,6 +294,7 @@ LESSONS = [
     "29. Deploy de la app paso a paso",
     "30. Proyecto final y checklist",
     "31. Ejercicio para Angela · Gatito Galileo (vibe coding)",
+    "32. Ejercicio para Carla · Balance y partida doble (vibe coding)",
 ]
 
 
@@ -351,6 +375,7 @@ def intro_page():
         unsafe_allow_html=True,
     )
     lesson_header("Inicio › Bienvenida › Mapa pro", 12)
+    render_logo_banner()
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -514,7 +539,9 @@ def computational_thinking_page():
 def python_basics_page():
     section_title("Python desde cero")
     lesson_header("Inicio › Python › Sintaxis, datos y funciones", 28)
-    tab1, tab2, tab3 = st.tabs(["Variables y tipos", "Flujo lógico", "Funciones y errores"])
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["Variables y tipos", "Flujo lógico", "Funciones y errores", "Front end y back end"]
+    )
 
     with tab1:
         code = """
@@ -568,6 +595,76 @@ def python_basics_page():
         unit = st.radio("Unidad objetivo", ["field", "metric"], horizontal=True, key="torque_unit")
         result = val * 1000.0 if unit == "field" else val * 1000.0 * 1.3558179483314
         st.metric("Resultado", f"{result:,.2f} {'lbf·ft' if unit == 'field' else 'N·m'}")
+
+    with tab4:
+        st.markdown(
+            """
+            En una **app web** suele separarse lo que ocurre **en el navegador del usuario** (cerca de la pantalla)
+            de lo que ocurre **en el servidor** (donde corre la lógica pesada, datos y APIs).
+
+            - **Front end (cliente):** lo que el usuario ve e interactúa: layout, botones, formularios, gráficos en el navegador.
+              Tecnologías típicas: HTML, CSS, JavaScript; en frameworks: React, Vue, etc.
+            - **Back end (servidor):** reglas de negocio, lectura/escritura en bases de datos, autenticación, APIs que devuelven datos.
+              Aquí encajan bien Python, bases de datos, colas, etc.
+
+            **Streamlit (este curso):** escribes Python en el servidor; Streamlit genera la interfaz y la envía al navegador.
+            Es un modelo muy práctico para prototipos: la “cara” la pinta el framework, pero la lógica sigue siendo Python en el servidor.
+            """
+        )
+        flow("Usuario (navegador)", "Interfaz / pantalla", "Servidor", "Lógica + datos", "Respuesta a la UI")
+
+        st.markdown("##### Clasifica: ¿dónde encaja mejor cada idea?")
+        fe_be_quiz = [
+            ("Renderizar HTML y aplicar estilos CSS visibles en el navegador", "Front end"),
+            ("Ejecutar una función Python que valida un CSV antes de graficar", "Back end"),
+            ("Una API REST que devuelve JSON con métricas del pozo", "Back end"),
+            ("Código JavaScript que reacciona al clic sin recargar la página", "Front end"),
+            ("Consultar y filtrar filas en una base de datos PostgreSQL", "Back end"),
+            ("En Streamlit: los `st.slider` y `st.plotly_chart` que ves en pantalla", "Front end (generado)"),
+        ]
+        picks: dict[str, str] = {}
+        for i, (prompt, expected) in enumerate(fe_be_quiz):
+            opts = ["Front end", "Back end", "Front end (generado)"]
+            picks[prompt] = st.radio(
+                prompt,
+                opts,
+                horizontal=True,
+                key=f"fe_be_{i}",
+                index=0,
+            )
+        if st.button("Comprobar clasificación", key="fe_be_check"):
+            ok = 0
+            for prompt, expected in fe_be_quiz:
+                if picks.get(prompt) == expected:
+                    ok += 1
+            if ok == len(fe_be_quiz):
+                st.success(f"Perfecto: {ok}/{len(fe_be_quiz)}. Tienes clara la frontera pantalla vs servidor.")
+            else:
+                st.warning(
+                    f"Acertaste {ok}/{len(fe_be_quiz)}. Revisa: front end = lo que vive en el navegador o la UI; "
+                    "back end = servidor, datos y lógica remota. “Front end (generado)” aplica a widgets que Streamlit construye para el navegador."
+                )
+
+        st.markdown("##### Mini glosario (términos relacionados)")
+        glossary = pd.DataFrame(
+            {
+                "Término": [
+                    "Cliente",
+                    "Servidor",
+                    "API",
+                    "UI / UX",
+                    "Base de datos",
+                ],
+                "Idea rápida": [
+                    "Programa o navegador del usuario; suele asociarse al front end.",
+                    "Máquina remota que ejecuta tu app y sirve datos; núcleo del back end.",
+                    "Contrato para pedir/enviar datos entre cliente y servidor (p. ej. JSON por HTTP).",
+                    "Interfaz (UI) y experiencia (UX): cómo se ve y se usa la app.",
+                    "Almacenamiento persistente; casi siempre se gestiona desde el back end.",
+                ],
+            }
+        )
+        st.dataframe(glossary, use_container_width=True, hide_index=True)
 
     box("<b>Buenas prácticas:</b> nombres claros, funciones pequeñas, validación temprana y manejo de errores con mensajes útiles.", "info")
 
@@ -898,9 +995,178 @@ def cursor_theory_page():
     box("<b>Consejo:</b> usa Cursor como colaborador técnico. Pídele crear, explicar, revisar, depurar y refactorizar, no solo “escribir todo”.", "ok")
 
 
+def evaluate_live_prompt_builder(
+    symptoms: str,
+    restrictions: str,
+    success_crit: str,
+) -> tuple[bool, list[str]]:
+    """
+    Heurística docente: un prompt útil incluye síntoma concreto, contexto/restricciones
+    y criterio de éxito verificable. Devuelve (es_correcto, lista_de_mejoras).
+    """
+    s_sym = (symptoms or "").strip()
+    s_rest = (restrictions or "").strip()
+    s_succ = (success_crit or "").strip()
+    issues: list[str] = []
+
+    if len(s_sym) < 14:
+        issues.append("Síntoma / necesidad: escribe al menos una frase concreta (qué falla o qué quieres lograr).")
+    if len(s_rest) < 22:
+        issues.append("Restricciones / contexto: añade datos reales (archivo, columnas, stack, límites de negocio).")
+    if len(s_succ) < 14:
+        issues.append("Criterio de éxito: indica cómo validar el resultado (prueba, métrica, checklist).")
+
+    combined = f"{s_sym} {s_rest} {s_succ}".lower()
+    placeholder_bits = (
+        "add context here",
+        "describe the goal or bug",
+        "define how to validate success",
+    )
+    if any(b in combined for b in placeholder_bits):
+        issues.append("Sustituye los textos de ejemplo del generador por tu contexto real.")
+
+    return len(issues) == 0, issues
+
+
+LIVE_PROMPT_PRESET_NONE = "— Escribir manualmente —"
+
+# Plantillas listas para elegir en el desplegable (rellenan síntoma, contexto y criterio).
+LIVE_PROMPT_PRESETS: dict[str, dict[str, str] | None] = {
+    LIVE_PROMPT_PRESET_NONE: None,
+    "Roadmap · DrillSpot activo vs offsets": {
+        "feature": "Roadmap panel",
+        "symptoms": "Necesito comparar el pozo activo contra roadmap y offsets en un panel horizontal con ROP, WOB y RPM.",
+        "restrictions": "Export CSV/Excel de DrillSpot con doble encabezado; detectar well activo y offsets automáticamente. Sin curva de Azimuth. Python 3.10+, Streamlit + Plotly + Pandas.",
+        "success": "La app carga el archivo sin error si cambia el nombre del pozo activo; unidades normalizadas; tabla derecha con delta % por offset respecto al activo.",
+    },
+    "Carga · archivo y vista previa": {
+        "feature": "Módulo de carga",
+        "symptoms": "Quiero un módulo que suba CSV o XLSX y muestre las primeras filas con tipos de columna detectados.",
+        "restrictions": "Usar st.file_uploader; validar que existan columnas mínimas configurables; mensajes claros si faltan datos. Sin escribir en disco salvo opción explícita.",
+        "success": "Tras subir un archivo válido se ve preview; si faltan columnas obligatorias aparece error entendible con la lista de faltantes.",
+    },
+    "Unidades · torque superficie": {
+        "feature": "Conversión de unidades",
+        "symptoms": "Surface Torque llega en klbf·ft en el CSV pero quiero graficar y comparar en N·m según toggle field/metric.",
+        "restrictions": "Conversión centralizada en una función; no duplicar factores; usar pandas to_numeric con errores coercidos; documentar factor 1 klbf·ft → lbf·ft y luego a N·m.",
+        "success": "Mismo valor numérico de entrada reproduce el resultado esperado en una fila de prueba manual; el eje del gráfico muestra la unidad seleccionada.",
+    },
+    "Torque & Drag · corredor FF": {
+        "feature": "Corredor FF",
+        "symptoms": "Necesito sombrear un corredor entre dos curvas de modelo (FF mín y máx) vs profundidad y superponer la curva medida.",
+        "restrictions": "Plotly; relleno tonextx entre curvas; interpolar FF si hace falta; no bloquear la UI con datasets grandes (chunk o downsample razonable).",
+        "success": "El corredor se ve continuo; leyenda indica rango FF; hover legible; si el usuario cambia el rango FF el gráfico actualiza sin romperse.",
+    },
+    "BHA · tabla a resumen": {
+        "feature": "Parser BHA",
+        "symptoms": "Parsear tabla BHA (componente, longitud, OD, ID, peso) y mostrar longitud total, OD/ID ponderados y peso estimado.",
+        "restrictions": "Columnas pueden venir con nombres variables: mapeo robusto; valores no numéricos a NaN con aviso; resumen en métricas Streamlit.",
+        "success": "Con el BHA de ejemplo los totales coinciden con suma manual en Excel; filas inválidas se listan pero no tumban toda la app.",
+    },
+    "Deploy · checklist Streamlit Cloud": {
+        "feature": "Deploy checklist",
+        "symptoms": "Lista de verificación para desplegar la app en Streamlit Community Cloud desde GitHub sin olvidar requirements ni entrypoint.",
+        "restrictions": "Repo público o con secrets documentados; Python version en package o streamlit config; sin credenciales en el código.",
+        "success": "Checklist marcable en UI; al completar todos los ítems el usuario tiene requirements.txt, app.py como entrada y URL lista para compartir.",
+    },
+    "Depurar · eje incorrecto en gráfico": {
+        "feature": "Roadmap panel",
+        "symptoms": "El gráfico muestra profundidad invertida o mezcla TVD con MD en el eje Y; los datos en el DataFrame parecen correctos.",
+        "restrictions": "Cambiar solo la capa de visualización o el mapeo de columnas al plot; no refactor masivo; explicar la causa en un comentario breve.",
+        "success": "Tras el cambio, el eje Y es coherente con la columna acordada y autorange reversed donde aplique; prueba visual con archivo de ejemplo.",
+    },
+}
+
+
 def prompt_engineering_page():
     section_title("Prompt engineering para coding")
     lesson_header("Inicio › Cursor › Prompts útiles", 24)
+
+    st.markdown("##### Constructor de prompt (visible al cambiar de pestaña)")
+    st.caption(
+        "Plantillas, tipo de tarea y vista previa están **arriba**; al pasar a Crear / Depurar / Refactorizar no se pierde lo escrito."
+    )
+    feature_options = [
+        "Módulo de carga",
+        "Conversión de unidades",
+        "Roadmap panel",
+        "Corredor FF",
+        "Parser BHA",
+        "Deploy checklist",
+    ]
+
+    preset_labels = list(LIVE_PROMPT_PRESETS.keys())
+    preset_choice = st.selectbox(
+        "Plantilla precargada (elige una para rellenar los campos; puedes editar después)",
+        preset_labels,
+        key="live_prompt_preset_choice",
+    )
+    tpl = LIVE_PROMPT_PRESETS[preset_choice]
+    if tpl is not None and st.session_state.get("_live_prompt_preset_applied") != preset_choice:
+        st.session_state["live_prompt_feature"] = tpl["feature"]
+        st.session_state["live_prompt_symptoms"] = tpl["symptoms"]
+        st.session_state["live_prompt_restrictions"] = tpl["restrictions"]
+        st.session_state["live_prompt_success"] = tpl["success"]
+        st.session_state["_live_prompt_preset_applied"] = preset_choice
+        st.rerun()
+    if tpl is None:
+        st.session_state["_live_prompt_preset_applied"] = None
+
+    feature = st.selectbox("Qué quieres pedir", feature_options, key="live_prompt_feature")
+    hints = {
+        "Módulo de carga": "Ej.: tipo de archivo, columnas mínimas, dónde debe vivir el módulo.",
+        "Conversión de unidades": "Ej.: unidad de entrada/salida, columna afectada, redondeo.",
+        "Roadmap panel": "Ej.: métricas, pozos a comparar, exclusiones (p. ej. sin Azimuth).",
+        "Corredor FF": "Ej.: rango FF, curvas PU/SO, cómo sombrear el corredor.",
+        "Parser BHA": "Ej.: columnas esperadas, reglas si falta OD/ID.",
+        "Deploy checklist": "Ej.: repo, entrypoint, secrets, versión de Python.",
+    }
+    st.caption(hints.get(feature, ""))
+
+    symptoms = st.text_input("Síntoma / necesidad", key="live_prompt_symptoms")
+    restrictions = st.text_area("Restricciones / contexto", key="live_prompt_restrictions")
+    success_crit = st.text_area("Criterio de éxito", key="live_prompt_success")
+
+    generated = f"""Task: {feature}
+
+Context:
+{restrictions if restrictions else '- add context here'}
+
+Symptom or goal:
+{symptoms if symptoms else '- describe the goal or bug'}
+
+Success criteria:
+{success_crit if success_crit else '- define how to validate success'}
+
+Please return:
+- code
+- short explanation
+- validation checklist
+"""
+
+    prompt_ok, prompt_issues = evaluate_live_prompt_builder(symptoms, restrictions, success_crit)
+    if prompt_ok:
+        st.success("Evaluación del prompt: **correcto** — incluye síntoma, contexto/restricciones y criterio de éxito con suficiente detalle.")
+    else:
+        st.error("Evaluación del prompt: **incompleto o demasiado genérico** — revisa los puntos siguientes.")
+        for item in prompt_issues:
+            st.markdown(f"- {item}")
+
+    parts_ok = [
+        len((symptoms or "").strip()) >= 14,
+        len((restrictions or "").strip()) >= 22,
+        len((success_crit or "").strip()) >= 14,
+    ]
+    score = sum(parts_ok)
+    st.progress(score / 3.0)
+    st.caption(f"Completitud del prompt: {score}/3 (síntoma, contexto, criterio de éxito con longitud mínima).")
+
+    st.markdown("**Vista previa (cópialo al asistente)**")
+    st.code(generated, language="markdown")
+
+    st.markdown("---")
+    st.markdown("##### Ejemplos de referencia (pestañas)")
+
     tab1, tab2, tab3, tab4 = st.tabs(["Crear", "Depurar", "Refactorizar", "Prompt builder en vivo"])
 
     with tab1:
@@ -946,27 +1212,14 @@ def prompt_engineering_page():
         )
 
     with tab4:
-        feature = st.selectbox("Qué quieres pedir", ["Módulo de carga", "Conversión de unidades", "Roadmap panel", "Corredor FF", "Parser BHA", "Deploy checklist"])
-        symptoms = st.text_input("Síntoma / necesidad")
-        restrictions = st.text_area("Restricciones / contexto")
-        success_crit = st.text_area("Criterio de éxito")
-        generated = f"""Task: {feature}
-
-Context:
-{restrictions if restrictions else '- add context here'}
-
-Symptom or goal:
-{symptoms if symptoms else '- describe the goal or bug'}
-
-Success criteria:
-{success_crit if success_crit else '- define how to validate success'}
-
-Please return:
-- code
-- short explanation
-- validation checklist
-"""
-        st.code(generated, language="markdown")
+        st.markdown(
+            """
+            El **constructor de prompt** (plantillas, *Qué quieres pedir*, campos y vista previa) está **en la parte superior**
+            de esta página; es el mismo para todas las pestañas: puedes elegir opciones y bajar a *Crear*, *Depurar* o *Refactorizar*
+            para comparar con los ejemplos.
+            """
+        )
+        st.info("Cuando la evaluación marque el prompt como correcto, copia el bloque «Vista previa» y pégalo en Cursor.")
 
     box("<b>Fórmula útil:</b> síntoma o meta + contexto real + restricciones + criterio de éxito + forma esperada de la respuesta.", "info")
 
@@ -2741,6 +2994,253 @@ Preserve current behavior and remove duplication."""
     )
 
 
+def build_carla_balance_figure(
+    *,
+    nombre_empresa: str,
+    caja: float,
+    cuentas_por_cobrar: float,
+    equipamiento: float,
+    proveedores: float,
+    prestamo: float,
+    capital: float,
+    utilidad_ejercicio: float,
+) -> go.Figure:
+    """Balance mini: composición de Activo vs Pasivo + Patrimonio (solo Plotly)."""
+    total_activo = caja + cuentas_por_cobrar + equipamiento
+    total_pasivo_pat = proveedores + prestamo + capital + utilidad_ejercicio
+    diff = total_activo - total_pasivo_pat
+    ok = abs(diff) < 1e-6
+
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        subplot_titles=("Activo (componentes)", "Pasivo + Patrimonio (componentes)"),
+        vertical_spacing=0.14,
+        row_heights=[0.5, 0.5],
+    )
+    fig.add_trace(
+        go.Bar(name="Caja", x=[caja], y=["Activo"], orientation="h", marker_color="#38bdf8", hovertemplate="Caja %{x:,.0f}<extra></extra>"),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            name="Cuentas por cobrar",
+            x=[cuentas_por_cobrar],
+            y=["Activo"],
+            orientation="h",
+            marker_color="#22c55e",
+            hovertemplate="CxC %{x:,.0f}<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            name="Equipamiento",
+            x=[equipamiento],
+            y=["Activo"],
+            orientation="h",
+            marker_color="#a78bfa",
+            hovertemplate="Equipo %{x:,.0f}<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+
+    fig.add_trace(
+        go.Bar(name="Proveedores", x=[proveedores], y=["Pasivo + Pat."], orientation="h", marker_color="#f97316", hovertemplate="Prov. %{x:,.0f}<extra></extra>"),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Bar(name="Préstamo", x=[prestamo], y=["Pasivo + Pat."], orientation="h", marker_color="#fb7185", hovertemplate="Préstamo %{x:,.0f}<extra></extra>"),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Bar(name="Capital social", x=[capital], y=["Pasivo + Pat."], orientation="h", marker_color="#eab308", hovertemplate="Capital %{x:,.0f}<extra></extra>"),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            name="Resultado del ejercicio",
+            x=[utilidad_ejercicio],
+            y=["Pasivo + Pat."],
+            orientation="h",
+            marker_color="#4ade80" if utilidad_ejercicio >= 0 else "#f87171",
+            hovertemplate="Resultado %{x:,.0f}<extra></extra>",
+        ),
+        row=2,
+        col=1,
+    )
+
+    fig.update_layout(
+        barmode="stack",
+        height=480,
+        margin=dict(l=40, r=30, t=70, b=40),
+        paper_bgcolor=DARK_BG,
+        plot_bgcolor=DARK_BG,
+        font=dict(color=TEXT),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+        title=dict(
+            text=(
+                f"{html.escape(nombre_empresa)} · Activo {total_activo:,.0f} vs Pasivo+Pat {total_pasivo_pat:,.0f} · "
+                f"Δ {diff:,.0f} {'✓ cuadrado' if ok else '(ajusta sliders para cuadrar)'}"
+            ),
+            font=dict(size=15),
+        ),
+    )
+    fig.update_xaxes(gridcolor=GRID, linecolor=AXIS, showline=True, zeroline=True, zerolinecolor="rgba(248,113,113,0.5)")
+    fig.update_yaxes(showline=False)
+    return fig
+
+
+def carla_contabilidad_balance_page():
+    section_title("Ejercicio para Carla · Balance y partida doble (vibe coding)")
+    lesson_header("Inicio › Vibe coding divertido › Carla · contabilidad mini", 24)
+    objective_box(
+        "Qué se practica (contabilidad + código)",
+        [
+            "Separar *datos* (montos por rubro) de la *visualización* (barras apiladas Plotly).",
+            "Entender la identidad: Activo = Pasivo + Patrimonio (partida doble en miniatura).",
+            "Escribir prompts con contrato claro: columnas, reglas de cuadre, formato de salida.",
+        ],
+    )
+    chips("Balance", "Activo", "Pasivo", "Patrimonio", "Plotly", "Carla")
+
+    st.markdown(
+        """
+        **Para Carla.** En contabilidad, el código no “adivina” el libro mayor: tú defines rubros y reglas.
+        Este laboratorio es **liviano y visual**: mueves montos con sliders y ves si el balance **cuadra**
+        (misma magnitud a izquierda y derecha de la ecuación fundamental). Misma lógica que apps técnicas:
+        **parámetros → función → figura** — aquí los parámetros son cifras contables.
+        """
+    )
+
+    st.markdown("##### Parámetros (alimentan el gráfico en todas las pestañas)")
+    nombre_negocio = st.text_input("Nombre del negocio (solo título)", value="Libro mayor de Carla", key="carla_nombre")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Activo**")
+        caja = st.slider("Caja (efectivo / bancos)", 0.0, 120_000.0, 42_000.0, 500.0, key="carla_caja")
+        cuentas_cobrar = st.slider("Cuentas por cobrar", 0.0, 80_000.0, 18_000.0, 500.0, key="carla_cxc")
+        equipamiento = st.slider("Equipamiento", 0.0, 150_000.0, 65_000.0, 500.0, key="carla_eq")
+    with c2:
+        st.markdown("**Pasivo y patrimonio**")
+        proveedores = st.slider("Proveedores (cuentas por pagar)", 0.0, 80_000.0, 22_000.0, 500.0, key="carla_prov")
+        prestamo = st.slider("Préstamo bancario", 0.0, 100_000.0, 35_000.0, 500.0, key="carla_prest")
+        capital = st.slider("Capital social", 0.0, 150_000.0, 80_000.0, 500.0, key="carla_cap")
+        utilidad = st.slider("Resultado del ejercicio (utilidad o pérdida)", -40_000.0, 60_000.0, 12_000.0, 500.0, key="carla_util")
+
+    total_a = caja + cuentas_cobrar + equipamiento
+    total_pp = proveedores + prestamo + capital + utilidad
+    diff = total_a - total_pp
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.metric("Total Activo", f"{total_a:,.0f}")
+    with m2:
+        st.metric("Pasivo + Patrimonio", f"{total_pp:,.0f}")
+    with m3:
+        if abs(diff) < 1:
+            st.metric("Diferencia (objetivo 0)", f"{diff:,.0f}")
+        else:
+            st.metric("Diferencia (objetivo 0)", f"{diff:,.0f}", delta="Descuadrado — mueve montos")
+
+    tab_viz, tab_code, tab_prompt, tab_quiz = st.tabs(
+        ["1 · Balance interactivo", "2 · Código didáctico", "3 · Prompts para Cursor", "4 · Mini check"]
+    )
+
+    with tab_viz:
+        fig = build_carla_balance_figure(
+            nombre_empresa=nombre_negocio,
+            caja=caja,
+            cuentas_por_cobrar=cuentas_cobrar,
+            equipamiento=equipamiento,
+            proveedores=proveedores,
+            prestamo=prestamo,
+            capital=capital,
+            utilidad_ejercicio=utilidad,
+        )
+        dark_layout(fig)
+        st.plotly_chart(fig, use_container_width=True)
+        if abs(diff) < 1:
+            st.success("Balance cuadrado: Activo = Pasivo + Patrimonio (en esta simplificación todos los rubros están en la misma ecuación).")
+        else:
+            st.warning("Aún no cuadra: mueve sliders hasta que la diferencia sea ~0 o explica en tu prompt qué cuenta falta.")
+
+    with tab_code:
+        st.markdown("### Variables que alimentan el balance")
+        st.code(
+            textwrap.dedent(
+                f"""
+                nombre_negocio = "{nombre_negocio}"
+                caja = {caja:.1f}
+                cuentas_por_cobrar = {cuentas_cobrar:.1f}
+                equipamiento = {equipamiento:.1f}
+                proveedores = {proveedores:.1f}
+                prestamo = {prestamo:.1f}
+                capital = {capital:.1f}
+                utilidad_ejercicio = {utilidad:.1f}
+
+                total_activo = caja + cuentas_por_cobrar + equipamiento
+                total_pasivo_pat = proveedores + prestamo + capital + utilidad_ejercicio
+                diferencia = total_activo - total_pasivo_pat
+
+                fig = build_carla_balance_figure(...)
+                """
+            ),
+            language="python",
+        )
+        st.markdown(
+            """
+            **Idea vibe coding:** nombra en el prompt cada rubro y si el gráfico debe mostrar **apilado**, **totales** o **alerta de descuadre**.
+            """
+        )
+
+    with tab_prompt:
+        st.markdown("### Copia, pega y ajusta en Cursor")
+        pc1 = textwrap.dedent(
+            """
+            Add `carla_balance.py` with a pure function `build_carla_balance_figure(...)` returning a Plotly figure.
+            Parameters: company name (title only), cash, AR, equipment, AP, loan, capital, net_income.
+            Draw two horizontal stacked bars: Activo vs Pasivo+Patrimonio. Show imbalance in the title if Activo != Pasivo+Pat.
+            No external data files; educational exercise for Carla (accounting vibe coding).
+            """
+        )
+        pc2 = textwrap.dedent(
+            """
+            Extend the Streamlit page: if abs(diferencia) > 0.01, show st.warning with a hint to add a "ajuste" line item or rebalance sliders.
+            Keep Plotly colors consistent with the existing module.
+            """
+        )
+        st.code(pc1, language="markdown")
+        st.code(pc2, language="markdown")
+
+    with tab_quiz:
+        q = st.radio(
+            "En este modelo simplificado, ¿qué significa que la diferencia sea cero?",
+            [
+                "Los montos de la izquierda y la derecha de la ecuación coinciden (identidad contable)",
+                "Que la empresa ya pagó impuestos",
+                "Que Plotly siempre tiene razón sin revisar números",
+            ],
+            key="carla_quiz1",
+        )
+        if st.button("Comprobar", key="carla_quiz_btn"):
+            if q.startswith("Los montos"):
+                st.success("Correcto: validas la identidad como validarías un DataFrame en producción.")
+            else:
+                st.error("La herramienta grafica lo que tú codificas; el criterio contable sigue siendo tuyo.")
+
+    box(
+        "<b>Regla vibe coding:</b> trata cada rubro como una columna con significado de negocio; el modelo solo refleja reglas que tú explicitas.",
+        "exercise",
+    )
+
+
 def angela_gatito_galileo_page():
     section_title("Ejercicio para Angela · Gatito Galileo (vibe coding)")
     lesson_header("Inicio › Vibe coding divertido › Angela · Gatito Galileo", 22)
@@ -2975,8 +3475,10 @@ PAGES = {
     "29. Deploy de la app paso a paso": deploy_page,
     "30. Proyecto final y checklist": final_project_page,
     "31. Ejercicio para Angela · Gatito Galileo (vibe coding)": angela_gatito_galileo_page,
+    "32. Ejercicio para Carla · Balance y partida doble (vibe coding)": carla_contabilidad_balance_page,
 }
 
+render_sidebar_logo()
 st.sidebar.title("Curso Pro")
 page = st.sidebar.radio("Selecciona un módulo", LESSONS)
 st.sidebar.markdown("---")
