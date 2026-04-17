@@ -36,6 +36,10 @@ STREAMLIT_OVERVIEW = "https://docs.streamlit.io/deploy/streamlit-community-cloud
 STREAMLIT_FILEORG = "https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/file-organization"
 CURSOR_GETTING_STARTED = "https://docs.cursor.com/getting-started"
 CURSOR_INSTALL = "https://docs.cursor.com/get-started/installation"
+CURSOR_INTRODUCTION = "https://docs.cursor.com/get-started/introduction"
+CURSOR_MODELS = "https://docs.cursor.com/models"
+CURSOR_ACCOUNT_PRICING = "https://docs.cursor.com/account/pricing"
+CURSOR_CHANGELOG = "https://cursor.com/changelog"
 CLAUDE_CODE_OVERVIEW = "https://docs.anthropic.com/en/docs/claude-code/overview"
 GITHUB_COPILOT_GETTING_STARTED = "https://docs.github.com/copilot/get-started"
 
@@ -261,9 +265,12 @@ LESSONS = [
     "23. Cómo usar Cursor y Claude Code",
     "24. Laboratorio de Python interactivo",
     "25. Live coding studio pro",
-    "26. Refactorización guiada",
-    "27. Deploy de la app paso a paso",
-    "28. Proyecto final y checklist",
+    "26. Caso Jusset Peña · Darcy + Python + prompts",
+    "27. P10, P90, box plots y estadística (vibe coding)",
+    "28. Refactorización guiada",
+    "29. Deploy de la app paso a paso",
+    "30. Proyecto final y checklist",
+    "31. Ejercicio para Angela · Gatito Galileo (vibe coding)",
 ]
 
 
@@ -364,10 +371,30 @@ def intro_page():
             "Peso": [8, 10, 8, 10, 10, 10, 9, 8],
         }
     )
-    fig = px.funnel(roadmap, x="Peso", y="Etapa", color="Etapa", height=540, title="Ruta del curso pro")
-    fig.update_layout(showlegend=False)
+    # Barras horizontales desde 0: el funnel de Plotly centra cada tramo y parece un "rombo";
+    # además, los números son PESO (1–10), no el número de lección del menú lateral.
+    fig = px.bar(
+        roadmap,
+        x="Peso",
+        y="Etapa",
+        color="Etapa",
+        orientation="h",
+        height=540,
+        title="Peso relativo por tema (escala 1–10; no es el nº de lección del curso)",
+        text="Peso",
+    )
+    fig.update_traces(textposition="inside", cliponaxis=False)
+    fig.update_layout(
+        showlegend=False,
+        xaxis=dict(title="Peso relativo", range=[0, 11], dtick=1),
+        yaxis=dict(categoryorder="total ascending"),
+    )
     dark_layout(fig)
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Los valores 8, 9 o 10 miden énfasis relativo en el mapa (tiempo/complejidad), "
+        "no confundir con las lecciones «8. Cursor…» o «9. Prompt…» en la barra lateral."
+    )
 
     box(
         "<b>Meta del curso:</b> que puedas describir, construir, depurar, refactorizar y desplegar una app técnica útil, sin perder control sobre datos, unidades, arquitectura y criterio de negocio.",
@@ -550,15 +577,57 @@ def frameworks_page():
     lesson_header("Inicio › Stack › Frameworks y librerías", 22)
     st.markdown(
         """
-        Un **lenguaje** es el sistema base con el que escribes software. Una **librería** es un conjunto de herramientas que tú llamas cuando las necesitas.
-        Un **framework** define una estructura de ejecución más amplia y te marca la forma en la que se organiza parte de la aplicación.
+        **Si no has programado antes:** programar es escribir **instrucciones claras** para que la computadora las ejecute paso a paso.
+        En este curso no necesitas saberlo todo de memoria; sí conviene entender **qué es cada tipo de pieza** para no mezclar conceptos.
         """
     )
+
+    with st.expander("¿Qué es un **lenguaje** de programación (p. ej. Python)?", expanded=True):
+        st.markdown(
+            """
+            Es el **idioma** en el que escribes el programa: reglas de sintaxis, palabras reservadas y forma de expresar lógica (condiciones, bucles, funciones).
+            **Analogía:** como el idioma humano con el que redactas un procedimiento; la máquina solo entiende lo que está escrito en ese lenguaje.
+            """
+        )
+    with st.expander("¿Qué es una **librería**?"):
+        st.markdown(
+            """
+            Es **código ya hecho** (por la comunidad o por terceros) que **importas** en tu proyecto para reutilizar funciones: tablas, gráficos, matemática, etc.
+            Tú **decides cuándo** llamarla; no impone toda la forma de tu aplicación.
+            **Analogía:** una caja de herramientas que sacas cuando la necesitas; no es la casa entera.
+            """
+        )
+    with st.expander("¿Qué es un **framework**?"):
+        st.markdown(
+            """
+            Es un **marco** que define **cómo debe organizarse** parte de tu aplicación: qué archivo arranca, cómo se construyen pantallas, ciclo de ejecución, etc.
+            Te ahorra decidir todo desde cero; a cambio **sigues convenciones** del framework.
+            **Analogía:** el esqueleto de un stand o un manual de montaje: encaja piezas en un orden concreto.
+            """
+        )
+    with st.expander("¿Qué es el **stack**?"):
+        st.markdown(
+            """
+            Es el **conjunto de tecnologías** que usas juntas en un proyecto: lenguaje + framework + librerías.
+            No es una sola cosa nueva; es **la receta** de lo que convive en tu app (por ejemplo Python + Streamlit + Pandas + Plotly).
+            """
+        )
+
+    st.markdown("### Piezas que usamos en el curso (resumen)")
     table = pd.DataFrame(
         {
             "Pieza": ["Python", "Pandas", "NumPy", "Plotly", "Streamlit", "SciPy", "Pydantic"],
             "Tipo": ["Lenguaje", "Librería", "Librería", "Librería", "Framework", "Librería", "Librería"],
-            "Qué resuelve": [
+            "Si vienes de cero": [
+                "Donde escribes toda la lógica del programa.",
+                "Tablas y datos como en Excel, pero en código.",
+                "Números y vectores; operaciones matemáticas rápidas.",
+                "Gráficos interactivos en la pantalla del navegador.",
+                "La app web: botones, páginas y despliegue sin montar un servidor a mano.",
+                "Herramientas numéricas extra (p. ej. interpolar curvas).",
+                "Comprobar que columnas y tipos de datos son los esperados.",
+            ],
+            "Qué resuelve (técnico)": [
                 "Base sintáctica y lógica",
                 "Tablas, limpieza y joins",
                 "Cálculo vectorizado",
@@ -578,8 +647,16 @@ def frameworks_page():
     )
     fig.update_layout(height=680, title="Cómo se apilan lenguaje, framework y librerías")
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Diagrama de conjunto: en el centro está tu app; alrededor, el tipo de rol (lenguaje, framework, datos, etc.) "
+        "y en el anillo exterior las herramientas concretas. Los tamaños son ilustrativos, no unidades reales."
+    )
 
-    box("<b>Idea práctica:</b> Streamlit no reemplaza Pandas ni Plotly; los coordina en una app con UI y ciclo de ejecución.", "ok")
+    box(
+        "<b>Idea práctica:</b> Python es el idioma; Streamlit da la estructura de la app web; Pandas y Plotly son librerías que "
+        "tú llamas desde Python. No compiten entre sí: se combinan.",
+        "ok",
+    )
 
 
 def architecture_page():
@@ -713,10 +790,81 @@ def cursor_theory_page():
     lesson_header("Inicio › Cursor › Cómo usarlo bien", 24)
     st.markdown(
         """
-        Cursor es un editor de código con IA que entiende contexto de archivos y responde a instrucciones en lenguaje natural.
-        Pero usarlo bien no significa “pedir cualquier cosa”: significa darle contexto técnico, restricciones, criterios de éxito y dividir el trabajo en iteraciones razonables.
+        **Cursor** es un **editor con IA** y un **agente de programación**: puedes usarlo para **entender tu base de código**,
+        **planificar y desarrollar** funcionalidades, **corregir errores**, **revisar cambios** y **conectar** el flujo con las
+        herramientas que ya usas (Git, revisión de código, etc.).
+
+        En la práctica, combina lo que esperas de un IDE con asistencia que lee archivos y propone ediciones; **usarlo bien** no es
+        “pedir cualquier cosa”, sino dar **contexto técnico**, **restricciones**, **criterios de éxito** y **iterar** con pedidos acotados.
         """
     )
+
+    link_box(
+        "Documentación oficial de Cursor",
+        [
+            ("Introducción · Bienvenido a Cursor", CURSOR_INTRODUCTION),
+            ("Comenzar · primeros pasos", CURSOR_GETTING_STARTED),
+            ("Instalación", CURSOR_INSTALL),
+            ("Modelos (contexto, capacidades)", CURSOR_MODELS),
+            ("Precios y planes de cuenta", CURSOR_ACCOUNT_PRICING),
+            ("Registro de cambios (changelog)", CURSOR_CHANGELOG),
+        ],
+    )
+
+    st.markdown("### Lo que puedes hacer con Cursor")
+    cursor_caps = pd.DataFrame(
+        {
+            "Área": [
+                "Entender tu código",
+                "Planificar y desarrollar funcionalidades",
+                "Encontrar y corregir errores",
+                "Revisar cambios",
+                "Personalizar Cursor",
+                "Conectar tu flujo de trabajo",
+            ],
+            "Qué implica": [
+                "Ver cómo encaja un repositorio y dónde conviene empezar.",
+                "Definir alcance, usar modo Plan y abordar trabajos grandes por partes.",
+                "Reproducir el problema, acotar la causa y validar el arreglo.",
+                "Inspeccionar diffs, correr comprobaciones y detectar riesgos antes de fusionar.",
+                "Reglas, skills e indicaciones alineadas al equipo o al proyecto.",
+                "Integración con GitHub, GitLab, JetBrains, Slack, Linear y otras herramientas habituales.",
+            ],
+        }
+    )
+    st.dataframe(cursor_caps, use_container_width=True, hide_index=True)
+
+    st.markdown("### Modelos (referencia; consulta la doc para valores actualizados)")
+    cursor_models_ref = pd.DataFrame(
+        {
+            "Proveedor": [
+                "Anthropic",
+                "Anthropic",
+                "Cursor",
+                "Google",
+                "OpenAI",
+                "OpenAI",
+                "xAI",
+            ],
+            "Modelo": [
+                "Claude 4.6 Sonnet",
+                "Claude 4.7 Opus",
+                "Composer 2",
+                "Gemini 3.1 Pro",
+                "GPT-5.3 Codex",
+                "GPT-5.4",
+                "Grok 4.20",
+            ],
+            "Contexto predeterminado": ["200k", "200k", "200k", "200k", "272k", "272k", "200k"],
+            "Modo máximo": ["1M", "1M", "—", "1M", "—", "1M", "2M"],
+        }
+    )
+    st.dataframe(cursor_models_ref, use_container_width=True, hide_index=True)
+    st.caption(
+        "Los límites de contexto, planes y nombres de modelo cambian con el tiempo. "
+        f"Atributos completos y lista actualizada: [Modelos y precios en docs.cursor.com]({CURSOR_MODELS})."
+    )
+
     chips("Contexto", "Restricciones", "Criterio de éxito", "Iteración", "Validación", "Refactorización")
     flow("Definir problema", "Dar contexto", "Pedir cambio", "Leer respuesta", "Validar", "Iterar")
 
@@ -1271,6 +1419,401 @@ Deliver:
     st.dataframe(checklist, use_container_width=True)
 
     box("<b>Uso docente:</b> el instructor puede editar estos campos en vivo y mostrar cómo cambia la calidad del prompt y de la arquitectura resultante.", "info")
+
+
+def darcy_jusset_pena_page():
+    section_title("Caso Jusset Peña · Darcy + Python + prompts")
+    lesson_header("Inicio › Casos especiales › Jusset Peña · vibe coding", 28)
+    objective_box(
+        "Objetivos (programación y vibe coding)",
+        [
+            "Usar la ecuación de Darcy como caso concreto para practicar descomposición en código (variables, funciones, unidades).",
+            "Traducir física + restricciones + criterio de éxito en prompts útiles para Cursor.",
+            "Generar y revisar prompts listos para pegar en el asistente, no solo mirar números.",
+        ],
+    )
+    chips("Vibe coding", "Python", "Prompts", "Cursor", "Unidades", "Iteración")
+
+    st.markdown(
+        """
+        **Caso dedicado a Jusset Peña.** La física es el *pretexto*: lo importante es **cómo planteas el problema como programa**
+        y **cómo se lo pides a la IA**. La ley de Darcy en 1D para flujo lineal incompresible es:
+        """
+    )
+    st.latex(r"Q = \frac{k \, A \, \Delta P}{\mu \, L}")
+    flow("Física", "Variables y unidades", "Función Python", "UI Streamlit (opcional)", "Prompt claro", "Revisar código generado")
+
+    box(
+        "<b>Vibe coding:</b> la IA no adivina tu intención. Define entrada, salida, reglas y validación; el prompt empaqueta eso "
+        "para obtener código mantenible.",
+        "info",
+    )
+
+    tab_py, tab_prompt, tab_demo = st.tabs(
+        [
+            "1 · Python: del modelo al código",
+            "2 · Laboratorio de prompts (Cursor)",
+            "3 · Demo numérica (referencia)",
+        ]
+    )
+
+    with tab_py:
+        st.markdown(
+            """
+            **Mapa mental.** Separa: (a) conversiones de unidades, (b) núcleo matemático en SI, (c) presentación.
+            Así reduces errores (mezclar psi con Pa, mD con m²) y tu prompt puede pedir esa estructura.
+            """
+        )
+        st.code(
+            textwrap.dedent(
+                """
+                M2_PER_MD = 9.869233e-16   # 1 mD → m²
+                PA_PER_PSI = 6894.757293168
+                CP_TO_PA_S = 0.001
+
+                def darcy_q_m3s(*, k_md: float, mu_cp: float, delta_psi: float, area_m2: float, L_m: float) -> float:
+                    \"\"\"Flujo lineal 1D. Retorna Q en m³/s. Entradas en unidades de campo + SI donde se indica.\"\"\"
+                    if L_m <= 0:
+                        raise ValueError("L_m debe ser > 0")
+                    k_m2 = k_md * M2_PER_MD
+                    mu_pa_s = mu_cp * CP_TO_PA_S
+                    dP_pa = delta_psi * PA_PER_PSI
+                    return (k_m2 * area_m2 * dP_pa) / (mu_pa_s * L_m)
+                """
+            ),
+            language="python",
+        )
+        st.caption("Pídele a Cursor que extraiga constantes, añada type hints y pruebas; el prompt debe nombrar unidades y el contrato de la función.")
+
+        st.markdown("### Mini check (conceptos de código)")
+        q = st.radio(
+            "En la función anterior, si olvidas convertir `k_md` a m² y usas el número en mD directamente en la fórmula, ¿qué ocurre?",
+            [
+                "El resultado tiene escala incorrecta (órdenes de magnitud mal)",
+                "Python siempre corrige las unidades solo",
+                "No pasa nada si los sliders “se ven bien”",
+            ],
+            key="darcy_quiz_code",
+        )
+        if st.button("Comprobar", key="darcy_check_code"):
+            if q.startswith("El resultado"):
+                st.success("Correcto: las unidades no son magia; hay que codificarlas explícitamente.")
+            else:
+                st.error("La computadora ejecuta lo que escribes; la coherencia dimensional es tu responsabilidad en el código.")
+
+    with tab_prompt:
+        st.markdown(
+            """
+            **Objetivo:** mismo patrón que en el curso: *tarea + contexto + restricciones + criterio de éxito + formato de respuesta*.
+            """
+        )
+        goal = st.selectbox(
+            "Qué quieres que genere la IA",
+            [
+                "Función pura `darcy_q_*` con conversiones y validación",
+                "Página Streamlit con sliders y gráfica Plotly de sensibilidad",
+                "Refactor: separar constants.py / darcy.py / ui.py",
+                "Mini tests (pytest) para el cálculo de Darcy",
+            ],
+            key="darcy_prompt_goal",
+        )
+        ctx = st.text_area(
+            "Contexto (datos, supuestos)",
+            "Flujo lineal 1D, medio homogéneo, fluido incompresible. Entradas típicas: k en mD, μ en cP, ΔP en psi, A en m², L en m.",
+            key="darcy_prompt_ctx",
+        )
+        constraints = st.text_area(
+            "Restricciones",
+            "Python 3.10+, sin dependencias nuevas salvo streamlit/plotly si pide UI. Comentarios breves. Nombres en inglés para código.",
+            key="darcy_prompt_constraints",
+        )
+        success = st.text_area(
+            "Criterio de éxito (cómo validar)",
+            "Los resultados coinciden con una calculadora manual en un caso; falla con mensaje claro si L<=0 o μ<=0.",
+            key="darcy_prompt_success",
+        )
+        tone = st.radio("Idioma del prompt generado", ["Inglés (recomendado para modelos)", "Español"], horizontal=True, key="darcy_prompt_lang")
+
+        if tone.startswith("Inglés"):
+            generated = f"""Task: {goal}
+
+Context:
+{ctx}
+
+Constraints:
+{constraints}
+
+Success criteria:
+{success}
+
+Please return:
+1) the code
+2) a short note on units (SI path)
+3) a 3-item manual validation checklist
+"""
+        else:
+            generated = f"""Tarea: {goal}
+
+Contexto:
+{ctx}
+
+Restricciones:
+{constraints}
+
+Criterio de éxito:
+{success}
+
+Por favor devuelve:
+1) el código
+2) una nota breve sobre unidades (camino SI)
+3) un mini checklist de validación manual (3 ítems)
+"""
+
+        st.markdown("### Prompt generado (cópialo y pégalo)")
+        st.code(generated, language="markdown")
+
+        with st.expander("Ejemplos de prompts base (ajústalos)"):
+            st.code(
+                textwrap.dedent(
+                    """
+                    Create a pure Python function for 1D linear Darcy flow Q = k*A*dP/(mu*L).
+                    Inputs: k in mD, mu in cP, delta_P in psi, area in m^2, length in m.
+                    Convert to SI inside the function, return Q in m^3/s. Raise ValueError for invalid L or mu.
+
+                    Add a Streamlit sidebar with sliders and show Q in m^3/d and bbl/d. Use Plotly for Q vs k sensitivity.
+                    """
+                ),
+                language="markdown",
+            )
+            st.code(
+                textwrap.dedent(
+                    """
+                    Refactor my single-file Darcy script into:
+                    - constants.py (conversion factors only)
+                    - darcy.py (compute functions)
+                    - app.py (Streamlit UI)
+                    Preserve behavior. No behavior change.
+                    """
+                ),
+                language="markdown",
+            )
+
+        box(
+            "<b>Consejo:</b> cuanto más precisas sean las unidades y el contrato de la función en el prompt, menos errores de escala obtendrás.",
+            "warn",
+        )
+
+    M2_PER_MD = 9.869233e-16
+    PA_PER_PSI = 6894.757293168
+    CP_TO_PA_S = 0.001
+    M3_PER_BBL = 0.158987304
+
+    with tab_demo:
+        st.markdown(
+            """
+            **Demo de referencia.** Si tu código o el de Cursor reproduce magnitudes similares para los mismos inputs, vas bien.
+            Si no, revisa conversiones antes de culpar al modelo.
+            """
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            k_md = st.slider("Permeabilidad k (mD)", 0.1, 500.0, 50.0, 0.1, key="darcy_k")
+            mu_cp = st.slider("Viscosidad μ (cP)", 0.2, 50.0, 1.0, 0.1, key="darcy_mu")
+            delta_psi = st.slider("Caída de presión ΔP (psi)", 1.0, 5000.0, 500.0, 10.0, key="darcy_dp")
+        with c2:
+            area_m2 = st.slider("Área transversal A (m²)", 1e-4, 0.05, 0.01, 1e-4, format="%.4f", key="darcy_a")
+            L_m = st.slider("Longitud del tramo L (m)", 0.1, 200.0, 10.0, 0.5, key="darcy_L")
+
+        k_m2 = k_md * M2_PER_MD
+        mu_pa_s = mu_cp * CP_TO_PA_S
+        dP_pa = delta_psi * PA_PER_PSI
+
+        if L_m <= 0 or mu_pa_s <= 0:
+            st.error("L y μ deben ser mayores que cero.")
+        else:
+            Q_m3_s = (k_m2 * area_m2 * dP_pa) / (mu_pa_s * L_m)
+            Q_m3_d = Q_m3_s * 86400.0
+            Q_bbl_d = Q_m3_d / M3_PER_BBL
+
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("Caudal Q", f"{Q_m3_d:,.4f} m³/d")
+            with m2:
+                st.metric("Caudal (campo)", f"{Q_bbl_d:,.2f} bbl/d")
+            with m3:
+                st.metric("k en SI", f"{k_m2:.3e} m²")
+
+            fig = go.Figure()
+            k_sweep = np.linspace(max(0.1, k_md * 0.05), k_md * 3, 80)
+            k_m2_s = k_sweep * M2_PER_MD
+            Q_sweep = (k_m2_s * area_m2 * dP_pa) / (mu_pa_s * L_m) * 86400.0
+            fig.add_trace(go.Scatter(x=k_sweep, y=Q_sweep, mode="lines", name="Q vs k", line=dict(color="#38bdf8", width=2.5)))
+            fig.add_vline(x=k_md, line_dash="dash", line_color="#f97316", annotation_text="k actual")
+            fig.update_layout(height=420, title="Sensibilidad del caudal a la permeabilidad (resto fijo)")
+            fig.update_xaxes(title_text="k (mD)")
+            fig.update_yaxes(title_text="Q (m³/d)")
+            dark_layout(fig)
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("### Pregunta física rápida")
+        q_phys = st.radio(
+            "Si aumentas solo la viscosidad y mantienes k, A, ΔP y L constantes, el caudal volumétrico…",
+            ["Aumenta", "Disminuye", "No cambia"],
+            key="darcy_quiz",
+        )
+        if st.button("Comprobar respuesta", key="darcy_check"):
+            if q_phys == "Disminuye":
+                st.success("Correcto: Q ∝ 1/μ; en el código μ va en el denominador.")
+            else:
+                st.error("Revisa la ecuación: al programarla, μ va en el denominador.")
+
+        st.code(
+            textwrap.dedent(
+                """
+                # Núcleo (SI): Q_m3_s = (k_m2 * area_m2 * dP_pa) / (mu_pa_s * L_m)
+                """
+            ),
+            language="python",
+        )
+
+    box(
+        "<b>Nota:</b> supuestos de medio homogéneo e incompresible; en campo añadirías más física. En vibe coding, deja extensiones como "
+        "«siguiente iteración» explícita en tu prompt.",
+        "info",
+    )
+
+
+def statistics_p10_p90_boxplots_page():
+    section_title("P10, P90, box plots y estadística (vibe coding)")
+    lesson_header("Inicio › Datos › Percentiles, box plots y prompts", 26)
+    objective_box(
+        "Objetivos",
+        [
+            "Entender P10, P50 y P90 como resúmenes de una distribución (no son “promedios” arbitrarios).",
+            "Leer un box plot: mediana, cuartiles, bigotes y valores atípicos típicos en Plotly.",
+            "Escribir prompts para que Cursor genere tablas, percentiles y gráficos en Streamlit con Pandas/NumPy/Plotly.",
+        ],
+    )
+    chips("Percentiles", "Box plot", "Pandas", "Plotly", "Prompts", "QC de datos")
+
+    st.markdown(
+        """
+        En ingeniería y datos de pozo, **P10 / P50 / P90** suelen usarse como escenarios: valores que dejan por debajo el 10 %, 50 % o 90 %
+        de los datos (definición depende del convenio del equipo: a veces “P90” es el pesimista u optimista; **alinea el criterio antes de calcular**).
+
+        - **P50** ≈ **mediana**: mitad de los valores por encima y mitad por debajo (si la distribución es simétrica, coincide con la media; si es sesgada, no).
+        - **P10** y **P90** acotan colas: sirven para rangos de incertidumbre y comparar pozos o campañas.
+
+        Un **box plot** resume la distribución: caja = cuartiles Q1–Q3 (rango intercuartílico), línea central = mediana, bigotes = extensión de los datos
+        (en Plotly/Matplotlib por defecto suelen seguir reglas tipo 1.5×IQR para marcar *outliers*).
+        """
+    )
+
+    conc = pd.DataFrame(
+        {
+            "Medida": ["P10", "P50 (mediana)", "P90"],
+            "Idea operativa": [
+                "Cola inferior (pocos valores más bajos que esto).",
+                "Centro robusto ante valores extremos.",
+                "Cola superior (pocos valores más altos que esto).",
+            ],
+            "En Python (serie numérica `s`)": [
+                "`np.percentile(s, 10)` o `s.quantile(0.10)`",
+                "`np.percentile(s, 50)` o `s.median()`",
+                "`np.percentile(s, 90)` o `s.quantile(0.90)`",
+            ],
+        }
+    )
+    st.dataframe(conc, use_container_width=True, hide_index=True)
+
+    tab_demo, tab_prompts = st.tabs(["Demo interactiva", "Prompts ejemplo (Cursor)"])
+
+    with tab_demo:
+        st.markdown("### Datos sintéticos tipo métrica de pozo (sesgados)")
+        rng = np.random.default_rng(7)
+        n = st.slider("Número de puntos", 50, 800, 200, 10, key="stat_n")
+        skew = st.slider("Sesgo (log-normal)", 0.15, 0.8, 0.35, 0.05, key="stat_skew")
+        base = st.slider("Valor base (ej. ROP)", 10.0, 80.0, 42.0, 0.5, key="stat_base")
+        s = pd.Series(base * 0.12 * rng.lognormal(mean=1.0, sigma=skew, size=n) + base * 0.88)
+
+        p10, p50, p90 = np.percentile(s, [10, 50, 90])
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("P10", f"{p10:.2f}")
+        with c2:
+            st.metric("P50", f"{p50:.2f}")
+        with c3:
+            st.metric("P90", f"{p90:.2f}")
+        with c4:
+            st.metric("Media", f"{float(s.mean()):.2f}")
+
+        fig = go.Figure()
+        fig.add_trace(go.Box(y=s, name="Métrica", marker_color="#38bdf8", boxmean="sd"))
+        fig.add_hline(y=p10, line_dash="dot", line_color="#f97316", annotation_text="P10")
+        fig.add_hline(y=p50, line_dash="solid", line_color="#22c55e", annotation_text="P50")
+        fig.add_hline(y=p90, line_dash="dot", line_color="#a78bfa", annotation_text="P90")
+        fig.update_layout(height=480, title="Box plot + líneas P10 / P50 / P90 (referencia)")
+        fig.update_yaxes(title_text="Valor")
+        dark_layout(fig)
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.code(
+            textwrap.dedent(
+                """
+                import numpy as np
+                import pandas as pd
+
+                p10, p50, p90 = np.percentile(series.dropna(), [10, 50, 90])
+                # o con pandas:
+                q = series.quantile([0.10, 0.50, 0.90])
+                """
+            ),
+            language="python",
+        )
+
+    with tab_prompts:
+        st.markdown(
+            """
+            Pide a Cursor **contexto de negocio** (qué es cada columna), **definición de P10/P90** del equipo y **salidas esperadas** (tabla + figura).
+            """
+        )
+        st.code(
+            textwrap.dedent(
+                """
+                Build a Streamlit page that:
+                - loads a CSV with a numeric column "ROP_ft_hr" (may have NaNs)
+                - computes P10, P50, P90 with pandas/numpy and shows them as metrics
+                - plots a Plotly box plot of the column
+                - adds a short markdown note explaining P10/P50/P90 in plain language for operations staff
+                Use Python 3.10+, streamlit, pandas, plotly. No seaborn.
+                """
+            ),
+            language="markdown",
+        )
+        st.code(
+            textwrap.dedent(
+                """
+                Add a function percentile_summary(df: pd.DataFrame, col: str) -> pd.Series that returns P10,P50,P90,count,mean,std.
+                Add unit tests with a tiny fixed DataFrame. Then wire it into my Streamlit sidebar.
+                """
+            ),
+            language="markdown",
+        )
+        st.code(
+            textwrap.dedent(
+                """
+                Create side-by-side Plotly box plots for columns "ROP" and "WOB" grouped by "well_name" from a pandas DataFrame.
+                Highlight outliers explain briefly in captions (what Plotly considers outlier points).
+                """
+            ),
+            language="markdown",
+        )
+
+    box(
+        "<b>Vibe coding:</b> especifica columna, manejo de nulos, si los percentiles son por pozo o globales, y el tipo de gráfico; "
+        "pide validación cruzada con un cálculo manual en un ejemplo pequeño.",
+        "ok",
+    )
 
 
 def refactor_page():
@@ -2012,7 +2555,9 @@ def coding_assistants_overview_page():
     link_box(
         "Documentación oficial",
         [
-            ("Cursor docs", CURSOR_GETTING_STARTED),
+            ("Cursor · introducción", CURSOR_INTRODUCTION),
+            ("Cursor · comenzar", CURSOR_GETTING_STARTED),
+            ("Cursor · modelos", CURSOR_MODELS),
             ("Claude Code overview", CLAUDE_CODE_OVERVIEW),
             ("GitHub Copilot get started", GITHUB_COPILOT_GETTING_STARTED),
         ],
@@ -2058,13 +2603,19 @@ def cursor_claude_howto_page():
         link_box(
             "Cursor oficial",
             [
+                ("Introducción", CURSOR_INTRODUCTION),
                 ("Instalación", CURSOR_INSTALL),
-                ("Getting started", CURSOR_GETTING_STARTED),
+                ("Comenzar (primeros pasos)", CURSOR_GETTING_STARTED),
+                ("Modelos", CURSOR_MODELS),
+                ("Precios y planes", CURSOR_ACCOUNT_PRICING),
+                ("Registro de cambios", CURSOR_CHANGELOG),
             ],
         )
         st.markdown(
             """
-            **Cursor** es un editor de código con AI integrada. Su documentación lo presenta como un editor AI-powered que entiende tu codebase y permite construir o cambiar código en lenguaje natural.
+            **Cursor** es un editor con IA y agente de programación: entiende el codebase, ayuda a planificar y desarrollar
+            funcionalidades, depurar, revisar diffs y enlazar con tu flujo (GitHub, Slack, etc.). La documentación oficial
+            cubre instalación, modelos, precios y novedades.
 
             Flujo recomendado para usarlo bien:
             1. Abrir el proyecto o repo.
@@ -2190,6 +2741,208 @@ Preserve current behavior and remove duplication."""
     )
 
 
+def angela_gatito_galileo_page():
+    section_title("Ejercicio para Angela · Gatito Galileo (vibe coding)")
+    lesson_header("Inicio › Vibe coding divertido › Angela · Gatito Galileo", 22)
+    objective_box(
+        "Qué se practica (en serio, pero con humor)",
+        [
+            "Nombrar variables claras y separar *datos* (parámetros del gato y del cielo) de la *figura* (Plotly).",
+            "Pedir a la IA cambios concretos: qué mover, qué no romper, cómo validar (¿se ve la luna?).",
+            "Entender que “generar una imagen” en código = construir geometría + estilos, no magia.",
+        ],
+    )
+    chips("Variables", "Funciones", "Plotly", "Prompts", "Angela", "Galileo")
+
+    st.markdown(
+        """
+        **Para Angela.** Galileo miró las lunas de Júpiter; **Gatito Galileo** mira la Luna… y las variables.
+        Este módulo es un mini laboratorio *ligero*: mismas ideas que en apps técnicas (parámetros → función → visual),
+        pero con bigotes y órbitas. Si te ríes un poco y aprendes a enunciar prompts, cumplió su misión.
+        """
+    )
+
+    st.markdown("##### Parámetros (alimentan la figura en todas las pestañas)")
+    c1, c2 = st.columns(2)
+    with c1:
+        nombre_gato = st.text_input("Nombre del gato astrónomo", value="Galileo", key="angela_nombre")
+        nivel_curiosidad = st.slider("Nivel de curiosidad (escala de orejas)", 0.3, 1.8, 1.0, 0.05, key="angela_cur")
+        fase_lunar = st.slider("Fase lunar iluminada (0 = nueva, 1 = llena)", 0.0, 1.0, 0.65, 0.01, key="angela_luna")
+    with c2:
+        longitud_bigotes = st.slider("Longitud de bigotes (px lógicos)", 0.4, 2.2, 1.0, 0.05, key="angela_big")
+        ang_orbita = st.slider("Ángulo de las lunas galileanas (°)", 0, 360, 42, 2, key="angela_orb")
+
+    tab_viz, tab_code, tab_prompt = st.tabs(["1 · Escena interactiva", "2 · Código didáctico", "3 · Prompts para Cursor"])
+
+    with tab_viz:
+        fig = build_gatito_galileo_figure(
+            nombre_gato=nombre_gato,
+            orejas=nivel_curiosidad,
+            fase=fase_lunar,
+            bigotes=longitud_bigotes,
+            ang_rad=np.deg2rad(ang_orbita),
+        )
+        dark_layout(fig)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            "La “imagen” es un gráfico vectorial (Plotly). Para **exportar PNG** en local: "
+            "`pip install kaleido` y luego `fig.write_image('gatito_galileo.png')`."
+        )
+
+    with tab_code:
+        st.markdown("### Variables que alimentan la escena")
+        st.code(
+            textwrap.dedent(
+                f"""
+                nombre_gato = "{nombre_gato}"          # str: identidad del personaje
+                nivel_curiosidad = {nivel_curiosidad:.2f}   # float: escala orejas / actitud
+                fase_lunar = {fase_lunar:.2f}          # float en [0, 1]: fracción iluminada
+                longitud_bigotes = {longitud_bigotes:.2f}   # float: longitud relativa
+                ang_orbita_deg = {ang_orbita}          # int: posición de las lunas de Júpiter
+
+                # Idea vibe coding: una función pura construye la figura desde parámetros.
+                fig = build_gatito_galileo_figure(...)
+                """
+            ),
+            language="python",
+        )
+        st.markdown(
+            """
+            **Por qué sirve:** cuando pidas ayuda a Cursor, nombra estas variables y qué deben controlar (orejas vs órbita).
+            Así el modelo no mezcla “luna llena” con “orejas de conejo” sin querer.
+            """
+        )
+
+    with tab_prompt:
+        st.markdown("### Copia, pega y ajusta en Cursor")
+        p1 = textwrap.dedent(
+            """
+            Add a small Python module `galileo_cat.py` with a pure function `build_gatito_galileo_figure(...)` that returns a Plotly figure.
+            Parameters: cat name (for title only), ear_scale, moon_phase_0_1, whisker_scale, moon_orbit_angle_rad.
+            Draw: (1) a simple cat face using filled polygons/lines, (2) a moon with illuminated fraction approximated by overlaying circles,
+            (3) Jupiter as a large marker and 4 smaller “Galilean moon” markers on a ring. No external images; only Plotly.
+            Include a short docstring explaining the educational purpose (vibe coding exercise for Angela).
+            """
+        )
+        p2 = textwrap.dedent(
+            """
+            Refactor the Streamlit page so sliders live in `sidebar` and the figure updates with `@st.cache_data` on a hash of parameters.
+            Keep behavior identical. Explain what you cached and why.
+            """
+        )
+        st.code(p1, language="markdown")
+        st.code(p2, language="markdown")
+
+    box(
+        "<b>Regla de oro:</b> si el prompt suena a cuento (“haz un gato bonito”), la IA improvisa; si suena a contrato "
+        "(parámetros, figura Plotly, validación visual), improvisa menos.",
+        "exercise",
+    )
+
+
+def build_gatito_galileo_figure(
+    *,
+    nombre_gato: str,
+    orejas: float,
+    fase: float,
+    bigotes: float,
+    ang_rad: float,
+) -> go.Figure:
+    """Escena 2D minimalista: gatito, Luna con fase, Júpiter + 4 lunas (solo Plotly)."""
+    fig = go.Figure()
+    fase = float(np.clip(fase, 0.0, 1.0))
+
+    # --- Cara: contorno ---
+    th = np.linspace(0, 2 * np.pi, 72)
+    r = 1.0
+    hx = r * np.cos(th)
+    hy = r * np.sin(th)
+    fig.add_trace(
+        go.Scatter(
+            x=hx, y=hy, mode="lines", fill="toself", fillcolor="rgba(148,163,184,0.35)",
+            line=dict(color="#94a3b8", width=2), name="Cara", hoverinfo="skip",
+        )
+    )
+
+    # Orejas (triángulos)
+    ear_l = np.column_stack([[-0.55, -0.15, 0.0], [0.75, 1.15 * orejas, 0.55]])
+    ear_r = np.column_stack([[0.55, 0.15, 0.0], [0.75, 1.15 * orejas, 0.55]])
+    for ex, ey, nm in [
+        (ear_l[:, 0], ear_l[:, 1], "Oreja L"),
+        (ear_r[:, 0], ear_r[:, 1], "Oreja R"),
+    ]:
+        fig.add_trace(
+            go.Scatter(
+                x=np.append(ex, ex[0]), y=np.append(ey, ey[0]), mode="lines", fill="toself",
+                fillcolor="rgba(251,146,60,0.55)", line=dict(color="#fb923c", width=1), name=nm, hoverinfo="skip",
+            )
+        )
+
+    # Ojos
+    fig.add_trace(go.Scatter(x=[-0.38, 0.38], y=[0.15, 0.15], mode="markers", marker=dict(size=14, color="#0f172a"), name="Ojos", hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=[-0.38, 0.38], y=[0.15, 0.15], mode="markers", marker=dict(size=5, color="#f8fafc"), name="Brillo", hoverinfo="skip"))
+
+    # Bigotes
+    b = bigotes * 0.85
+    for y0, sgn in [(0.05, -1), (-0.12, -1), (0.05, 1), (-0.12, 1)]:
+        fig.add_trace(
+            go.Scatter(
+                x=[sgn * 0.95, sgn * (0.95 + b)], y=[y0, y0 + 0.04 * sgn],
+                mode="lines", line=dict(color="#e2e8f0", width=2), name="Bigotes", showlegend=False, hoverinfo="skip",
+            )
+        )
+
+    # Luna (fase): disco + máscara aproximada con segundo disco desplazado
+    mx, my = 2.35, 1.1
+    rm = 0.45
+    moon_t = np.linspace(0, 2 * np.pi, 64)
+    fig.add_trace(
+        go.Scatter(
+            x=mx + rm * np.cos(moon_t), y=my + rm * np.sin(moon_t), mode="lines", fill="toself",
+            fillcolor="rgba(226,232,240,0.95)", line=dict(color="#cbd5e1", width=1), name="Luna", hoverinfo="skip",
+        )
+    )
+    off = (1.0 - fase) * 2.0 * rm
+    fig.add_trace(
+        go.Scatter(
+            x=mx + off + rm * np.cos(moon_t), y=my + rm * np.sin(moon_t), mode="lines", fill="toself",
+            fillcolor=DARK_BG, line=dict(width=0), name="Sombra luna", hoverinfo="skip", showlegend=False,
+        )
+    )
+
+    # Júpiter + 4 lunas galileanas
+    jx, jy = -2.2, -0.3
+    fig.add_trace(
+        go.Scatter(
+            x=[jx], y=[jy], mode="markers", name="Júpiter",
+            marker=dict(size=46, color="#d97706", line=dict(color="#fdba74", width=2)),
+            hoverinfo="skip",
+        )
+    )
+    radii = [0.65, 0.82, 1.05, 1.28]
+    cols = ["#38bdf8", "#f472b6", "#a78bfa", "#4ade80"]
+    for i, (rad, col) in enumerate(zip(radii, cols)):
+        a = ang_rad + i * 0.65
+        fig.add_trace(
+            go.Scatter(
+                x=[jx + rad * np.cos(a)], y=[jy + rad * np.sin(a)], mode="markers",
+                name=f"Luna {i+1}",
+                marker=dict(size=9, color=col, line=dict(color="#f8fafc", width=1)),
+                hoverinfo="skip",
+            )
+        )
+
+    fig.update_layout(
+        title=dict(text=f"{html.escape(nombre_gato)} · observador felino · fase lunar ≈ {fase:.0%}", font=dict(size=16)),
+        xaxis=dict(visible=False, range=[-3.6, 3.6], scaleanchor="y", scaleratio=1),
+        yaxis=dict(visible=False, range=[-2.2, 2.2]),
+        height=520,
+        margin=dict(l=20, r=20, t=60, b=20),
+        showlegend=False,
+    )
+    return fig
+
+
 PAGES = {
     "1. Bienvenida y mapa pro": intro_page,
     "2. Teoría de programación": programming_theory_page,
@@ -2216,9 +2969,12 @@ PAGES = {
     "23. Cómo usar Cursor y Claude Code": cursor_claude_howto_page,
     "24. Laboratorio de Python interactivo": python_lab_page,
     "25. Live coding studio pro": live_coding_page,
-    "26. Refactorización guiada": refactor_page,
-    "27. Deploy de la app paso a paso": deploy_page,
-    "28. Proyecto final y checklist": final_project_page,
+    "26. Caso Jusset Peña · Darcy + Python + prompts": darcy_jusset_pena_page,
+    "27. P10, P90, box plots y estadística (vibe coding)": statistics_p10_p90_boxplots_page,
+    "28. Refactorización guiada": refactor_page,
+    "29. Deploy de la app paso a paso": deploy_page,
+    "30. Proyecto final y checklist": final_project_page,
+    "31. Ejercicio para Angela · Gatito Galileo (vibe coding)": angela_gatito_galileo_page,
 }
 
 st.sidebar.title("Curso Pro")
