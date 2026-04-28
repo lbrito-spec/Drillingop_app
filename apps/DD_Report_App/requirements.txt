@@ -16,4 +16,5 @@ openpyxl
 # la app debe tolerar el fallo (ver plotly_figure_to_png_bytes) o instalar Chromium en la imagen.
 kaleido
 statsmodels
+reportlab
 
