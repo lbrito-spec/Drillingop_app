@@ -73,6 +73,84 @@ def dataframe_to_blob_text(sheets: Dict[str, pd.DataFrame]) -> str:
     return "\n".join(chunks)
 
 
+# ============================================================
+# OCR fallback para PDFs tipo Baker Hughes escaneados/imagen
+# ============================================================
+
+def ocr_pdf_bytes(pdf_bytes: bytes) -> str:
+    """
+    Fallback OCR para PDFs sin texto embebido.
+    Requiere en requirements.txt:
+      PyMuPDF
+      rapidocr-onnxruntime
+      pillow
+      numpy
+    """
+    try:
+        import fitz  # PyMuPDF
+        import numpy as np
+        from PIL import Image
+        from rapidocr_onnxruntime import RapidOCR
+    except Exception as exc:
+        raise RuntimeError(
+            "El PDF no trae texto seleccionable y se necesita OCR. "
+            "Agrega estas dependencias al requirements.txt: PyMuPDF, rapidocr-onnxruntime, pillow, numpy"
+        ) from exc
+
+    engine = RapidOCR()
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    pages_text = []
+
+    for page_index, page in enumerate(doc):
+        # 2x da mejor lectura de tablas sin hacer el archivo demasiado pesado
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+        img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+        result, _ = engine(np.array(img))
+
+        if not result:
+            pages_text.append("")
+            continue
+
+        items = []
+        for row in result:
+            try:
+                box, txt, score = row
+                # Convertimos score a float por si viene como string u otro tipo
+                f_score = float(score) if score is not None else 0.0
+                if f_score < 0.35:
+                    continue
+            except (ValueError, TypeError):
+                continue
+
+            xs = [p[0] for p in box]
+            ys = [p[1] for p in box]
+            items.append((min(ys), min(xs), clean_text(txt)))
+
+        items.sort(key=lambda x: (x[0], x[1]))
+
+        # Agrupa palabras/frases OCR por línea aproximada
+        lines = []
+        current_y = None
+        current = []
+        for y, x, txt in items:
+            if current_y is None or abs(y - current_y) <= 12:
+                current.append((x, txt))
+                current_y = y if current_y is None else (current_y * 0.7 + y * 0.3)
+            else:
+                current.sort(key=lambda t: t[0])
+                lines.append(" ".join(t for _, t in current))
+                current = [(x, txt)]
+                current_y = y
+
+        if current:
+            current.sort(key=lambda t: t[0])
+            lines.append(" ".join(t for _, t in current))
+
+        pages_text.append(f"\n--- OCR PAGE {page_index + 1} ---\n" + "\n".join(lines))
+
+    return "\n".join(pages_text)
+
+
 def read_any_file(uploaded_file) -> Tuple[Dict[str, pd.DataFrame], str, str]:
     name = uploaded_file.name.lower()
     data = uploaded_file.getvalue()
@@ -91,39 +169,67 @@ def read_any_file(uploaded_file) -> Tuple[Dict[str, pd.DataFrame], str, str]:
         return sheets, "txt", text
 
     if name.endswith(".pdf"):
+        text = ""
         try:
             import pdfplumber
-        except Exception as exc:
-            raise RuntimeError("Para leer PDF instala pdfplumber: pip install pdfplumber") from exc
+            pages = []
+            with pdfplumber.open(io.BytesIO(data)) as pdf:
+                for page in pdf.pages:
+                    pages.append(page.extract_text() or "")
+            text = "\n".join(pages).strip()
+        except Exception:
+            text = ""
 
-        pages = []
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
-            for page in pdf.pages:
-                pages.append(page.extract_text() or "")
-        text = "\n".join(pages)
+        # Si no hay texto útil, usa OCR
+        if len(re.sub(r"\s+", "", text)) < 80:
+            text = ocr_pdf_bytes(data)
+
         sheets = {"PDF": pd.DataFrame([[line] for line in text.splitlines()])}
         return sheets, "pdf", text
 
     raise ValueError("Formato no soportado. Usa Excel, CSV, TXT o PDF.")
 
 
+# ============================================================
+# Extracción de campos
+# ============================================================
+
 def find_value(text: str, labels: List[str], default: str = "") -> str:
     for label in labels:
+        # 1) Formato normal: LABEL: valor
         pattern = rf"{label}\s*[:\-]?\s*([^\n\r]+)"
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             value = match.group(1).strip()
             value = re.split(
-                r"\s{2,}|\t| FOLIO:| FECHA:| HORA:| CLIENTE:| COMPAÑÍA:| COMPANIA:",
+                r"\s{2,}|\t| FOLIO:| FECHA:| HORA:| CLIENTE:| COMPAÑÍA:| COMPANIA:| OPERATOR:| WELLBORE:| REPORT DATE:| REPORT CREATED:",
                 value,
                 flags=re.IGNORECASE,
             )[0].strip()
-            return value
+            if value:
+                return value
+
     return default
+
+
+def find_value_after_label_in_same_line(text: str, label: str, default: str = "") -> str:
+    """
+    Ayuda para tablas OCR donde aparece:
+      OPERATOR: Geopark JOB NO: 113...
+    """
+    pattern = rf"{label}\s*[:\-]?\s*([A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ()./#_\- ]+?)(?=\s+[A-Z][A-Z /()]+:|\n|$)"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if not match:
+        return default
+    value = clean_text(match.group(1))
+    return value or default
 
 
 def extract_depth(text: str) -> str:
     patterns = [
+        r"expected\s+td\s*/?\s*depth\s*[:\-]?\s*(?:m\s*)?([0-9,]+(?:\.[0-9]+)?)",
+        r"end\s+drilling\s*[:\-]?\s*(?:m\s*)?([0-9,]+(?:\.[0-9]+)?)",
+        r"midnight\s+depth\s*(?:m)?\s*([0-9,]+(?:\.[0-9]+)?)",
         r"prof(?:undidad)?\.?\s*(?:actual)?\s*[:\-]?\s*([0-9,]+(?:\.[0-9]+)?)\s*m",
         r"(?:md|depth)\s*[:\-]?\s*([0-9,]+(?:\.[0-9]+)?)",
     ]
@@ -160,12 +266,16 @@ def extract_between_markers(text: str, start_markers: List[str], stop_markers: L
 
 
 def extract_following_value(text: str, label: str) -> str:
-    pattern = rf"{label}\s*[:\-]?\s*(.*?)(?=\n\s*(?:Siguiente|Programa|% Solubilidad|Cromatograf[ií]a|Lecturas promedio|An[aá]lisis del lodo|Par[aá]metros de Perforaci[oó]n)\b|$)"
+    pattern = rf"{label}\s*[:\-]?\s*(.*?)(?=\n\s*(?:Siguiente|Programa|% Solubilidad|Cromatograf[ií]a|Lecturas promedio|An[aá]lisis del lodo|Par[aá]metros de Perforaci[oó]n|Daily Activity Summary|Latest Survey|Wellbore|BHA Configuration)\b|$)"
     match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
     if not match:
         return ""
     return clean_text(match.group(1))
 
+
+# ============================================================
+# Actividades / horas
+# ============================================================
 
 def normalize_time(value: str) -> str:
     value = clean_text(value).lower().replace("hrs", "").replace("hr", "").strip()
@@ -209,7 +319,6 @@ def normalize_activity_sequence(activities: List[Activity]) -> List[Activity]:
         else:
             fixed.append(Activity(start=start, end=end, text=activity.text))
 
-    # Si hay continuidad después de 24:00, conserva el orden de aparición.
     has_next_day_tail = any(a.start == "00:00" and index > 0 for index, a in enumerate(fixed))
     if not has_next_day_tail:
         fixed = sorted(fixed, key=lambda a: (time_to_minutes(a.start), time_to_minutes(a.end)))
@@ -217,7 +326,7 @@ def normalize_activity_sequence(activities: List[Activity]) -> List[Activity]:
     return fixed
 
 
-def split_activity_text(text: str) -> List[Activity]:
+def parse_standard_operations(text: str) -> List[Activity]:
     operation_text = extract_between_markers(
         text,
         start_markers=[r"\bOPERACIONES\b", r"\bOPERACION\b", r"\bOPERACIÓN\b"],
@@ -234,6 +343,9 @@ def split_activity_text(text: str) -> List[Activity]:
         ],
     )
 
+    if not re.search(r"\bOPERACIONES\b|\bOPERACION\b|\bOPERACIÓN\b", text, re.IGNORECASE):
+        return []
+
     pattern = re.compile(
         r"(?P<start>\b\d{1,2}:?\d{2})\s*(?:-|a|A)\s*(?P<end>\d{1,2}:?\d{2})\s*(?:hrs?\.?|horas)?",
         re.IGNORECASE,
@@ -247,7 +359,6 @@ def split_activity_text(text: str) -> List[Activity]:
         body_start = match.end()
         body_end = matches[index + 1].start() if index + 1 < len(matches) else len(operation_text)
         body = operation_text[body_start:body_end].strip(" .:-\n")
-
         body = re.split(r"\bSiguiente\s*[:\-]", body, flags=re.IGNORECASE)[0]
         body = re.split(r"\bPrograma\s*[:\-]", body, flags=re.IGNORECASE)[0]
         body = clean_text(body)
@@ -258,21 +369,88 @@ def split_activity_text(text: str) -> List[Activity]:
     return normalize_activity_sequence(activities)
 
 
+def parse_baker_daily_activity(text: str) -> List[Activity]:
+    """
+    Parser para Baker Hughes DDR.
+    Busca la tabla 'Daily Activity Summary' que trae:
+      START TIME | END TIME | DURATION | ACTIVITY | COMMENTS
+    Funciona con texto OCR o texto extraído del PDF.
+    """
+    section = extract_between_markers(
+        text,
+        start_markers=[r"Daily Activity Summary", r"Daily Activity"],
+        stop_markers=[r"\n\s*file:", r"\n\s*\d+\s*/\s*\d+\s*$"],
+    )
+
+    if not re.search(r"Daily Activity", text, re.IGNORECASE):
+        return []
+
+    # Une para que filas OCR partidas se puedan leer.
+    compact = re.sub(r"[ \t]+", " ", section)
+    compact = re.sub(r"\n+", " ", compact)
+
+    # Encuentra todas las posiciones con par start/end.
+    time_pair = re.compile(r"(?P<start>\b\d{2}:\d{2})\s+(?P<end>\d{2}:\d{2})")
+    matches = list(time_pair.finditer(compact))
+
+    activities: List[Activity] = []
+    for i, match in enumerate(matches):
+        start = normalize_time(match.group("start"))
+        end = normalize_time(match.group("end"))
+        body_start = match.end()
+        body_end = matches[i + 1].start() if i + 1 < len(matches) else len(compact)
+        body = compact[body_start:body_end].strip(" .:-")
+
+        # Quita columnas numéricas iniciales: start depth/end depth/duration.
+        body = re.sub(r"^(?:\d+(?:\.\d+)?\s+){0,4}", "", body).strip()
+
+        # Limpia encabezados que se pegan por OCR.
+        body = re.sub(
+            r"START TIME|END TIME|START DEPTH|END DEPTH|DURATION|ACTIVITY|COMMENTS",
+            "",
+            body,
+            flags=re.IGNORECASE,
+        )
+        body = clean_text(body)
+
+        if body and not re.fullmatch(r"\d+(?:\.\d+)?", body):
+            activities.append(Activity(start=start, end=end, text=body))
+
+    return normalize_activity_sequence(activities)
+
+
+def split_activity_text(text: str) -> List[Activity]:
+    activities = parse_standard_operations(text)
+    if activities:
+        return activities
+
+    activities = parse_baker_daily_activity(text)
+    if activities:
+        return activities
+
+    return []
+
+
 def build_operation_text(activities: List[Activity], fallback_text: str) -> str:
     if not activities:
         fallback = extract_between_markers(
             fallback_text,
-            start_markers=[r"\bOPERACIONES\b", r"\bOPERACION\b", r"\bOPERACIÓN\b"],
+            start_markers=[
+                r"\bOPERACIONES\b",
+                r"\bOPERACION\b",
+                r"\bOPERACIÓN\b",
+                r"Operational Summary",
+                r"Daily Activity Summary",
+            ],
             stop_markers=[
                 r"\n\s*% Solubilidad\b",
                 r"\n\s*Cromatograf[ií]a\b",
                 r"\n\s*Lecturas promedio de gas\b",
                 r"\n\s*An[aá]lisis del lodo\b",
                 r"\n\s*Par[aá]metros de Perforaci[oó]n\b",
-                r"\n\s*Estimaci[oó]n de presi[oó]n\b",
-                r"\n\s*Datos de barrena\b",
-                r"\n\s*Hidr[aá]ulica\b",
-                r"\n\s*Observaciones\b",
+                r"\n\s*Latest Survey",
+                r"\n\s*Wellbore",
+                r"\n\s*BHA Configuration",
             ],
         )
         return fallback[:8000]
@@ -293,27 +471,80 @@ def validate_hour_sequence(activities: List[Activity]) -> List[str]:
     return warnings
 
 
-def extract_report(raw_text: str) -> Dict[str, str]:
+def extract_baker_operational_summary(text: str) -> str:
+    section = extract_between_markers(
+        text,
+        start_markers=[r"Operational Summary"],
+        stop_markers=[r"\n\s*24\s*Hr Tracking", r"\n\s*Drilling Parameters", r"\n\s*Fluid Parameters"],
+    )
+    section = re.sub(r"DAILY OPERATIONS", "", section, flags=re.IGNORECASE)
+    section = re.sub(r"24 HOUR FORECAST.*", "", section, flags=re.IGNORECASE)
+    return clean_text(section)
+
+
+def extract_report(raw_text: str, uploaded_name: str = "") -> Dict[str, str]:
     blob = clean_multiline_text(raw_text)
     activities = split_activity_text(blob)
 
+    pozo = (
+        find_value_after_label_in_same_line(blob, "WELLBORE")
+        or find_value(blob, ["NOMBRE DEL POZO", "POZO", "WELL NAME", "WELLBORE", "WELL"], "")
+    )
+
+    if not pozo and uploaded_name:
+        # Ej: LJE-1031(h)_DDR 9_04_28_2026.pdf
+        m = re.search(r"([A-Za-z]{2,5}-\d{3,5}\(?[A-Za-z]?\)?)", uploaded_name)
+        if m:
+            pozo = m.group(1)
+
+    cliente = (
+        find_value_after_label_in_same_line(blob, "OPERATOR")
+        or find_value(blob, ["CLIENTE", "CLIENT", "OPERATOR"], "PEMEX EXPLORACION Y PRODUCCION")
+    )
+
+    compania = (
+        find_value_after_label_in_same_line(blob, "CONTRACTOR")
+        or find_value(blob, ["COMPAÑÍA", "COMPANIA", "COMPANY", "CONTRACTOR"], "")
+    )
+
+    fecha = (
+        find_value_after_label_in_same_line(blob, "REPORT DATE")
+        or find_value_after_label_in_same_line(blob, "REPORT CREATED")
+        or find_value(blob, ["FECHA", "DATE", "REPORT DATE", "REPORT CREATED"], datetime.now().strftime("%d/%m/%Y"))
+    )
+
+    ciudad_estado = (
+        find_value_after_label_in_same_line(blob, "STATE/PROVINCE")
+        or find_value(blob, ["ESTADO", "STATE/PROVINCE", "STATE"], "")
+    )
+
+    operational_summary = extract_baker_operational_summary(blob)
+    operation_text = build_operation_text(activities, blob)
+
+    if operational_summary:
+        operation_text = f"Resumen operacional: {operational_summary}\n\n{operation_text}"
+
     return {
-        "cliente": find_value(blob, ["CLIENTE", "CLIENT"], "PEMEX EXPLORACION Y PRODUCCION"),
-        "compania": find_value(blob, ["COMPAÑÍA", "COMPANIA", "COMPANY"], ""),
-        "pozo": find_value(blob, ["NOMBRE DEL POZO", "POZO", "WELL NAME", "WELL"], ""),
-        "ciudad": find_value(blob, ["CIUDAD", "CITY"], ""),
-        "estado": find_value(blob, ["ESTADO", "STATE"], ""),
-        "folio": find_value(blob, ["FOLIO"], ""),
-        "fecha": find_value(blob, ["FECHA", "DATE"], datetime.now().strftime("%d/%m/%Y")),
-        "hora": find_value(blob, ["HORA", "TIME"], "24:00 hrs"),
+        "cliente": cliente,
+        "compania": compania,
+        "pozo": pozo,
+        "ciudad": find_value(blob, ["CIUDAD", "CITY", "LOCATION"], ""),
+        "estado": ciudad_estado,
+        "folio": find_value_after_label_in_same_line(blob, "JOB NO") or find_value(blob, ["FOLIO", "JOB NO"], ""),
+        "fecha": fecha,
+        "hora": "24:00 hrs",
         "profundidad": extract_depth(blob),
         "operacion_actual": "",
-        "operacion": build_operation_text(activities, blob),
+        "operacion": operation_text,
         "siguiente": extract_following_value(blob, "Siguiente"),
         "programa": extract_following_value(blob, "Programa"),
         "_activities": activities,
     }
 
+
+# ============================================================
+# Email
+# ============================================================
 
 def send_email_with_attachment(to_email: str, attachment_bytes: bytes, attachment_name: str, mime_type: str):
     smtp_server = get_secret("SMTP_SERVER", "smtp.gmail.com")
@@ -338,6 +569,10 @@ def send_email_with_attachment(to_email: str, attachment_bytes: bytes, attachmen
         server.login(smtp_user, smtp_pass)
         server.send_message(msg)
 
+
+# ============================================================
+# PDF general sin logo ni tablas extra
+# ============================================================
 
 def split_long_blocks(text: str, max_chars: int = 1200) -> List[str]:
     blocks = [block.strip() for block in re.split(r"\n\s*\n+", text) if block.strip()]
@@ -376,16 +611,7 @@ def make_pdf(report: Dict[str, str]) -> bytes:
     bold = ParagraphStyle("bold", parent=normal, fontName="Helvetica-Bold")
     title = ParagraphStyle("title", parent=bold, fontSize=11, leading=13, alignment=TA_CENTER)
     section = ParagraphStyle("section", parent=bold, fontSize=9, leading=11, alignment=TA_LEFT)
-    operation_style = ParagraphStyle(
-        "operation",
-        parent=normal,
-        fontSize=8,
-        leading=10,
-        borderWidth=0.35,
-        borderColor=BORDER,
-        borderPadding=4,
-        spaceAfter=4,
-    )
+    operation_style = ParagraphStyle("operation", parent=normal, fontSize=8, leading=10, borderWidth=0.35, borderColor=BORDER, borderPadding=4, spaceAfter=4)
 
     story = []
 
@@ -401,10 +627,10 @@ def make_pdf(report: Dict[str, str]) -> bytes:
     story.append(Spacer(1, 8))
 
     metadata = Table([
-        [Paragraph(f"<b>CLIENTE:</b> {xml_escape(report.get('cliente', ''))}", normal), Paragraph(f"<b>FOLIO:</b> {xml_escape(report.get('folio', ''))}", normal)],
-        [Paragraph(f"<b>COMPAÑÍA:</b> {xml_escape(report.get('compania', ''))}", normal), Paragraph(f"<b>FECHA:</b> {xml_escape(report.get('fecha', ''))}", normal)],
+        [Paragraph(f"<b>CLIENTE/OPERADOR:</b> {xml_escape(report.get('cliente', ''))}", normal), Paragraph(f"<b>FOLIO/JOB:</b> {xml_escape(report.get('folio', ''))}", normal)],
+        [Paragraph(f"<b>COMPAÑÍA/CONTRATISTA:</b> {xml_escape(report.get('compania', ''))}", normal), Paragraph(f"<b>FECHA:</b> {xml_escape(report.get('fecha', ''))}", normal)],
         [Paragraph(f"<b>NOMBRE DEL POZO:</b> {xml_escape(report.get('pozo', ''))}", normal), Paragraph(f"<b>HORA:</b> {xml_escape(report.get('hora', ''))}", normal)],
-        [Paragraph(f"<b>CIUDAD:</b> {xml_escape(report.get('ciudad', ''))}", normal), Paragraph(f"<b>ESTADO:</b> {xml_escape(report.get('estado', ''))}", normal)],
+        [Paragraph(f"<b>CIUDAD/LOCATION:</b> {xml_escape(report.get('ciudad', ''))}", normal), Paragraph(f"<b>ESTADO:</b> {xml_escape(report.get('estado', ''))}", normal)],
         [Paragraph(f"<b>PROFUNDIDAD ACTUAL (m):</b> {xml_escape(report.get('profundidad', ''))}", normal), Paragraph(f"<b>OPERACIÓN ACTUAL:</b> {xml_escape(report.get('operacion_actual', ''))}", normal)],
     ], colWidths=[120 * mm, 66 * mm])
     metadata.setStyle(TableStyle([
@@ -438,6 +664,10 @@ def make_pdf(report: Dict[str, str]) -> bytes:
     return buffer.getvalue()
 
 
+# ============================================================
+# UI
+# ============================================================
+
 st.markdown("""
 <style>
 .block-container { padding-top: 1.2rem; max-width: 1400px; }
@@ -446,7 +676,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("Conversor de Daily Report a formato general para Rogii Email Parsing")
-st.caption("Carga un Daily Report en Excel, CSV, TXT o PDF. La app extrae operaciones, elimina secciones no necesarias y genera un PDF simple para lectura por email parsing.")
+st.caption(
+    "Carga un Daily Report en Excel, CSV, TXT o PDF. "
+    "Incluye soporte OCR para PDFs tipo Baker Hughes que vienen como imagen."
+)
 
 with st.sidebar:
     st.header("Parsing Email")
@@ -460,7 +693,8 @@ uploaded = st.file_uploader("Sube Daily Report", type=["xlsx", "xls", "csv", "tx
 if uploaded:
     try:
         sheets, file_type, raw_text = read_any_file(uploaded)
-        report = extract_report(raw_text)
+        report = extract_report(raw_text, uploaded.name)
+
         st.success(f"Archivo leído como {file_type.upper()}")
 
         left, right = st.columns([1, 1])
@@ -488,7 +722,10 @@ if uploaded:
 
         with right:
             st.subheader("Operaciones normalizadas")
-            st.info("Se eliminan cromatografía, lecturas de gas, lodo, parámetros, hidráulica y observaciones. Solo se envían metadatos + operaciones + siguiente/programa.")
+            st.info(
+                "Se extrae la tabla Daily Activity Summary cuando existe. "
+                "Se eliminan secciones no necesarias como BHA, bit, personal, costos, parámetros, lodo e hidráulica."
+            )
 
             activities = split_activity_text(raw_text)
             warnings = validate_hour_sequence(activities)
@@ -512,7 +749,7 @@ if uploaded:
                     st.success(f"PDF enviado correctamente a {to_email} con el archivo {output_name}")
 
         with st.expander("Vista previa del texto fuente detectado"):
-            st.text(clean_multiline_text(raw_text)[:12000])
+            st.text(clean_multiline_text(raw_text)[:20000])
 
     except Exception as exc:
         st.exception(exc)
