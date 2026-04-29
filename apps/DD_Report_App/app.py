@@ -1,25 +1,26 @@
+
 import io
 import re
 import smtplib
 from dataclasses import dataclass
 from datetime import datetime
 from email.message import EmailMessage
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import pandas as pd
 import streamlit as st
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-st.set_page_config(page_title="Daily Report -> BOSS Dashboard", page_icon="🛢️", layout="wide")
+st.set_page_config(page_title="Daily Report -> Rogii Email Parsing", page_icon="🛢️", layout="wide")
 
 GREEN = colors.HexColor("#68cbb3")
 BORDER = colors.HexColor("#222222")
+
 
 @dataclass
 class Activity:
@@ -31,33 +32,34 @@ class Activity:
 def clean_text(value) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
-    return re.sub(r"\s+", " ", str(value)).strip()
+    value = str(value).replace("\u00a0", " ").replace("–", "-").replace("—", "-")
+    return re.sub(r"[ \t]+", " ", value).strip()
 
 
-def read_any_file(uploaded_file) -> Tuple[Dict[str, pd.DataFrame], str]:
-    name = uploaded_file.name.lower()
-    data = uploaded_file.getvalue()
-    if name.endswith((".xlsx", ".xls")):
-        sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, header=None, dtype=str)
-        return sheets, "excel"
-    if name.endswith(".csv"):
-        return {"CSV": pd.read_csv(io.BytesIO(data), header=None, dtype=str)}, "csv"
-    if name.endswith(".txt"):
-        text = data.decode("utf-8", errors="ignore")
-        rows = [[line] for line in text.splitlines()]
-        return {"TXT": pd.DataFrame(rows)}, "txt"
-    if name.endswith(".pdf"):
-        try:
-            import pdfplumber
-        except Exception as exc:
-            raise RuntimeError("Para leer PDF instala pdfplumber: pip install pdfplumber") from exc
-        text_pages = []
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
-            for page in pdf.pages:
-                text_pages.append(page.extract_text() or "")
-        rows = [[line] for line in "\n".join(text_pages).splitlines()]
-        return {"PDF": pd.DataFrame(rows)}, "pdf"
-    raise ValueError("Formato no soportado. Usa Excel, CSV, TXT o PDF.")
+def clean_multiline_text(value: str) -> str:
+    value = value.replace("\u00a0", " ").replace("–", "-").replace("—", "-")
+    value = re.sub(r"[ \t]+", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def xml_escape(text: str) -> str:
+    text = clean_text(text)
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def sanitize_filename(value: str, default: str = "SIN_POZO") -> str:
+    value = clean_text(value) or default
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+    value = value.strip("._-")
+    return value or default
+
+
+def get_secret(name: str, default=None):
+    try:
+        return st.secrets[name]
+    except Exception:
+        return default
 
 
 def dataframe_to_blob_text(sheets: Dict[str, pd.DataFrame]) -> str:
@@ -71,80 +73,230 @@ def dataframe_to_blob_text(sheets: Dict[str, pd.DataFrame]) -> str:
     return "\n".join(chunks)
 
 
+def read_any_file(uploaded_file) -> Tuple[Dict[str, pd.DataFrame], str, str]:
+    name = uploaded_file.name.lower()
+    data = uploaded_file.getvalue()
+
+    if name.endswith((".xlsx", ".xls")):
+        sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, header=None, dtype=str)
+        return sheets, "excel", dataframe_to_blob_text(sheets)
+
+    if name.endswith(".csv"):
+        sheets = {"CSV": pd.read_csv(io.BytesIO(data), header=None, dtype=str)}
+        return sheets, "csv", dataframe_to_blob_text(sheets)
+
+    if name.endswith(".txt"):
+        text = data.decode("utf-8", errors="ignore")
+        sheets = {"TXT": pd.DataFrame([[line] for line in text.splitlines()])}
+        return sheets, "txt", text
+
+    if name.endswith(".pdf"):
+        try:
+            import pdfplumber
+        except Exception as exc:
+            raise RuntimeError("Para leer PDF instala pdfplumber: pip install pdfplumber") from exc
+
+        pages = []
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            for page in pdf.pages:
+                pages.append(page.extract_text() or "")
+        text = "\n".join(pages)
+        sheets = {"PDF": pd.DataFrame([[line] for line in text.splitlines()])}
+        return sheets, "pdf", text
+
+    raise ValueError("Formato no soportado. Usa Excel, CSV, TXT o PDF.")
+
+
 def find_value(text: str, labels: List[str], default: str = "") -> str:
     for label in labels:
         pattern = rf"{label}\s*[:\-]?\s*([^\n\r]+)"
-        m = re.search(pattern, text, re.IGNORECASE)
-        if m:
-            value = m.group(1).strip()
-            value = re.split(r"\s{2,}|\t| FOLIO:| FECHA:| HORA:", value)[0].strip()
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            value = match.group(1).strip()
+            value = re.split(
+                r"\s{2,}|\t| FOLIO:| FECHA:| HORA:| CLIENTE:| COMPAÑÍA:| COMPANIA:",
+                value,
+                flags=re.IGNORECASE,
+            )[0].strip()
             return value
     return default
 
 
 def extract_depth(text: str) -> str:
-    patterns = [r"prof(?:undidad)?\.?\s*(?:actual)?\s*[:\-]?\s*([0-9,]+(?:\.[0-9]+)?)\s*m", r"(?:md|depth)\s*[:\-]?\s*([0-9,]+(?:\.[0-9]+)?)"]
-    for p in patterns:
-        m = re.search(p, text, re.IGNORECASE)
-        if m:
-            return m.group(1).replace(",", "")
+    patterns = [
+        r"prof(?:undidad)?\.?\s*(?:actual)?\s*[:\-]?\s*([0-9,]+(?:\.[0-9]+)?)\s*m",
+        r"(?:md|depth)\s*[:\-]?\s*([0-9,]+(?:\.[0-9]+)?)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).replace(",", "")
     return "0.0"
 
 
-def normalize_time(t: str) -> str:
-    t = t.strip().lower().replace("hrs", "").replace("hr", "")
-    m = re.match(r"(\d{1,2})(?::(\d{2}))?", t)
-    if not m:
-        return t
-    h = int(m.group(1))
-    minute = int(m.group(2) or 0)
-    if h == 24:
+def extract_between_markers(text: str, start_markers: List[str], stop_markers: List[str]) -> str:
+    start_idx = -1
+    for marker in start_markers:
+        match = re.search(marker, text, re.IGNORECASE)
+        if match:
+            start_idx = match.end()
+            break
+
+    if start_idx < 0:
+        start_idx = 0
+
+    sub = text[start_idx:]
+
+    stops = []
+    for marker in stop_markers:
+        match = re.search(marker, sub, re.IGNORECASE)
+        if match:
+            stops.append(match.start())
+
+    if stops:
+        sub = sub[: min(stops)]
+
+    return clean_multiline_text(sub)
+
+
+def extract_following_value(text: str, label: str) -> str:
+    pattern = rf"{label}\s*[:\-]?\s*(.*?)(?=\n\s*(?:Siguiente|Programa|% Solubilidad|Cromatograf[ií]a|Lecturas promedio|An[aá]lisis del lodo|Par[aá]metros de Perforaci[oó]n)\b|$)"
+    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return clean_text(match.group(1))
+
+
+def normalize_time(value: str) -> str:
+    value = clean_text(value).lower().replace("hrs", "").replace("hr", "").strip()
+    match = re.match(r"^(\d{1,2})(?::?(\d{2}))?$", value)
+    if not match:
+        return value
+
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+
+    if hour == 24:
         return "24:00"
-    h = h % 24
-    return f"{h:02d}:{minute:02d}"
+
+    return f"{hour % 24:02d}:{minute:02d}"
 
 
-def split_activity_text(text: str) -> List[Activity]:
-    pattern = re.compile(r"(?P<start>\b\d{1,2}:?\d{0,2})\s*(?:-|a|A|–|—)\s*(?P<end>\d{1,2}:?\d{0,2})\s*(?:hrs?\.?|horas)?", re.IGNORECASE)
-    matches = list(pattern.finditer(text))
-    activities = []
-    for i, match in enumerate(matches):
-        start = normalize_time(match.group("start"))
-        end = normalize_time(match.group("end"))
-        content_start = match.end()
-        content_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        body = text[content_start:content_end].strip(" .:-\n")
-        if body:
-            activities.append(Activity(start=start, end=end, text=body))
-    return activities
+def time_to_minutes(value: str) -> int:
+    value = normalize_time(value)
+    if value == "24:00":
+        return 1440
+    match = re.match(r"^(\d{2}):(\d{2})$", value)
+    if not match:
+        return 0
+    return int(match.group(1)) * 60 + int(match.group(2))
 
 
 def normalize_activity_sequence(activities: List[Activity]) -> List[Activity]:
     fixed = []
-    for a in activities:
-        start, end = a.start, a.end
-        if start in {"24:00", "24:0"}:
-            start = "00:00"
-        if end == "00:00" and start != "00:00":
-            end = "24:00"
-        fixed.append(Activity(start, end, a.text))
+
+    for activity in activities:
+        start = normalize_time(activity.start)
+        end = normalize_time(activity.end)
+        start_minutes = time_to_minutes(start)
+        end_minutes = time_to_minutes(end)
+
+        if end_minutes < start_minutes and end != "24:00":
+            fixed.append(Activity(start=start, end="24:00", text=activity.text))
+            fixed.append(Activity(start="00:00", end=end, text=activity.text))
+        elif end == "00:00" and start != "00:00":
+            fixed.append(Activity(start=start, end="24:00", text=activity.text))
+        else:
+            fixed.append(Activity(start=start, end=end, text=activity.text))
+
+    # Si hay continuidad después de 24:00, conserva el orden de aparición.
+    has_next_day_tail = any(a.start == "00:00" and index > 0 for index, a in enumerate(fixed))
+    if not has_next_day_tail:
+        fixed = sorted(fixed, key=lambda a: (time_to_minutes(a.start), time_to_minutes(a.end)))
+
     return fixed
+
+
+def split_activity_text(text: str) -> List[Activity]:
+    operation_text = extract_between_markers(
+        text,
+        start_markers=[r"\bOPERACIONES\b", r"\bOPERACION\b", r"\bOPERACIÓN\b"],
+        stop_markers=[
+            r"\n\s*% Solubilidad\b",
+            r"\n\s*Cromatograf[ií]a\b",
+            r"\n\s*Lecturas promedio de gas\b",
+            r"\n\s*An[aá]lisis del lodo\b",
+            r"\n\s*Par[aá]metros de Perforaci[oó]n\b",
+            r"\n\s*Estimaci[oó]n de presi[oó]n\b",
+            r"\n\s*Datos de barrena\b",
+            r"\n\s*Hidr[aá]ulica\b",
+            r"\n\s*Observaciones\b",
+        ],
+    )
+
+    pattern = re.compile(
+        r"(?P<start>\b\d{1,2}:?\d{2})\s*(?:-|a|A)\s*(?P<end>\d{1,2}:?\d{2})\s*(?:hrs?\.?|horas)?",
+        re.IGNORECASE,
+    )
+    matches = list(pattern.finditer(operation_text))
+
+    activities = []
+    for index, match in enumerate(matches):
+        start = normalize_time(match.group("start"))
+        end = normalize_time(match.group("end"))
+        body_start = match.end()
+        body_end = matches[index + 1].start() if index + 1 < len(matches) else len(operation_text)
+        body = operation_text[body_start:body_end].strip(" .:-\n")
+
+        body = re.split(r"\bSiguiente\s*[:\-]", body, flags=re.IGNORECASE)[0]
+        body = re.split(r"\bPrograma\s*[:\-]", body, flags=re.IGNORECASE)[0]
+        body = clean_text(body)
+
+        if body:
+            activities.append(Activity(start=start, end=end, text=body))
+
+    return normalize_activity_sequence(activities)
 
 
 def build_operation_text(activities: List[Activity], fallback_text: str) -> str:
     if not activities:
-        return fallback_text[:5000]
-    parts = []
-    for a in normalize_activity_sequence(activities):
-        parts.append(f"{a.start}-{a.end} hrs. {a.text}")
-    return "\n\n".join(parts)
+        fallback = extract_between_markers(
+            fallback_text,
+            start_markers=[r"\bOPERACIONES\b", r"\bOPERACION\b", r"\bOPERACIÓN\b"],
+            stop_markers=[
+                r"\n\s*% Solubilidad\b",
+                r"\n\s*Cromatograf[ií]a\b",
+                r"\n\s*Lecturas promedio de gas\b",
+                r"\n\s*An[aá]lisis del lodo\b",
+                r"\n\s*Par[aá]metros de Perforaci[oó]n\b",
+                r"\n\s*Estimaci[oó]n de presi[oó]n\b",
+                r"\n\s*Datos de barrena\b",
+                r"\n\s*Hidr[aá]ulica\b",
+                r"\n\s*Observaciones\b",
+            ],
+        )
+        return fallback[:8000]
+
+    return "\n\n".join(f"{a.start}-{a.end} hrs. {a.text}" for a in activities)
 
 
-def extract_report(sheets: Dict[str, pd.DataFrame]) -> Dict[str, str]:
-    blob = dataframe_to_blob_text(sheets)
+def validate_hour_sequence(activities: List[Activity]) -> List[str]:
+    warnings = []
+    previous_end = None
+
+    for activity in activities:
+        if previous_end and activity.start != previous_end:
+            if not (previous_end == "24:00" and activity.start == "00:00"):
+                warnings.append(f"Posible salto de horario: termina {previous_end} y la siguiente inicia {activity.start}.")
+        previous_end = activity.end
+
+    return warnings
+
+
+def extract_report(raw_text: str) -> Dict[str, str]:
+    blob = clean_multiline_text(raw_text)
     activities = split_activity_text(blob)
-    operation_text = build_operation_text(activities, blob)
-    today = datetime.now().strftime("%d/%m/%Y")
+
     return {
         "cliente": find_value(blob, ["CLIENTE", "CLIENT"], "PEMEX EXPLORACION Y PRODUCCION"),
         "compania": find_value(blob, ["COMPAÑÍA", "COMPANIA", "COMPANY"], ""),
@@ -152,33 +304,15 @@ def extract_report(sheets: Dict[str, pd.DataFrame]) -> Dict[str, str]:
         "ciudad": find_value(blob, ["CIUDAD", "CITY"], ""),
         "estado": find_value(blob, ["ESTADO", "STATE"], ""),
         "folio": find_value(blob, ["FOLIO"], ""),
-        "fecha": find_value(blob, ["FECHA", "DATE"], today),
+        "fecha": find_value(blob, ["FECHA", "DATE"], datetime.now().strftime("%d/%m/%Y")),
         "hora": find_value(blob, ["HORA", "TIME"], "24:00 hrs"),
         "profundidad": extract_depth(blob),
-        "ultimos_tiempos": "-",
-        "velocidad_promedio": "-",
-        "profundidad_atraso": "-",
-        "record_barrena": "-",
-        "tiempo_atraso": "-",
         "operacion_actual": "",
-        "operacion": operation_text,
-        "siguiente": find_value(blob, ["Siguiente", "Next"], ""),
-        "programa": find_value(blob, ["Programa", "Program"], ""),
+        "operacion": build_operation_text(activities, blob),
+        "siguiente": extract_following_value(blob, "Siguiente"),
+        "programa": extract_following_value(blob, "Programa"),
+        "_activities": activities,
     }
-
-
-def get_secret(name: str, default=None):
-    try:
-        return st.secrets[name]
-    except Exception:
-        return default
-
-
-def sanitize_filename(value: str, default: str = "SIN_POZO") -> str:
-    value = clean_text(value) or default
-    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
-    value = value.strip("._-")
-    return value or default
 
 
 def send_email_with_attachment(to_email: str, attachment_bytes: bytes, attachment_name: str, mime_type: str):
@@ -191,158 +325,197 @@ def send_email_with_attachment(to_email: str, attachment_bytes: bytes, attachmen
         raise RuntimeError("Faltan credenciales SMTP en .streamlit/secrets.toml. Configura SMTP_USER y SMTP_PASS antes de enviar.")
 
     msg = EmailMessage()
-    msg["Subject"] = f"Daily Report para BOSS Dashboard - {attachment_name}"
+    msg["Subject"] = f"Daily Report para Rogii Email Parsing - {attachment_name}"
     msg["From"] = smtp_user
     msg["To"] = to_email
-    msg.set_content("Hola,\n\nAdjunto el Daily Report convertido al formato que puede leer BOSS Dashboard.\n\nSaludos.")
+    msg.set_content("Hola,\n\nAdjunto el Daily Report convertido a formato general para lectura de Rogii/BOSS Dashboard.\n\nSaludos.")
+
     maintype, subtype = mime_type.split("/", 1)
     msg.add_attachment(attachment_bytes, maintype=maintype, subtype=subtype, filename=attachment_name)
+
     with smtplib.SMTP(smtp_server, smtp_port) as server:
         server.starttls()
         server.login(smtp_user, smtp_pass)
         server.send_message(msg)
 
 
-def xml_escape(text: str) -> str:
-    return (clean_text(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-
-
-def split_operation_blocks(operation_text: str, max_chars: int = 1200) -> List[str]:
-    raw = operation_text.replace("\r", "\n")
-    blocks = [b.strip() for b in re.split(r"\n\s*\n+", raw) if b.strip()]
+def split_long_blocks(text: str, max_chars: int = 1200) -> List[str]:
+    blocks = [block.strip() for block in re.split(r"\n\s*\n+", text) if block.strip()]
     if not blocks:
-        blocks = [raw.strip()] if raw.strip() else ["-"]
-    out: List[str] = []
+        return ["-"]
+
+    output = []
     for block in blocks:
         block = re.sub(r"\s+", " ", block).strip()
         while len(block) > max_chars:
             cut = block.rfind(". ", 0, max_chars)
-            if cut < max_chars * 0.45:
+            if cut < int(max_chars * 0.45):
                 cut = block.rfind(" ", 0, max_chars)
             if cut <= 0:
                 cut = max_chars
-            out.append(block[:cut].strip())
+            output.append(block[:cut].strip())
             block = block[cut:].strip(" .")
         if block:
-            out.append(block)
-    return out
+            output.append(block)
+    return output
+
 
 def make_pdf(report: Dict[str, str]) -> bytes:
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=letter, rightMargin=12*mm, leftMargin=12*mm, topMargin=10*mm, bottomMargin=10*mm)
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=12 * mm,
+        leftMargin=12 * mm,
+        topMargin=10 * mm,
+        bottomMargin=10 * mm,
+    )
+
     styles = getSampleStyleSheet()
-    normal = ParagraphStyle("normal", parent=styles["Normal"], fontName="Helvetica", fontSize=7.4, leading=8.8, alignment=TA_LEFT)
+    normal = ParagraphStyle("normal", parent=styles["Normal"], fontName="Helvetica", fontSize=8, leading=10, alignment=TA_LEFT)
     bold = ParagraphStyle("bold", parent=normal, fontName="Helvetica-Bold")
-    center = ParagraphStyle("center", parent=bold, alignment=TA_CENTER, fontSize=8.5, leading=10)
+    title = ParagraphStyle("title", parent=bold, fontSize=11, leading=13, alignment=TA_CENTER)
+    section = ParagraphStyle("section", parent=bold, fontSize=9, leading=11, alignment=TA_LEFT)
+    operation_style = ParagraphStyle(
+        "operation",
+        parent=normal,
+        fontSize=8,
+        leading=10,
+        borderWidth=0.35,
+        borderColor=BORDER,
+        borderPadding=4,
+        spaceAfter=4,
+    )
+
     story = []
-    header = Table([
-        [Paragraph("petricore", ParagraphStyle("logo", parent=center, fontSize=20, textColor=colors.HexColor("#666666"))), Paragraph('FORMATO<br/>“REPORTE DIARIO DE OPERACIÓN DEL REGISTRO DE HIDROCARBUROS”', center)],
-        [Paragraph("Revisión", center), Paragraph("Vigente desde", center), Paragraph("Código", center), Paragraph("Aprobación", center)],
-        [Paragraph("01", normal), Paragraph("20-Mar-2020", normal), Paragraph("WRS-FM003", normal), Paragraph("Gerencia WSS", normal)],
-    ], colWidths=[50*mm, 40*mm, 40*mm, 40*mm])
-    header.setStyle(TableStyle([("GRID", (0,0), (-1,-1), .6, BORDER), ("SPAN", (0,0), (0,0)), ("SPAN", (1,0), (3,0)), ("BACKGROUND", (1,0), (3,0), GREEN), ("ALIGN", (0,0), (-1,-1), "CENTER"), ("VALIGN", (0,0), (-1,-1), "MIDDLE")]))
-    story += [header, Spacer(1, 12)]
-    meta = Table([
-        [Paragraph(f"<b>CLIENTE:</b> {report['cliente']}", normal), Paragraph(f"<b>FOLIO:</b> {report['folio']}", normal)],
-        [Paragraph(f"<b>COMPAÑÍA:</b> {report['compania']}", normal), Paragraph(f"<b>FECHA:</b> {report['fecha']}", normal)],
-        [Paragraph(f"<b>NOMBRE DEL POZO:</b> {report['pozo']}", normal), Paragraph(f"<b>HORA:</b> {report['hora']}", normal)],
-        [Paragraph(f"<b>CIUDAD:</b> {report['ciudad']}", normal), ""],
-        [Paragraph(f"<b>ESTADO:</b> {report['estado']}", normal), ""],
-    ], colWidths=[125*mm, 45*mm])
-    story += [meta, Spacer(1, 5)]
-    summary = Table([
-        ["Profundidad actual (m):", report["profundidad"], "Últimos Tiempos:", report["ultimos_tiempos"], "Velocidad Promedio (min/m)", report["velocidad_promedio"]],
-        ["Profundidad tiempo de atraso:", report["profundidad_atraso"], "Record de barrena (h):", report["record_barrena"], "Tiempo de atraso: (min.)", report["tiempo_atraso"]],
-        ["Operación actual:", report["operacion_actual"], "", "", "", ""],
-    ], colWidths=[38*mm, 20*mm, 38*mm, 22*mm, 42*mm, 10*mm])
-    summary.setStyle(TableStyle([("GRID", (0,0), (-1,-1), .5, BORDER), ("BACKGROUND", (0,0), (0,2), GREEN), ("BACKGROUND", (2,0), (2,1), GREEN), ("BACKGROUND", (4,0), (4,1), GREEN), ("SPAN", (1,2), (5,2)), ("FONT", (0,0), (-1,-1), "Helvetica-Bold", 7), ("VALIGN", (0,0), (-1,-1), "MIDDLE")]))
-    story += [summary, Spacer(1, 8)]
-    op_header = Table([[Paragraph("OPERACION", bold)]], colWidths=[170*mm])
-    op_header.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), .5, BORDER), ("BACKGROUND", (0, 0), (-1, -1), GREEN), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
+
+    header = Table([[Paragraph("REPORTE DIARIO DE OPERACIÓN", title)]], colWidths=[186 * mm])
+    header.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+        ("BACKGROUND", (0, 0), (-1, -1), GREEN),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(header)
+    story.append(Spacer(1, 8))
+
+    metadata = Table([
+        [Paragraph(f"<b>CLIENTE:</b> {xml_escape(report.get('cliente', ''))}", normal), Paragraph(f"<b>FOLIO:</b> {xml_escape(report.get('folio', ''))}", normal)],
+        [Paragraph(f"<b>COMPAÑÍA:</b> {xml_escape(report.get('compania', ''))}", normal), Paragraph(f"<b>FECHA:</b> {xml_escape(report.get('fecha', ''))}", normal)],
+        [Paragraph(f"<b>NOMBRE DEL POZO:</b> {xml_escape(report.get('pozo', ''))}", normal), Paragraph(f"<b>HORA:</b> {xml_escape(report.get('hora', ''))}", normal)],
+        [Paragraph(f"<b>CIUDAD:</b> {xml_escape(report.get('ciudad', ''))}", normal), Paragraph(f"<b>ESTADO:</b> {xml_escape(report.get('estado', ''))}", normal)],
+        [Paragraph(f"<b>PROFUNDIDAD ACTUAL (m):</b> {xml_escape(report.get('profundidad', ''))}", normal), Paragraph(f"<b>OPERACIÓN ACTUAL:</b> {xml_escape(report.get('operacion_actual', ''))}", normal)],
+    ], colWidths=[120 * mm, 66 * mm])
+    metadata.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.4, BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(metadata)
+    story.append(Spacer(1, 8))
+
+    op_header = Table([[Paragraph("OPERACIONES", section)]], colWidths=[186 * mm])
+    op_header.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+        ("BACKGROUND", (0, 0), (-1, -1), GREEN),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
     story.append(op_header)
 
-    operation_style = ParagraphStyle("operation", parent=normal, fontName="Helvetica", fontSize=7.2, leading=8.6, spaceAfter=5, borderWidth=.35, borderColor=BORDER, borderPadding=4)
-    for block in split_operation_blocks(report["operacion"]):
+    for block in split_long_blocks(report.get("operacion", "")):
         story.append(Paragraph(xml_escape(block), operation_style))
 
-    story.append(Paragraph(f"<b>Siguiente:</b> {xml_escape(report['siguiente']) or '-'}", operation_style))
-    story.append(Paragraph(f"<b>Programa:</b> {xml_escape(report['programa']) or '-'}", operation_style))
-    for title, headers in [
-        ("Cromatografía %", ["Gas", "C1 %", "C2 %", "C3 %", "IC4 %", "NC4 %", "IC5 %", "NC5 %", "CO₂ p.p.m."]),
-        ("Lecturas promedio de gas", ["Lecturas:", "Unidades:", "p.p.m.", "Profundidad (m):", "Lecturas:", "Unidades:", "p.p.m.", "Profundidad (m):"]),
-        ("Análisis del lodo de perforación", ["Densidad (gr/cm³)", "Viscosidad (Seg)", "Filtrado (ml)", "Enjarre (mm)", "pH", "Salinidad (ppm)", "% Agua", "% Aceite", "% Sólidos"]),
-        ("Parámetros de Perforación", ["Peso sobre barrena (ton)", "Temperatura entrada (ºC)", "Temperatura salida (ºC)", "Presión bomba (kg/cm²)", "Conductividad entrada", "Conductividad Salida", "Gasto (gpm)", "Densidad entrada", "Flujo (%)"]),
-    ]:
-        story.append(Spacer(1, 6))
-        table = Table([[Paragraph(title, center)] , [Paragraph(h, center) for h in headers], ["" for _ in headers]], colWidths=[170*mm/len(headers)]*len(headers))
-        table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), .5, BORDER), ("SPAN", (0,0), (-1,0)), ("BACKGROUND", (0,0), (-1,1), GREEN), ("FONT", (0,0), (-1,-1), "Helvetica", 6.5), ("ALIGN", (0,0), (-1,-1), "CENTER")]))
-        story.append(table)
+    if clean_text(report.get("siguiente", "")):
+        story.append(Paragraph(f"<b>Siguiente:</b> {xml_escape(report.get('siguiente', ''))}", operation_style))
+
+    if clean_text(report.get("programa", "")):
+        story.append(Paragraph(f"<b>Programa:</b> {xml_escape(report.get('programa', ''))}", operation_style))
+
     doc.build(story)
-    return buf.getvalue()
+    return buffer.getvalue()
+
 
 st.markdown("""
 <style>
-.block-container{padding-top:1.2rem;max-width:1400px}.stDownloadButton button,.stButton button{border-radius:12px;font-weight:700}
+.block-container { padding-top: 1.2rem; max-width: 1400px; }
+.stDownloadButton button, .stButton button { border-radius: 12px; font-weight: 700; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Conversor de Daily Report a formato BOSS Dashboard")
-st.caption("Carga un Daily Report de cualquier compañía en Excel, CSV, TXT o PDF. La app extrae la operación, normaliza la secuencia horaria y genera un PDF con estructura similar al formato Petricore que BOSS Dashboard reconoce.")
+st.title("Conversor de Daily Report a formato general para Rogii Email Parsing")
+st.caption("Carga un Daily Report en Excel, CSV, TXT o PDF. La app extrae operaciones, elimina secciones no necesarias y genera un PDF simple para lectura por email parsing.")
 
 with st.sidebar:
     st.header("Parsing Email")
-    st.caption("Las credenciales SMTP no se muestran en la app. Se leen desde .streamlit/secrets.toml.")
+    st.caption("Las credenciales SMTP se leen desde .streamlit/secrets.toml y no se muestran en la app.")
     sender_email = get_secret("SMTP_USER", "No configurado")
     st.text_input("From email", value=sender_email, disabled=True)
-    to_email = st.text_input("To email BOSS Parsing", value="solobox+pemex@rogii.com")
+    to_email = st.text_input("To email parsing", value="solobox+pemex@rogii.com")
 
 uploaded = st.file_uploader("Sube Daily Report", type=["xlsx", "xls", "csv", "txt", "pdf"])
 
 if uploaded:
     try:
-        sheets, file_type = read_any_file(uploaded)
-        report = extract_report(sheets)
+        sheets, file_type, raw_text = read_any_file(uploaded)
+        report = extract_report(raw_text)
         st.success(f"Archivo leído como {file_type.upper()}")
+
         left, right = st.columns([1, 1])
+
         with left:
             st.subheader("Campos detectados / editables")
             for key in ["cliente", "compania", "pozo", "ciudad", "estado", "folio", "fecha", "hora", "profundidad"]:
-                report[key] = st.text_input(key.replace("_", " ").title(), value=report[key])
-            report["siguiente"] = st.text_area("Siguiente", value=report["siguiente"], height=80)
-            report["programa"] = st.text_area("Programa", value=report["programa"], height=100)
-        with right:
-            st.subheader("Operación normalizada")
-            st.info("Regla aplicada: las actividades deben cerrar en 24:00 y, si continúan al día siguiente, empezar en 00:00, por ejemplo 00:00-05:00 hrs.")
-            report["operacion"] = st.text_area("Texto de operación", value=report["operacion"], height=520)
-        well_for_file = sanitize_filename(report.get("pozo", ""))
-        date_for_file = sanitize_filename(
-            report.get("fecha", "").replace("/", "-"),
-            datetime.now().strftime("%d-%m-%Y"),
-        )
-        default_output_name = f"{well_for_file}_BOSS_Dashboard_{date_for_file}.pdf"
+                report[key] = st.text_input(key.replace("_", " ").title(), value=report.get(key, ""))
 
-        st.markdown("### 📎 Nombre del archivo adjunto de salida")
-        output_name = st.text_input(
-            "Así quedará el nombre del PDF que se descargará o enviará por email:",
-            value=default_output_name,
-            help="Puedes editarlo antes de descargar o enviar. Se recomienda mantener el nombre del pozo en el archivo.",
-        )
-        output_name = sanitize_filename(output_name.replace(".pdf", "")) + ".pdf"
+            report["operacion_actual"] = st.text_input("Operación Actual", value=report.get("operacion_actual", ""))
+            report["siguiente"] = st.text_area("Siguiente", value=report.get("siguiente", ""), height=80)
+            report["programa"] = st.text_area("Programa", value=report.get("programa", ""), height=100)
+
+            well_for_file = sanitize_filename(report.get("pozo", ""))
+            date_for_file = sanitize_filename(report.get("fecha", "").replace("/", "-"), datetime.now().strftime("%d-%m-%Y"))
+            default_output_name = f"{well_for_file}_Daily_Report_{date_for_file}.pdf"
+
+            st.markdown("### 📎 Nombre del archivo adjunto de salida")
+            output_name = st.text_input(
+                "Así quedará el nombre del PDF que se descargará o enviará por email:",
+                value=default_output_name,
+                help="Puedes editarlo antes de descargar o enviar. Se recomienda mantener el nombre del pozo en el archivo.",
+            )
+            output_name = sanitize_filename(output_name.replace(".pdf", "")) + ".pdf"
+
+        with right:
+            st.subheader("Operaciones normalizadas")
+            st.info("Se eliminan cromatografía, lecturas de gas, lodo, parámetros, hidráulica y observaciones. Solo se envían metadatos + operaciones + siguiente/programa.")
+
+            activities = split_activity_text(raw_text)
+            warnings = validate_hour_sequence(activities)
+            if warnings:
+                st.warning("\n".join(warnings))
+
+            report["operacion"] = st.text_area("Texto de operaciones", value=report.get("operacion", ""), height=520)
 
         pdf_bytes = make_pdf(report)
+
         c1, c2 = st.columns(2)
         with c1:
-            st.download_button("⬇️ Descargar PDF para BOSS", data=pdf_bytes, file_name=output_name, mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Descargar PDF", data=pdf_bytes, file_name=output_name, mime="application/pdf", use_container_width=True)
+
         with c2:
             if st.button("📧 Enviar por email", type="primary", use_container_width=True):
                 if not to_email:
                     st.error("Completa el correo destino antes de enviar.")
                 else:
                     send_email_with_attachment(to_email, pdf_bytes, output_name, "application/pdf")
-                    st.success(f"PDF enviado correctamente a {to_email}")
+                    st.success(f"PDF enviado correctamente a {to_email} con el archivo {output_name}")
+
         with st.expander("Vista previa del texto fuente detectado"):
-            st.text(dataframe_to_blob_text(sheets)[:12000])
+            st.text(clean_multiline_text(raw_text)[:12000])
+
     except Exception as exc:
         st.exception(exc)
+
 else:
-    st.info("Esperando archivo. Ejemplo: Daily Report en Excel de Helios o PDF del formato Petricore.")
+    st.info("Esperando archivo. Ejemplo: Daily Report en Excel, CSV, TXT o PDF.")
