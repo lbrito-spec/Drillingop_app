@@ -26,3 +26,4 @@ PyMuPDF
 rapidocr-onnxruntime
 pillow
 numpy
+onnxruntime
