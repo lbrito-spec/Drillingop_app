@@ -62,6 +62,80 @@ def get_secret(name: str, default=None):
         return default
 
 
+
+def normalize_date(value: str) -> str:
+    """Convierte Apr-28-2026, 2026-04-28, 04/28/2026, etc. a dd/mm/yyyy."""
+    value = clean_text(value)
+    if not value:
+        return datetime.now().strftime("%d/%m/%Y")
+
+    value = re.split(
+        r"\s+(?:WELLBORE|TARGET|FORMATION|LOCATION|STATE|OPERATOR|CONTRACTOR|RIG|REPORT|JOB)\b",
+        value,
+        flags=re.IGNORECASE,
+    )[0].strip()
+
+    value = value.replace(".", "-").replace("_", "-")
+
+    for fmt in ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%b-%d-%Y", "%B-%d-%Y", "%d-%b-%Y", "%d-%B-%Y", "%m/%d/%Y", "%m-%d-%Y"]:
+        try:
+            return datetime.strptime(value, fmt).strftime("%d/%m/%Y")
+        except Exception:
+            pass
+
+    match = re.search(r"([A-Za-z]{3,9})[-/ ](\d{1,2})[-/ ](\d{4})", value)
+    if match:
+        candidate = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+        for fmt in ["%b-%d-%Y", "%B-%d-%Y"]:
+            try:
+                return datetime.strptime(candidate, fmt).strftime("%d/%m/%Y")
+            except Exception:
+                pass
+
+    return value
+
+
+def clean_operation_text(text: str) -> str:
+    """Quita encabezados OCR y limpia repeticiones obvias."""
+    text = clean_multiline_text(text)
+
+    text = re.sub(
+        r"(?:Resumen operacional:\s*)?REPORTE DIARIO DE OPERACIÓN\s+CLIENTE/OPERADOR:.*?OPERACIONES\s*",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(
+        r"CLIENTE/OPERADOR:.*?PROFUNDIDAD ACTUAL\s*\(m\):.*?OPERACIONES\s*",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    return clean_multiline_text(text)
+
+
+def deduplicate_activities(activities: List[Activity]) -> List[Activity]:
+    """Elimina actividades repetidas generadas por OCR y descarta 00:00-00:00."""
+    seen = set()
+    unique: List[Activity] = []
+
+    for activity in activities:
+        if activity.start == activity.end:
+            continue
+
+        normalized_text = re.sub(r"\s+", " ", clean_text(activity.text)).strip()
+        key = (activity.start, activity.end, normalized_text[:180].lower())
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        unique.append(Activity(activity.start, activity.end, normalized_text))
+
+    return unique
+
+
 def dataframe_to_blob_text(sheets: Dict[str, pd.DataFrame]) -> str:
     chunks = []
     for sheet_name, df in sheets.items():
@@ -93,8 +167,10 @@ def ocr_pdf_bytes(pdf_bytes: bytes) -> str:
         from rapidocr_onnxruntime import RapidOCR
     except Exception as exc:
         raise RuntimeError(
+            f"OCR import error real: {type(exc).__name__}: {exc}\n\n"
             "El PDF no trae texto seleccionable y se necesita OCR. "
-            "Agrega estas dependencias al requirements.txt: PyMuPDF, rapidocr-onnxruntime, pillow, numpy"
+            "Verifica dependencias: PyMuPDF, rapidocr-onnxruntime, onnxruntime, Pillow, numpy. "
+            "También confirma runtime.txt en la raíz con python-3.11."
         ) from exc
 
     engine = RapidOCR()
@@ -422,11 +498,11 @@ def parse_baker_daily_activity(text: str) -> List[Activity]:
 def split_activity_text(text: str) -> List[Activity]:
     activities = parse_standard_operations(text)
     if activities:
-        return activities
+        return deduplicate_activities(activities)
 
     activities = parse_baker_daily_activity(text)
     if activities:
-        return activities
+        return deduplicate_activities(activities)
 
     return []
 
@@ -453,9 +529,10 @@ def build_operation_text(activities: List[Activity], fallback_text: str) -> str:
                 r"\n\s*BHA Configuration",
             ],
         )
-        return fallback[:8000]
+        return clean_operation_text(fallback[:8000])
 
-    return "\n\n".join(f"{a.start}-{a.end} hrs. {a.text}" for a in activities)
+    operation_text = "\n\n".join(f"{a.start}-{a.end} hrs. {a.text}" for a in activities)
+    return clean_operation_text(operation_text)
 
 
 def validate_hour_sequence(activities: List[Activity]) -> List[str]:
@@ -472,15 +549,28 @@ def validate_hour_sequence(activities: List[Activity]) -> List[str]:
 
 
 def extract_baker_operational_summary(text: str) -> str:
+    if not re.search(r"Operational Summary", text, re.IGNORECASE):
+        return ""
+
     section = extract_between_markers(
         text,
         start_markers=[r"Operational Summary"],
-        stop_markers=[r"\n\s*24\s*Hr Tracking", r"\n\s*Drilling Parameters", r"\n\s*Fluid Parameters"],
+        stop_markers=[
+            r"\n\s*24\s*Hr Tracking",
+            r"\n\s*Drilling Parameters",
+            r"\n\s*Fluid Parameters",
+            r"\n\s*Latest Survey",
+            r"\n\s*Daily Activity Summary",
+        ],
     )
     section = re.sub(r"DAILY OPERATIONS", "", section, flags=re.IGNORECASE)
-    section = re.sub(r"24 HOUR FORECAST.*", "", section, flags=re.IGNORECASE)
-    return clean_text(section)
+    section = re.sub(r"24 HOUR FORECAST.*", "", section, flags=re.IGNORECASE | re.DOTALL)
+    section = clean_operation_text(section)
 
+    if re.search(r"REPORTE DIARIO|CLIENTE/OPERADOR|NOMBRE DEL POZO|PROFUNDIDAD ACTUAL", section, re.IGNORECASE):
+        return ""
+
+    return clean_text(section)
 
 def extract_report(raw_text: str, uploaded_name: str = "") -> Dict[str, str]:
     blob = clean_multiline_text(raw_text)
@@ -507,11 +597,12 @@ def extract_report(raw_text: str, uploaded_name: str = "") -> Dict[str, str]:
         or find_value(blob, ["COMPAÑÍA", "COMPANIA", "COMPANY", "CONTRACTOR"], "")
     )
 
-    fecha = (
+    fecha_raw = (
         find_value_after_label_in_same_line(blob, "REPORT DATE")
         or find_value_after_label_in_same_line(blob, "REPORT CREATED")
-        or find_value(blob, ["FECHA", "DATE", "REPORT DATE", "REPORT CREATED"], datetime.now().strftime("%d/%m/%Y"))
+        or find_value(blob, ["FECHA", "DATE", "REPORT DATE", "REPORT CREATED"], "")
     )
+    fecha = normalize_date(fecha_raw)
 
     ciudad_estado = (
         find_value_after_label_in_same_line(blob, "STATE/PROVINCE")
@@ -521,8 +612,10 @@ def extract_report(raw_text: str, uploaded_name: str = "") -> Dict[str, str]:
     operational_summary = extract_baker_operational_summary(blob)
     operation_text = build_operation_text(activities, blob)
 
-    if operational_summary:
+    if operational_summary and operational_summary.lower() not in operation_text.lower():
         operation_text = f"Resumen operacional: {operational_summary}\n\n{operation_text}"
+
+    operation_text = clean_operation_text(operation_text)
 
     return {
         "cliente": cliente,
