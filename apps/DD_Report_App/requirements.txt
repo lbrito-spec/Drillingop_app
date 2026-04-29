@@ -17,4 +17,12 @@ openpyxl
 kaleido
 statsmodels
 reportlab
-
+streamlit
+pandas
+openpyxl
+pdfplumber
+reportlab
+PyMuPDF
+rapidocr-onnxruntime
+pillow
+numpy
