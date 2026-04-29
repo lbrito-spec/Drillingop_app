@@ -16,5 +16,11 @@ google-auth-oauthlib==1.2.2
 google-api-python-client
 kaleido==0.2.1
 requests-oauthlib==2.0.0
-
+reportlab
+PyMuPDF
+rapidocr-onnxruntime
+pillow
+numpy
+pdfplumber
+openpyxl
 
