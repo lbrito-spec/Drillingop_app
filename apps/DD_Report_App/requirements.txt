@@ -27,3 +27,4 @@ rapidocr-onnxruntime
 pillow
 numpy
 onnxruntime
+opencv-python-headless
