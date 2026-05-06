@@ -1,9 +1,11 @@
 """Daily Report → PDF para Rogii email parsing."""
 
+import base64
 import io
 import re
 import smtplib
 from dataclasses import dataclass
+from pathlib import Path
 from datetime import datetime
 from email.message import EmailMessage
 from typing import Dict, List, Tuple
@@ -17,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-st.set_page_config(page_title="Daily Report -> Rogii Email Parsing", page_icon="🛢️", layout="wide")
+st.set_page_config(page_title="Daily Report -> Rogii Email Parsing", page_icon="🔥", layout="wide")
 
 GREEN = colors.HexColor("#68cbb3")
 BORDER = colors.HexColor("#222222")
@@ -491,10 +493,33 @@ st.markdown("""
 <style>
 .block-container { padding-top: 1.2rem; max-width: 1400px; }
 .stDownloadButton button, .stButton button { border-radius: 12px; font-weight: 700; }
+.dd-title-row { display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
+.dd-title-row h1 { margin: 0 !important; padding: 0 !important; font-size: clamp(1.15rem, 2.5vw, 1.65rem); font-weight: 700; line-height: 1.25; }
+.dd-flame { font-size: 1.55rem; line-height: 1; display: inline-flex; align-items: center; }
+.dd-logo-wrap img { display: block; width: 44px !important; height: auto !important; min-width: 44px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Conversor de Daily Report a formato general para Rogii Email Parsing")
+_ASSETS = Path(__file__).resolve().parent / "assets"
+_ROGII_LOGO = _ASSETS / "rogii_mark.svg"
+
+_title_html = """
+<div class="dd-title-row">
+  <div class="dd-logo-wrap">{logo_slot}</div>
+  <span class="dd-flame" title="Rogii">🔥</span>
+  <h1>Conversor de Daily Report a formato general para Rogii Email Parsing</h1>
+</div>
+"""
+
+if _ROGII_LOGO.exists():
+    _logo_b64 = base64.b64encode(_ROGII_LOGO.read_bytes()).decode("ascii")
+    _logo_slot = (
+        f'<img src="data:image/svg+xml;base64,{_logo_b64}" width="44" height="44" alt="Rogii" />'
+    )
+else:
+    _logo_slot = ""
+
+st.markdown(_title_html.replace("{logo_slot}", _logo_slot), unsafe_allow_html=True)
 st.caption("Carga un Daily Report en Excel, CSV, TXT o PDF. La app extrae operaciones, elimina secciones no necesarias y genera un PDF simple para lectura por email parsing.")
 
 with st.sidebar:
