@@ -73,6 +73,49 @@ def dataframe_to_blob_text(sheets: Dict[str, pd.DataFrame]) -> str:
     return "\n".join(chunks)
 
 
+def ocr_pdf_bytes(data: bytes) -> str:
+    """OCR para PDFs sin texto seleccionable. Usa opencv-headless en Linux/Docker."""
+    try:
+        import numpy as np
+        from PIL import Image
+        import fitz  # pymupdf
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError as exc:
+        hint = (
+            "Instala: pip install pymupdf rapidocr-onnxruntime onnxruntime Pillow numpy "
+            "y usa opencv-python-headless (no opencv-python) en servidores sin libGL. "
+            "En Streamlit Cloud las dependencias deben estar en requirements.txt en la raíz del repositorio."
+        )
+        raise RuntimeError(f"PDF sin texto seleccionable requiere OCR. {hint}") from exc
+
+    try:
+        ocr_engine = RapidOCR()
+        doc = fitz.open(stream=data, filetype="pdf")
+        page_texts = []
+        scale = fitz.Matrix(150 / 72, 150 / 72)
+        for page in doc:
+            pix = page.get_pixmap(matrix=scale, alpha=False)
+            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            arr = np.array(img)
+            result, _elapsed = ocr_engine(arr)
+            lines = []
+            if result:
+                for item in result:
+                    # (box, text, score) o variantes
+                    if isinstance(item, (list, tuple)) and len(item) >= 2 and isinstance(item[1], str):
+                        lines.append(item[1])
+            page_texts.append("\n".join(lines))
+        doc.close()
+        return "\n\n".join(t for t in page_texts if t.strip())
+    except ImportError as exc:
+        if "libGL" in str(exc) or "libgl" in str(exc).lower():
+            raise RuntimeError(
+                "Falta libGL u OpenCV GUI en el servidor: en requirements usa "
+                "opencv-python-headless (y en Streamlit Cloud, packages.txt con libgl1)."
+            ) from exc
+        raise RuntimeError(f"Error de importación al cargar OCR: {exc}") from exc
+
+
 def read_any_file(uploaded_file) -> Tuple[Dict[str, pd.DataFrame], str, str]:
     name = uploaded_file.name.lower()
     data = uploaded_file.getvalue()
@@ -101,6 +144,8 @@ def read_any_file(uploaded_file) -> Tuple[Dict[str, pd.DataFrame], str, str]:
             for page in pdf.pages:
                 pages.append(page.extract_text() or "")
         text = "\n".join(pages)
+        if not clean_multiline_text(text):
+            text = ocr_pdf_bytes(data)
         sheets = {"PDF": pd.DataFrame([[line] for line in text.splitlines()])}
         return sheets, "pdf", text
 

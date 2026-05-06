@@ -17,4 +17,9 @@ google-api-python-client
 kaleido==0.2.1
 requests-oauthlib==2.0.0
 
-
+# DD_Report_App (ddr-rogii): PDF + OCR en Streamlit Cloud — deben estar aquí, no solo en apps/DD_Report_App/
+pdfplumber>=0.10
+pymupdf>=1.23
+onnxruntime>=1.17
+opencv-python-headless>=4.8,<5
+rapidocr-onnxruntime>=1.2.3,<3
