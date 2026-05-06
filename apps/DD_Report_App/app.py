@@ -84,8 +84,8 @@ def ocr_pdf_bytes(data: bytes) -> str:
     except Exception as exc:  # ImportError/OSError/dlopen(libGL…) al cargar cv2/onnxruntime
         hint = (
             "pip: pymupdf rapidocr-onnxruntime onnxruntime Pillow numpy opencv-python. "
-            "En Linux/OpenGL hace falta libGL.so.1 → en Streamlit usa packages.txt solo con línea libgl1. "
-            "En este monorepo deja solo un requirements.txt en la raíz o renombra los demás."
+            "En Streamlit Linux añade packages.txt en la raíz con libgl1 y libglib2.0-0 "
+            "(OpenGL y libgthread-2.0 de GLib para OpenCV). Mantén un solo requirements.txt en la raíz."
         )
         raise RuntimeError(f"PDF escaneado: falló import/carga OCR ({type(exc).__name__}: {exc}). {hint}") from exc
 
@@ -111,8 +111,11 @@ def ocr_pdf_bytes(data: bytes) -> str:
     except ImportError as exc:
         if "libGL" in str(exc) or "libgl" in str(exc).lower():
             raise RuntimeError(
-                "Falta libGL u OpenCV GUI en el servidor: en requirements usa "
-                "opencv-python-headless (y en Streamlit Cloud, packages.txt con libgl1)."
+                "Falta libGL en el servidor (packages.txt: libgl1) o usa opencv-python-headless."
+            ) from exc
+        if "libgthread" in str(exc) or "glib" in str(exc).lower():
+            raise RuntimeError(
+                "Falta GLib threading (libgthread): en packages.txt añade libglib2.0-0 junto a libgl1."
             ) from exc
         raise RuntimeError(f"Error de importación al cargar OCR: {exc}") from exc
 
