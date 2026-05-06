@@ -1,5 +1,0 @@
-# Mínimo para OpenCV headless; no forzar libglib2.0-0 (conflicto libffi en Streamlit Cloud).
-libgl1
-libsm6
-libxext6
-libxrender1
