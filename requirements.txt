@@ -17,7 +17,7 @@ google-api-python-client
 kaleido==0.2.1
 requests-oauthlib==2.0.0
 
-# ddr-rogii OCR: rapidocr pide opencv-python; usar packages.txt solo libgl1 en Streamlit Linux.
+# ddr-rogii OCR: ver packages.txt libgl1 + libglib2.0-0t64 (Trixie; no usar libglib2.0-0 sin t64).
 pdfplumber>=0.10
 pymupdf>=1.23
 onnxruntime>=1.17
