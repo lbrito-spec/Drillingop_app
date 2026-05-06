@@ -1,11 +1,9 @@
 """Daily Report → PDF para Rogii email parsing."""
 
-import base64
 import io
 import re
 import smtplib
 from dataclasses import dataclass
-from pathlib import Path
 from datetime import datetime
 from email.message import EmailMessage
 from typing import Dict, List, Tuple
@@ -526,40 +524,45 @@ st.markdown("""
     line-height: 1.35 !important;
     overflow: visible !important;
 }
+.dd-rogii-mark {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    user-select: none;
+}
+.dd-rogii-word {
+    color: #68cbb3;
+    font-size: 1.35rem;
+    line-height: 1.2;
+    padding-top: 0.1rem;
+}
 .dd-flame {
-    font-size: 1.55rem;
+    font-size: 1.5rem;
     line-height: 1.2;
     display: inline-flex;
     align-items: center;
-    padding-top: 0.15rem;
+    padding-top: 0.1rem;
 }
-.dd-logo-wrap { flex-shrink: 0; display: flex; align-items: center; }
-.dd-logo-wrap img { display: block; width: 44px !important; height: auto !important; min-width: 44px; }
 </style>
 """, unsafe_allow_html=True)
 
-_ASSETS = Path(__file__).resolve().parent / "assets"
-_ROGII_LOGO = _ASSETS / "rogii_mark.svg"
-
-_title_html = """
+st.markdown(
+    """
 <div class="dd-header-wrap">
   <div class="dd-title-row">
-    <div class="dd-logo-wrap">{logo_slot}</div>
-    <span class="dd-flame" title="Rogii">🔥</span>
+    <div class="dd-rogii-mark" title="Rogii">
+      <span class="dd-rogii-word">Rogii</span>
+      <span class="dd-flame" aria-hidden="true">🔥</span>
+    </div>
     <h1>Conversor de Daily Report a formato general para Rogii Email Parsing</h1>
   </div>
 </div>
-"""
-
-if _ROGII_LOGO.exists():
-    _logo_b64 = base64.b64encode(_ROGII_LOGO.read_bytes()).decode("ascii")
-    _logo_slot = (
-        f'<img src="data:image/svg+xml;base64,{_logo_b64}" width="44" height="44" alt="Rogii" />'
-    )
-else:
-    _logo_slot = ""
-
-st.markdown(_title_html.replace("{logo_slot}", _logo_slot), unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 st.caption("Carga un Daily Report en Excel, CSV, TXT o PDF. La app extrae operaciones, elimina secciones no necesarias y genera un PDF simple para lectura por email parsing.")
 
 with st.sidebar:
