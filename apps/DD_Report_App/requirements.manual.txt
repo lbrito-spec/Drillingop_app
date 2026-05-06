@@ -1,30 +1,11 @@
-# Dependencias principales (convendría fijar versiones en producción, p. ej. plotly==5.x).
 streamlit
 pandas
 numpy
-plotly
-requests
-scipy
-python-dotenv
 Pillow
-python-pptx
-streamlit-echarts
-streamlit-drawable-canvas
-pdfplumber
-openpyxl
-# kaleido: exportación PNG de Plotly; pip NO instala Chrome/Chromium. En Docker/servidor sin navegador,
-# la app debe tolerar el fallo (ver plotly_figure_to_png_bytes) o instalar Chromium en la imagen.
-kaleido
-statsmodels
 reportlab
-streamlit
-pandas
 openpyxl
 pdfplumber
-reportlab
-PyMuPDF
-rapidocr-onnxruntime
-pillow
-numpy
+pymupdf
 onnxruntime
-opencv-python-headless
+opencv-python
+rapidocr-onnxruntime
