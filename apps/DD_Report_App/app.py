@@ -1,6 +1,5 @@
 """Daily Report → PDF para Rogii email parsing."""
 
-import html as html_lib
 import io
 import re
 import smtplib
@@ -71,74 +70,18 @@ def _signature_default(key: str, default: str) -> str:
     return str(v).strip()
 
 
-_ROGII_ORANGE = "#e87722"
-
-_ICON_PHONE = (
-    '<svg class="dd-sig-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" '
-    'viewBox="0 0 24 24" aria-hidden="true" fill="' + _ROGII_ORANGE + '">'
-    '<path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>'
-)
-_ICON_MAIL = (
-    '<svg class="dd-sig-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" '
-    'viewBox="0 0 24 24" aria-hidden="true" fill="' + _ROGII_ORANGE + '">'
-    '<path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>'
-)
-_ICON_LINK = (
-    '<svg class="dd-sig-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" '
-    'viewBox="0 0 24 24" aria-hidden="true" fill="' + _ROGII_ORANGE + '">'
-    '<path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>'
-)
-_ICON_MAP = (
-    '<svg class="dd-sig-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" '
-    'viewBox="0 0 24 24" aria-hidden="true" fill="' + _ROGII_ORANGE + '">'
-    '<path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>'
-)
-
-
-def render_corporate_signature() -> None:
-    """Firma tipo correo corporativo Rogii; opcionalmente desde secrets (SIGNATURE_*)."""
-    name = xml_escape(_signature_default("SIGNATURE_NAME", "Lenin Brito"))
-    phone_raw = _signature_default("SIGNATURE_PHONE", "+52 9991174508")
-    phone_html = xml_escape(phone_raw)
-    tel_href = html_lib.escape("tel:" + re.sub(r"\s+", "", phone_raw), quote=True)
-    email_raw = _signature_default("SIGNATURE_EMAIL", "l.brito@rogii.com")
-    email_html = xml_escape(email_raw)
-    mail_href = html_lib.escape(f"mailto:{email_raw}", quote=True)
-    web_url = _signature_default("SIGNATURE_WEB_URL", "https://www.rogii.com")
-    web_href = html_lib.escape(web_url, quote=True)
-    web_label = xml_escape(_signature_default("SIGNATURE_WEB_LABEL", "www.rogii.com"))
-    addr = xml_escape(
-        _signature_default(
-            "SIGNATURE_ADDRESS",
-            "Av. Adolfo Ruíz Cortínes 1344. Col. Atasta de Serra, Villahermosa, Tabasco 86035 "
-            "Piso 2. oficina 267 - México",
-        )
-    )
-    role_raw = _signature_default("SIGNATURE_ROLE_LINES", "Drilling\nOptimization\nLead\nROGII Inc.")
-    role_lines = "\n".join(
-        f"        <span>{xml_escape(line.strip())}</span>"
-        for line in role_raw.splitlines()
-        if line.strip()
-    )
+def render_footer_signature() -> None:
+    """Pie discreto inferior izquierdo; datos opcionales en secrets (SIGNATURE_CREDIT, SIGNATURE_TITLE_SHORT)."""
+    credit = xml_escape(_signature_default("SIGNATURE_CREDIT", "Elaborado por Lenin Brito"))
+    role = xml_escape(_signature_default("SIGNATURE_TITLE_SHORT", "Drilling Optimization Lead"))
     html = f"""
-<div class="dd-signature-wrap">
-  <div class="dd-signature">
-    <div class="dd-sig-brand">
-      <span class="dd-sig-flame-big" aria-hidden="true">🔥</span>
-      <span class="dd-sig-logo-text">ROGII</span>
-    </div>
-    <div class="dd-sig-person">
-      <div class="dd-sig-name">{name}</div>
-      <div class="dd-sig-lines">
-{role_lines}
-      </div>
-    </div>
-    <div class="dd-sig-divider" role="presentation"></div>
-    <div class="dd-sig-contact">
-      <div class="dd-sig-row">{_ICON_PHONE}<a class="dd-sig-link" href="{tel_href}">{phone_html}</a></div>
-      <div class="dd-sig-row">{_ICON_MAIL}<a class="dd-sig-link" href="{mail_href}">{email_html}</a></div>
-      <div class="dd-sig-row">{_ICON_LINK}<a class="dd-sig-link" href="{web_href}" target="_blank" rel="noopener noreferrer">{web_label}</a></div>
-      <div class="dd-sig-row dd-sig-row-address">{_ICON_MAP}<span class="dd-sig-address">{addr}</span></div>
+<div class="dd-footer-sig" role="contentinfo" aria-label="Créditos">
+  <div class="dd-footer-sig-inner">
+    <p class="dd-footer-credit">{credit}</p>
+    <p class="dd-footer-role">{role}</p>
+    <div class="dd-footer-brand">
+      <span class="dd-footer-flame" aria-hidden="true">🔥</span>
+      <span class="dd-footer-rogii">ROGII</span>
     </div>
   </div>
 </div>
@@ -572,7 +515,6 @@ def make_pdf(report: Dict[str, str]) -> bytes:
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,600;9..40,700;9..40,800&display=swap');
 /* Evita que el título quede recortado bajo la barra superior / primer bloque */
 .main .block-container {
     padding-top: 2.75rem !important;
@@ -617,106 +559,61 @@ st.markdown("""
     padding-top: 0.1rem;
     user-select: none;
 }
-/* Firma corporativa Rogii */
-.dd-signature-wrap {
-    margin: 1rem 0 1.35rem 0;
-    padding: 1.15rem 1.35rem 1.25rem;
-    background: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
-    border: 1px solid #e8e8e8;
-    border-radius: 14px;
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
-    font-family: "DM Sans", system-ui, sans-serif;
+/* Pie de créditos: inferior izquierda, sutil, sin fondo */
+.dd-footer-sig {
+    position: fixed;
+    left: max(0.65rem, env(safe-area-inset-left));
+    bottom: max(0.55rem, env(safe-area-inset-bottom));
+    z-index: 40;
+    max-width: min(88vw, 15.5rem);
+    pointer-events: none;
 }
-.dd-signature {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    gap: 1.15rem 1.75rem;
-    color: #111111;
+.dd-footer-sig-inner {
+    margin: 0;
+    padding: 0;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 0.65rem;
+    line-height: 1.38;
+    color: rgba(49, 51, 63, 0.48);
 }
-.dd-sig-brand {
+@media (prefers-color-scheme: dark) {
+    .dd-footer-sig-inner { color: rgba(230, 232, 240, 0.42); }
+}
+.dd-footer-credit,
+.dd-footer-role {
+    margin: 0;
+    padding: 0;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+}
+.dd-footer-role {
+    margin-top: 0.12rem;
+    opacity: 0.92;
+    font-size: 0.62rem;
+}
+.dd-footer-brand {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
-    flex-shrink: 0;
+    gap: 0.2rem;
+    margin-top: 0.35rem;
+    opacity: 0.88;
 }
-.dd-sig-flame-big {
-    font-size: 2.05rem;
+.dd-footer-flame {
+    font-size: 0.78rem;
     line-height: 1;
-    filter: drop-shadow(0 1px 1px rgba(232, 119, 34, 0.35));
+    filter: grayscale(0.15) opacity(0.85);
 }
-.dd-sig-logo-text {
-    font-weight: 800;
-    font-size: 1.55rem;
-    letter-spacing: 0.06em;
-    color: #111111;
-}
-.dd-sig-person {
-    min-width: 9.5rem;
-}
-.dd-sig-name {
+.dd-footer-rogii {
     font-weight: 700;
-    font-size: 1.02rem;
-    line-height: 1.3;
-    margin-bottom: 0.4rem;
-    letter-spacing: -0.01em;
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+    color: rgba(30, 30, 32, 0.42);
 }
-.dd-sig-lines span {
-    display: block;
-    font-size: 0.9rem;
-    font-weight: 400;
-    line-height: 1.48;
-    color: #1a1a1a;
-}
-.dd-sig-divider {
-    width: 3px;
-    align-self: stretch;
-    min-height: 5.5rem;
-    background: #e87722;
-    border-radius: 2px;
-    flex-shrink: 0;
-}
-.dd-sig-contact {
-    flex: 1 1 220px;
-    min-width: min(100%, 260px);
-    font-size: 0.875rem;
-    line-height: 1.5;
-}
-.dd-sig-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.55rem;
-    margin-bottom: 0.38rem;
-}
-.dd-sig-row:last-child { margin-bottom: 0; }
-.dd-sig-row-address { align-items: flex-start; }
-.dd-sig-icon {
-    flex-shrink: 0;
-    margin-top: 0.12rem;
-}
-.dd-sig-link {
-    color: #111111 !important;
-    text-decoration: underline;
-    text-underline-offset: 3px;
-    text-decoration-thickness: 1px;
-    font-weight: 500;
-}
-.dd-sig-link:hover {
-    color: #e87722 !important;
-    text-decoration-color: #e87722;
-}
-.dd-sig-address {
-    font-weight: 400;
-    color: #222222;
-}
-@media (max-width: 768px) {
-    .dd-signature { flex-direction: column; gap: 1rem; }
-    .dd-sig-divider {
-        width: 100%;
-        height: 3px;
-        min-height: 0;
-        align-self: stretch;
-    }
+@media (prefers-color-scheme: dark) {
+    .dd-footer-rogii { color: rgba(245, 245, 250, 0.38); }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -733,8 +630,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.caption("Carga un Daily Report en Excel, CSV, TXT o PDF. La app extrae operaciones, elimina secciones no necesarias y genera un PDF simple para lectura por email parsing.")
-
-render_corporate_signature()
 
 with st.sidebar:
     st.header("Parsing Email")
@@ -807,3 +702,5 @@ if uploaded:
 
 else:
     st.info("Esperando archivo. Ejemplo: Daily Report en Excel, CSV, TXT o PDF.")
+
+render_footer_signature()
