@@ -491,11 +491,49 @@ def make_pdf(report: Dict[str, str]) -> bytes:
 
 st.markdown("""
 <style>
-.block-container { padding-top: 1.2rem; max-width: 1400px; }
+/* Evita que el título quede recortado bajo la barra superior / primer bloque */
+.main .block-container {
+    padding-top: 2.75rem !important;
+    padding-bottom: 1rem !important;
+    max-width: 1400px;
+}
+[data-testid="stAppViewContainer"] section[data-testid="stMain"] > div {
+    overflow-x: visible !important;
+}
+.block-container [data-testid="stVerticalBlock"] {
+    overflow: visible !important;
+}
 .stDownloadButton button, .stButton button { border-radius: 12px; font-weight: 700; }
-.dd-title-row { display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
-.dd-title-row h1 { margin: 0 !important; padding: 0 !important; font-size: clamp(1.15rem, 2.5vw, 1.65rem); font-weight: 700; line-height: 1.25; }
-.dd-flame { font-size: 1.55rem; line-height: 1; display: inline-flex; align-items: center; }
+.dd-header-wrap {
+    overflow: visible !important;
+    padding-top: 0.35rem;
+    padding-bottom: 0.15rem;
+    margin-bottom: 0.5rem;
+}
+.dd-title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+    overflow: visible !important;
+    min-height: 3rem;
+}
+.dd-title-row h1 {
+    margin: 0 !important;
+    padding: 0.2rem 0 0.15rem 0 !important;
+    font-size: clamp(1.15rem, 2.5vw, 1.65rem);
+    font-weight: 700;
+    line-height: 1.35 !important;
+    overflow: visible !important;
+}
+.dd-flame {
+    font-size: 1.55rem;
+    line-height: 1.2;
+    display: inline-flex;
+    align-items: center;
+    padding-top: 0.15rem;
+}
+.dd-logo-wrap { flex-shrink: 0; display: flex; align-items: center; }
 .dd-logo-wrap img { display: block; width: 44px !important; height: auto !important; min-width: 44px; }
 </style>
 """, unsafe_allow_html=True)
@@ -504,10 +542,12 @@ _ASSETS = Path(__file__).resolve().parent / "assets"
 _ROGII_LOGO = _ASSETS / "rogii_mark.svg"
 
 _title_html = """
-<div class="dd-title-row">
-  <div class="dd-logo-wrap">{logo_slot}</div>
-  <span class="dd-flame" title="Rogii">🔥</span>
-  <h1>Conversor de Daily Report a formato general para Rogii Email Parsing</h1>
+<div class="dd-header-wrap">
+  <div class="dd-title-row">
+    <div class="dd-logo-wrap">{logo_slot}</div>
+    <span class="dd-flame" title="Rogii">🔥</span>
+    <h1>Conversor de Daily Report a formato general para Rogii Email Parsing</h1>
+  </div>
 </div>
 """
 
