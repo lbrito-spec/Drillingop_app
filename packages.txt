@@ -1,5 +1,6 @@
+# Mínimo para OpenCV headless / raster en contenedores Streamlit Cloud.
+# Evitar libglib2.0-0 explícito (rompe resolución de deps con libffi en la imagen actual).
 libgl1
-libglib2.0-0
 libsm6
 libxext6
-libxrender-dev
+libxrender1
