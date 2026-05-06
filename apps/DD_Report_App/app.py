@@ -76,6 +76,7 @@ def render_footer_signature() -> None:
     role = xml_escape(_signature_default("SIGNATURE_TITLE_SHORT", "Drilling Optimization Lead"))
     html = f"""
 <div class="dd-footer-sig dd-footer-sig--sidebar" role="contentinfo" aria-label="Créditos">
+  <div class="dd-footer-spacer" aria-hidden="true"></div>
   <div class="dd-footer-sig-inner">
     <p class="dd-footer-credit">{credit}</p>
     <p class="dd-footer-role">{role}</p>
@@ -517,6 +518,7 @@ def make_pdf(report: Dict[str, str]) -> bytes:
 
 st.markdown("""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
 /* Evita que el título quede recortado bajo la barra superior / primer bloque */
 .main .block-container {
     padding-top: 2.75rem !important;
@@ -561,59 +563,90 @@ st.markdown("""
     padding-top: 0.1rem;
     user-select: none;
 }
-/* Pie de créditos en sidebar: sin position:fixed (Streamlit usa transform en ancestros → fixed no va al viewport) */
+/* Pie de créditos en sidebar (sin fixed: Streamlit + transform) */
 .dd-footer-sig--sidebar {
-    margin-top: 1.5rem;
-    padding-top: 0.85rem;
-    border-top: 1px solid rgba(128, 128, 128, 0.12);
+    margin-top: 0.35rem;
+    padding-top: 0;
     background: transparent !important;
 }
-section[data-testid="stSidebar"] .dd-footer-sig--sidebar {
-    border-top-color: rgba(250, 250, 250, 0.08);
+/* Espacio vertical: el sidebar de Streamlit no es flex con altura → min-height, no flex-grow */
+.dd-footer-spacer {
+    min-height: clamp(5rem, 32vh, 22rem);
+    pointer-events: none;
 }
 .dd-footer-sig-inner {
     margin: 0;
-    padding: 0;
-    background: transparent !important;
-    border: none !important;
+    padding: 0.95rem 0 0.35rem 0;
+    background-color: transparent !important;
+    background-image: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(128, 128, 128, 0.22) 22%,
+        rgba(128, 128, 128, 0.22) 78%,
+        transparent 100%
+    );
+    background-size: 100% 1px;
+    background-repeat: no-repeat;
+    background-position: top center;
     box-shadow: none !important;
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    font-size: 0.68rem;
-    line-height: 1.42;
-    /* Hereda color del tema Streamlit (dark/light); no usar gris fijo (en dark theme quedaba invisible) */
+    font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 0.7rem;
+    line-height: 1.48;
     color: inherit;
-    opacity: 0.78;
+    opacity: 0.88;
+    -webkit-font-smoothing: antialiased;
 }
-.dd-footer-credit,
-.dd-footer-role {
+section[data-testid="stSidebar"] .dd-footer-sig-inner {
+    background-image: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(255, 255, 255, 0.14) 22%,
+        rgba(255, 255, 255, 0.14) 78%,
+        transparent 100%
+    );
+    background-size: 100% 1px;
+    background-repeat: no-repeat;
+    background-position: top center;
+}
+.dd-footer-credit {
     margin: 0;
     padding: 0;
-    font-weight: 400;
-    letter-spacing: 0.02em;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    font-size: 0.72rem;
 }
 .dd-footer-role {
-    margin-top: 0.15rem;
-    opacity: 0.95;
-    font-size: 0.64rem;
+    margin: 0.28rem 0 0 0;
+    padding: 0;
+    font-weight: 400;
+    font-size: 0.62rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    opacity: 0.82;
+    line-height: 1.4;
 }
 .dd-footer-brand {
     display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    margin-top: 0.4rem;
-    opacity: 0.92;
+    align-items: baseline;
+    gap: 0.32rem;
+    margin-top: 0.55rem;
+    padding-top: 0.45rem;
+    border-top: 1px solid rgba(128, 128, 128, 0.1);
+}
+section[data-testid="stSidebar"] .dd-footer-brand {
+    border-top-color: rgba(255, 255, 255, 0.07);
 }
 .dd-footer-flame {
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     line-height: 1;
-    filter: grayscale(0.12) opacity(0.9);
+    filter: grayscale(0.08) opacity(0.92);
 }
 .dd-footer-rogii {
-    font-weight: 700;
-    font-size: 0.64rem;
-    letter-spacing: 0.1em;
+    font-weight: 600;
+    font-size: 0.62rem;
+    letter-spacing: 0.14em;
     color: inherit;
-    opacity: 0.75;
+    opacity: 0.78;
 }
 </style>
 """, unsafe_allow_html=True)
