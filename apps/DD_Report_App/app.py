@@ -524,27 +524,14 @@ st.markdown("""
     line-height: 1.35 !important;
     overflow: visible !important;
 }
-.dd-rogii-mark {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.2rem;
-    font-weight: 800;
-    letter-spacing: 0.02em;
-    user-select: none;
-}
-.dd-rogii-word {
-    color: #68cbb3;
-    font-size: 1.35rem;
-    line-height: 1.2;
-    padding-top: 0.1rem;
-}
 .dd-flame {
+    flex-shrink: 0;
     font-size: 1.5rem;
     line-height: 1.2;
     display: inline-flex;
     align-items: center;
     padding-top: 0.1rem;
+    user-select: none;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -553,10 +540,7 @@ st.markdown(
     """
 <div class="dd-header-wrap">
   <div class="dd-title-row">
-    <div class="dd-rogii-mark" title="Rogii">
-      <span class="dd-rogii-word">Rogii</span>
-      <span class="dd-flame" aria-hidden="true">🔥</span>
-    </div>
+    <span class="dd-flame" title="Rogii">🔥</span>
     <h1>Conversor de Daily Report a formato general para Rogii Email Parsing</h1>
   </div>
 </div>
