@@ -1,4 +1,4 @@
-"""Daily Report converter: nest-asyncio antes de Streamlit corrige errores asyncio con deps ONNX o similares en Cloud."""
+"""Daily Report → PDF para Rogii email parsing."""
 
 import io
 import re
@@ -7,10 +7,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from email.message import EmailMessage
 from typing import Dict, List, Tuple
-
-import nest_asyncio
-
-nest_asyncio.apply()
 
 import pandas as pd
 import streamlit as st
