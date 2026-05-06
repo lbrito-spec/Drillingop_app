@@ -17,10 +17,10 @@ google-api-python-client
 kaleido==0.2.1
 requests-oauthlib==2.0.0
 
-# DD_Report_App (ddr-rogii): PDF + OCR — Streamlit Cloud solo lee requirements.txt de la RAÍZ del repo.
+# ddr-rogii OCR: rapidocr pide opencv-python; usar packages.txt solo libgl1 en Streamlit Linux.
 pdfplumber>=0.10
 pymupdf>=1.23
 onnxruntime>=1.17
-opencv-python-headless>=4.8,<5
-rapidocr-onnxruntime>=1.2.3,<3
+opencv-python>=4.8,<5
+rapidocr-onnxruntime>=1.4.2,<3
 

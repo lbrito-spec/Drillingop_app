@@ -80,13 +80,13 @@ def ocr_pdf_bytes(data: bytes) -> str:
         from PIL import Image
         import fitz  # pymupdf
         from rapidocr_onnxruntime import RapidOCR
-    except ImportError as exc:
+    except Exception as exc:  # ImportError/OSError/dlopen(libGL…) al cargar cv2/onnxruntime
         hint = (
-            "Instala: pip install pymupdf rapidocr-onnxruntime onnxruntime Pillow numpy "
-            "y usa opencv-python-headless (no opencv-python) en servidores sin libGL. "
-            "En Streamlit Cloud las dependencias deben estar en requirements.txt en la raíz del repositorio."
+            "pip: pymupdf rapidocr-onnxruntime onnxruntime Pillow numpy opencv-python. "
+            "En Linux/OpenGL hace falta libGL.so.1 → en Streamlit usa packages.txt solo con línea libgl1. "
+            "En este monorepo deja solo un requirements.txt en la raíz o renombra los demás."
         )
-        raise RuntimeError(f"PDF sin texto seleccionable requiere OCR. {hint}") from exc
+        raise RuntimeError(f"PDF escaneado: falló import/carga OCR ({type(exc).__name__}: {exc}). {hint}") from exc
 
     try:
         ocr_engine = RapidOCR()

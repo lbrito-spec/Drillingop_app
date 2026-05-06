@@ -1,6 +1,7 @@
 streamlit
 pandas
 altair
-requests
 google-auth-oauthlib
 openpyxl
+requests
+python-dotenv
