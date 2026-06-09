@@ -1,0 +1,10 @@
+# PetroVue ROP Optimizer - Dependencias
+streamlit
+pandas
+numpy
+plotly
+scipy
+python-pptx
+kaleido
+scikit-learn>=1.0
+xgboost>=1.5
