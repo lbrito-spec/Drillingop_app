@@ -388,19 +388,26 @@ def predict_rop_by_formation(formations: List[Dict], params_base: Dict, predicto
         })
     return results
 
-def create_geological_track(formations: List[Dict], current_depth_ft: float) -> go.Figure:
+def create_geological_track(
+    formations: List[Dict],
+    current_depth_ft: float,
+    *,
+    depth_units: str = 'ft',
+) -> go.Figure:
     """Crea un track vertical de formaciones geológicas vs profundidad (estilo well log)."""
     if not formations:
         return go.Figure()
     current_depth_ft = _safe_float(current_depth_ft, 5000.0)
+    y_scale, y_title, _ = _depth_display_config(depth_units)
     depths = [f['depth_top'] for f in formations] + [formations[-1]['depth_bottom']]
-    depth_min = min(depths)
-    depth_max = max(depths)
+    depth_min = min(depths) * y_scale
+    depth_max = max(depths) * y_scale
+    current_depth_plot = current_depth_ft * y_scale
     # Incluir profundidad actual en el rango visible si está fuera
-    if current_depth_ft < depth_min:
-        depth_min = current_depth_ft
-    elif current_depth_ft > depth_max:
-        depth_max = current_depth_ft
+    if current_depth_plot < depth_min:
+        depth_min = current_depth_plot
+    elif current_depth_plot > depth_max:
+        depth_max = current_depth_plot
     # Colores por litología
     litho_colors = {
         'Toba/Volcánico': '#B8A98A',
@@ -412,8 +419,9 @@ def create_geological_track(formations: List[Dict], current_depth_ft: float) -> 
     default_colors = ['#1B4D3E', '#2C6E49', '#3B8C5E', '#4AA66B', '#5BC77B']
     # Evitar rango de eje y inválido (depth_min == depth_max)
     if depth_min == depth_max:
-        depth_min -= 100
-        depth_max += 100
+        pad = 100.0 * y_scale
+        depth_min -= pad
+        depth_max += pad
     fig = go.Figure()
     # Trace invisible para inicializar ejes (las shapes con yref="y" requieren ejes definidos)
     fig.add_trace(go.Scatter(x=[0, 1], y=[depth_min, depth_max], mode='markers',
@@ -422,7 +430,7 @@ def create_geological_track(formations: List[Dict], current_depth_ft: float) -> 
         color = litho_colors.get(f.get('lithology', ''), default_colors[i % len(default_colors)])
         fig.add_shape(
             type="rect",
-            x0=0, x1=1, y0=f['depth_top'], y1=f['depth_bottom'],
+            x0=0, x1=1, y0=f['depth_top'] * y_scale, y1=f['depth_bottom'] * y_scale,
             xref="paper", yref="y",
             line=dict(width=1, color='rgba(0,0,0,0.3)'),
             fillcolor=color,
@@ -431,7 +439,7 @@ def create_geological_track(formations: List[Dict], current_depth_ft: float) -> 
     # Línea de profundidad actual (siempre visible)
     fig.add_shape(
             type="line",
-            x0=0, x1=1, y0=current_depth_ft, y1=current_depth_ft,
+            x0=0, x1=1, y0=current_depth_plot, y1=current_depth_plot,
             xref="paper", yref="y",
             line=dict(color='#E74C3C', width=3, dash='dot')
     )
@@ -443,7 +451,7 @@ def create_geological_track(formations: List[Dict], current_depth_ft: float) -> 
             constrain="domain"
         ),
         yaxis=dict(
-            title="Profundidad (ft)",
+            title=y_title,
             range=[depth_max, depth_min],
             gridcolor='rgba(128,128,128,0.2)'
         ),
@@ -455,7 +463,7 @@ def create_geological_track(formations: List[Dict], current_depth_ft: float) -> 
     )
     # Añadir anotaciones con nombres de formación
     for f in formations:
-        mid_depth = (f['depth_top'] + f['depth_bottom']) / 2
+        mid_depth = (f['depth_top'] + f['depth_bottom']) / 2.0 * y_scale
         fig.add_annotation(
             x=0.5, y=mid_depth,
             xref="paper", yref="y",
@@ -465,9 +473,9 @@ def create_geological_track(formations: List[Dict], current_depth_ft: float) -> 
             xanchor='center'
         )
     fig.add_annotation(
-        x=1.02, y=current_depth_ft,
+        x=1.02, y=current_depth_plot,
         xref="paper", yref="y",
-        text=f"● {current_depth_ft:,.0f} ft",
+        text=f"● {_format_depth_display(current_depth_ft, depth_units)}",
         showarrow=True,
         arrowhead=2,
         arrowcolor='#E74C3C',
@@ -819,6 +827,34 @@ st.markdown("""
     .chip-neigh-depth-hi { background: linear-gradient(135deg, #1D4ED8 0%, #3B82F6 100%); color: #eff6ff; }
     .chip-neigh-grad    { background: linear-gradient(135deg, #6D28D9 0%, #A78BFA 100%); color: #faf5ff; }
     .chip-neigh-meta    { background: linear-gradient(135deg, #334155 0%, #475569 100%); color: #f1f5f9; font-size: 0.74rem; }
+    .chip-form-hot     { background: linear-gradient(135deg, #B91C1C 0%, #F87171 100%); color: #fff7ed; box-shadow: 0 2px 10px rgba(239,68,68,0.35); }
+    .chip-form-cold    { background: linear-gradient(135deg, #0369A1 0%, #38BDF8 100%); color: #f0f9ff; box-shadow: 0 2px 10px rgba(56,189,248,0.35); }
+    .chip-form-warm    { background: linear-gradient(135deg, #C2410C 0%, #FB923C 100%); color: #fff7ed; }
+    .chip-form-cool    { background: linear-gradient(135deg, #0E7490 0%, #22D3EE 100%); color: #ecfeff; }
+    .chip-form-neutral { background: linear-gradient(135deg, #047857 0%, #34D399 100%); color: #ecfdf5; }
+    .chip-form-count   { background: linear-gradient(135deg, #334155 0%, #64748B 100%); color: #f8fafc; font-variant-numeric: tabular-nums; }
+    .chip-form-std     { background: linear-gradient(135deg, #5B21B6 0%, #A78BFA 100%); color: #faf5ff; font-variant-numeric: tabular-nums; }
+    .chip-form-mean    { font-variant-numeric: tabular-nums; }
+    .formation-chip-name {
+        display: inline-flex; align-items: center; gap: 0.35rem;
+        padding: 0.32rem 0.85rem; border-radius: 9999px;
+        font-size: 0.78rem; font-weight: 700; letter-spacing: 0.02em;
+        color: #f8fafc; border: 1px solid rgba(255,255,255,0.18);
+        box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+        white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+    }
+    .chip-anom-sev-high { background: linear-gradient(135deg, #991B1B 0%, #FCA5A5 100%); color: #fff; box-shadow: 0 0 14px rgba(239,68,68,0.55); }
+    .chip-anom-sev-med  { background: linear-gradient(135deg, #C2410C 0%, #FDBA74 100%); color: #1a1a1a; box-shadow: 0 0 10px rgba(251,146,60,0.45); }
+    .chip-anom-sev-low  { background: linear-gradient(135deg, #0369A1 0%, #7DD3FC 100%); color: #f0f9ff; }
+    .chip-anom-res-hot  { background: linear-gradient(135deg, #DC2626 0%, #FB7185 100%); color: #fff7ed; font-variant-numeric: tabular-nums; box-shadow: 0 2px 10px rgba(239,68,68,0.4); }
+    .chip-anom-res-cold { background: linear-gradient(135deg, #0284C7 0%, #38BDF8 100%); color: #f0f9ff; font-variant-numeric: tabular-nums; box-shadow: 0 2px 10px rgba(56,189,248,0.4); }
+    .chip-anom-depth    { background: linear-gradient(135deg, #312E81 0%, #818CF8 100%); color: #eef2ff; font-variant-numeric: tabular-nums; }
+    .chip-anom-zval     { background: linear-gradient(135deg, #6D28D9 0%, #C4B5FD 100%); color: #faf5ff; font-variant-numeric: tabular-nums; }
+    .chip-roadmap-temp  { background: linear-gradient(135deg, #EA580C 0%, #FBBF24 100%); color: #1a1a1a; font-variant-numeric: tabular-nums; box-shadow: 0 2px 10px rgba(251,191,36,0.4); }
+    .chip-roadmap-p10   { background: linear-gradient(135deg, #0369A1 0%, #67E8F9 100%); color: #f0f9ff; font-variant-numeric: tabular-nums; }
+    .chip-roadmap-p90   { background: linear-gradient(135deg, #B91C1C 0%, #FCA5A5 100%); color: #fff7ed; font-variant-numeric: tabular-nums; }
+    .chip-roadmap-depth { background: linear-gradient(135deg, #312E81 0%, #818CF8 100%); color: #eef2ff; font-variant-numeric: tabular-nums; }
+    .chip-roadmap-pts   { background: linear-gradient(135deg, #334155 0%, #94A3B8 100%); color: #f8fafc; font-variant-numeric: tabular-nums; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -2029,6 +2065,11 @@ TRACE_UNIT_SYSTEM_MAP = {
     'Métrico (SI)': 'metric',
     'Imperial (US)': 'imperial',
 }
+DEPTH_DISPLAY_UNIT_LABELS = ['Metros (m)', 'Pies (ft)']
+DEPTH_DISPLAY_UNIT_MAP = {
+    'Metros (m)': 'm',
+    'Pies (ft)': 'ft',
+}
 # Incrementar al cambiar la lógica de unidades para invalidar perfiles viejos en session_state.
 TRACE_PIPELINE_VERSION = 3
 
@@ -2448,17 +2489,43 @@ class NeighborTemperatureProfiler:
             self.neighbor_summary = pd.DataFrame()
             return self.profile_df
         combined = pd.concat(profiles, ignore_index=True)
-        depth_grid = np.sort(combined['depth'].unique())
+        # Perfil común y suave: evita una curva esperada errática generada por puntos
+        # no alineados entre vecinos. En cada profundidad se interpola cada pozo vecino
+        # que realmente cubre el intervalo y luego se calcula la estadística ponderada.
+        well_groups = []
+        for well_name, grp in combined.groupby('well_name', sort=False):
+            g = grp.dropna(subset=['depth', 'temperature_interp']).sort_values('depth')
+            g = g.drop_duplicates(subset=['depth'], keep='last')
+            if len(g) >= 8:
+                well_groups.append((well_name, g))
+        if not well_groups:
+            self.profile_df = pd.DataFrame()
+            self.neighbor_summary = pd.DataFrame(summary_rows).sort_values(['distance', 'well_name'], na_position='last').reset_index(drop=True)
+            return self.profile_df
+        global_min = min(float(g['depth'].min()) for _, g in well_groups)
+        global_max = max(float(g['depth'].max()) for _, g in well_groups)
+        n_grid = int(np.clip(len(well_groups) * 120, 180, 420))
+        depth_grid = np.linspace(global_min, global_max, n_grid)
         records = []
         for d in depth_grid:
-            chunk = combined[np.isclose(combined['depth'], d)]
-            temps = chunk['temperature_interp'].values
-            weights = chunk['weight'].fillna(1.0).values
-            if len(temps) == 0:
+            temps, weights = [], []
+            for _, g in well_groups:
+                dmin, dmax = float(g['depth'].min()), float(g['depth'].max())
+                if d < dmin or d > dmax:
+                    continue
+                temps.append(float(np.interp(d, g['depth'].values, g['temperature_interp'].values)))
+                weights.append(float(g['weight'].iloc[0]) if 'weight' in g.columns else 1.0)
+            if not temps:
                 continue
-            weighted_mean = np.average(temps, weights=weights) if np.sum(weights) > 0 else float(np.mean(temps))
-            records.append({'depth': float(d), 'temp_expected': float(weighted_mean), 'temp_median': float(np.median(temps)), 'temp_p10': float(np.percentile(temps, 10)), 'temp_p90': float(np.percentile(temps, 90)), 'temp_std': float(np.std(temps)), 'neighbors_used': int(len(temps)), 'gradient_expected': np.nan})
+            temps = np.asarray(temps, dtype=float)
+            weights = np.asarray(weights, dtype=float)
+            weighted_mean = np.average(temps, weights=weights) if np.nansum(weights) > 0 else float(np.nanmean(temps))
+            records.append({'depth': float(d), 'temp_expected': float(weighted_mean), 'temp_median': float(np.nanmedian(temps)), 'temp_p10': float(np.nanpercentile(temps, 10)), 'temp_p90': float(np.nanpercentile(temps, 90)), 'temp_std': float(np.nanstd(temps)), 'neighbors_used': int(np.isfinite(temps).sum()), 'gradient_expected': np.nan})
         prof_df = pd.DataFrame(records).sort_values('depth').reset_index(drop=True)
+        if len(prof_df) >= 7:
+            win = max(7, min(41, (len(prof_df) // 25) * 2 + 1))
+            for col in ['temp_expected', 'temp_median', 'temp_p10', 'temp_p90', 'temp_std']:
+                prof_df[col] = prof_df[col].rolling(win, center=True, min_periods=1).median()
         if len(prof_df) >= 2:
             prof_df['gradient_expected'] = np.gradient(prof_df['temp_expected'], prof_df['depth'])
         self.profile_df = prof_df
@@ -2495,6 +2562,9 @@ class NeighborTemperatureProfiler:
         p90 = self.profile_df['temp_p90'].values
         std = self.profile_df['temp_std'].values
         work['temp_expected'] = np.interp(work[depth_col].values, xp, yp, left=np.nan, right=np.nan)
+        if work['temp_expected'].notna().sum() >= 11:
+            win_exp = max(7, min(51, (work['temp_expected'].notna().sum() // 90) * 2 + 1))
+            work['temp_expected'] = work['temp_expected'].rolling(win_exp, center=True, min_periods=1).median()
         work['temp_p10'] = np.interp(work[depth_col].values, xp, p10, left=np.nan, right=np.nan)
         work['temp_p90'] = np.interp(work[depth_col].values, xp, p90, left=np.nan, right=np.nan)
         work['temp_std_expected'] = np.interp(work[depth_col].values, xp, std, left=np.nan, right=np.nan)
@@ -2794,106 +2864,1271 @@ def create_neighbor_temperature_profile_chart(
     )
     return fig
 
-def create_temperature_residual_chart(df: pd.DataFrame, target_col: str, depth_col: str = 'depth_tvd') -> go.Figure:
+def create_temperature_residual_chart(
+    df: pd.DataFrame,
+    target_col: str,
+    depth_col: str = 'depth_tvd',
+    *,
+    depth_units: str = 'ft',
+) -> go.Figure:
+    """Gráfico de anomalías térmicas — densidad 2D + tendencia neón (optimizado para Streamlit)."""
     fig = go.Figure()
+    _dark_layout = dict(
+        height=560, template='plotly_dark', paper_bgcolor='#06080d',
+        plot_bgcolor='rgba(8,12,20,0.92)', font=dict(family='Inter', color='#E2E8F0'),
+    )
     if df is None or df.empty or 'temp_residual' not in df.columns:
-        fig.add_annotation(text='Sin residual térmico disponible', x=0.5, y=0.5, showarrow=False)
-        fig.update_layout(height=420)
+        fig.add_annotation(text='Sin residual térmico disponible', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'))
+        fig.update_layout(**_dark_layout)
         return fig
+    if depth_col not in df.columns:
+        depth_col = _choose_available_depth_col(df, depth_col) or 'depth_tvd'
+    if depth_col not in df.columns:
+        fig.add_annotation(text='Sin columna de profundidad disponible', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'))
+        fig.update_layout(**_dark_layout)
+        return fig
+
     work = df[[depth_col, 'temp_residual']].copy()
     if 'thermal_anomaly' in df.columns:
         work['thermal_anomaly'] = df['thermal_anomaly'].reindex(work.index).fillna('normal')
     else:
         work['thermal_anomaly'] = 'normal'
+    work[depth_col] = pd.to_numeric(work[depth_col], errors='coerce')
+    work['temp_residual'] = pd.to_numeric(work['temp_residual'], errors='coerce')
     work = work.dropna(subset=[depth_col, 'temp_residual']).sort_values(depth_col)
     if work.empty:
-        fig.add_annotation(text='Sin residual térmico disponible', x=0.5, y=0.5, showarrow=False)
-        fig.update_layout(height=420)
+        fig.add_annotation(text='Sin residual térmico disponible', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'))
+        fig.update_layout(**_dark_layout)
         return fig
-    n_total = len(work)
-    # Reducir superposición: submuestreo si hay muchos puntos (mantener representatividad por profundidad)
-    max_points = 1200
-    if n_total > max_points:
-        step = max(1, n_total // max_points)
-        idx = np.linspace(0, n_total - 1, min(max_points, n_total), dtype=int)
-        scatter_df = work.iloc[idx].copy()
-    else:
-        scatter_df = work.copy()
-    is_anom = scatter_df.get('thermal_anomaly', 'normal') == 'anomaly'
-    colors = np.where(is_anom, '#EF4444', 'rgba(6, 182, 212, 0.45)')
-    sizes = np.where(is_anom, 10, 4)
-    # Scatter: puntos pequeños y semitransparentes para que la densidad se vea sin amontonar
-    fig.add_trace(go.Scatter(
-        x=scatter_df['temp_residual'],
-        y=scatter_df[depth_col],
-        mode='markers',
-        marker=dict(size=sizes, color=colors, line=dict(width=0), opacity=0.85 if is_anom.any() else 0.5),
-        name='Residual',
-        hovertemplate='Residual: %{x:.2f}<br>Profundidad: %{y:,.0f}<extra></extra>',
-    ))
-    # Línea de tendencia: mediana residual por ventana de profundidad (suavizado)
-    n_bins = min(80, max(15, len(work) // 50))
-    work['depth_bin'] = pd.cut(work[depth_col], bins=n_bins, labels=False, duplicates='drop')
-    trend = work.groupby('depth_bin', observed=True).agg({'temp_residual': 'median', depth_col: 'mean'}).reset_index()
-    trend = trend.dropna().sort_values(depth_col)
+
+    y_scale, y_title, _ = _depth_display_config(depth_units)
+    work = work.copy()
+    work['_depth_plot'] = work[depth_col].astype(float) * y_scale
+    depth_plot = '_depth_plot'
+
+    _THERMAL_DENSITY_SCALE = [
+        [0.0, 'rgba(6,10,18,0)'],
+        [0.10, 'rgba(6,182,212,0.18)'],
+        [0.30, 'rgba(34,211,238,0.30)'],
+        [0.50, 'rgba(99,102,241,0.38)'],
+        [0.68, 'rgba(168,85,247,0.44)'],
+        [0.82, 'rgba(251,191,36,0.52)'],
+        [1.0, 'rgba(239,68,68,0.62)'],
+    ]
+
+    # Campo de densidad 2D (una sola capa heatmap suavizada — liviana para el navegador)
+    kde_n = min(1800, len(work))
+    kde_sample = work.iloc[np.linspace(0, len(work) - 1, kde_n, dtype=int)].copy()
+    try:
+        x_vals = kde_sample['temp_residual'].astype(float).values
+        y_vals = kde_sample[depth_plot].astype(float).values
+        xy = np.vstack([x_vals, y_vals])
+        kde = stats.gaussian_kde(xy)
+        x_span = float(work['temp_residual'].max() - work['temp_residual'].min())
+        y_span = float(work[depth_plot].max() - work[depth_plot].min())
+        x_pad = max(8.0, x_span * 0.12)
+        y_pad = max(150.0 * y_scale, y_span * 0.04)
+        xi = np.linspace(float(work['temp_residual'].min()) - x_pad, float(work['temp_residual'].max()) + x_pad, 200)
+        yi = np.linspace(float(work[depth_plot].min()) - y_pad, float(work[depth_plot].max()) + y_pad, 260)
+        Xi, Yi = np.meshgrid(xi, yi)
+        Zi = kde(np.vstack([Xi.ravel(), Yi.ravel()])).reshape(Xi.shape)
+        z_peak = float(Zi.max()) if Zi.size else 0.0
+        if z_peak > 0:
+            Zi = Zi / z_peak
+        fig.add_trace(go.Heatmap(
+            z=Zi, x=xi, y=yi, zsmooth='best',
+            colorscale=_THERMAL_DENSITY_SCALE,
+            showscale=False, hoverinfo='skip', name='Densidad',
+        ))
+    except Exception:
+        pass
+
+    # Curvas KDE por banda de profundidad (máx. 6 bandas, 2 capas — evita payload enorme)
+    res_span = float(work['temp_residual'].max() - work['temp_residual'].min())
+    x_hi = float(work['temp_residual'].max()) + max(8.0, res_span * 0.08)
+    x_lo = float(work['temp_residual'].min()) - max(8.0, res_span * 0.08)
+    n_slices = min(6, max(3, len(work) // 8000))
+    depth_edges = np.linspace(float(work[depth_plot].min()), float(work[depth_plot].max()), n_slices + 1)
+    slice_colors = ['#22D3EE', '#818CF8', '#FBBF24', '#FB923C', '#F87171', '#38BDF8']
+    for si in range(n_slices):
+        lo_d, hi_d = depth_edges[si], depth_edges[si + 1]
+        band = work[(work[depth_plot] >= lo_d) & (work[depth_plot] < hi_d if si < n_slices - 1 else work[depth_plot] <= hi_d)]
+        if len(band) < 20:
+            continue
+        y_center = float(band[depth_plot].median())
+        vals = band['temp_residual'].astype(float).values
+        _, dens = _kde_1d(vals, n_grid=120)
+        if dens.size == 0:
+            continue
+        color = slice_colors[si % len(slice_colors)]
+        med_res = float(np.median(vals))
+        max_hw = max(6.0, (x_hi - x_lo) * 0.09)
+        y_thick = max(60.0, (depth_edges[-1] - depth_edges[0]) / max(n_slices, 1) * 0.45)
+        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+        for scale, alpha in ((0.85, 0.14), (0.45, 0.30)):
+            hw = dens * max_hw * scale
+            vt = dens * y_thick * scale
+            x_poly = np.concatenate([med_res - hw, (med_res + hw)[::-1]])
+            y_poly = np.concatenate([y_center + vt, (y_center - vt)[::-1]])
+            fig.add_trace(go.Scatter(
+                x=x_poly, y=y_poly, fill='toself', mode='lines', line=dict(width=0),
+                fillcolor=f'rgba({r},{g},{b},{alpha})',
+                showlegend=False, hoverinfo='skip',
+            ))
+
+    # Tendencia mediana + banda IQR
+    n_bins = min(60, max(18, len(work) // 80))
+    work['depth_bin'] = pd.cut(work[depth_plot], bins=n_bins, labels=False, duplicates='drop')
+    trend = (
+        work.groupby('depth_bin', observed=True)
+        .agg(
+            med=('temp_residual', 'median'),
+            p25=('temp_residual', lambda s: float(s.quantile(0.25))),
+            p75=('temp_residual', lambda s: float(s.quantile(0.75))),
+            depth=(depth_plot, 'mean'),
+        )
+        .reset_index().dropna().sort_values('depth')
+    )
     if len(trend) >= 2:
         fig.add_trace(go.Scatter(
-            x=trend['temp_residual'],
-            y=trend[depth_col],
-            mode='lines',
-            line=dict(color='#F59E0B', width=2.5, shape='spline'),
-            name='Tendencia (mediana)',
-            hovertemplate='Mediana residual: %{x:.2f}<br>Profundidad: %{y:,.0f}<extra></extra>',
+            x=np.concatenate([trend['p25'].values, trend['p75'].values[::-1]]),
+            y=np.concatenate([trend['depth'].values, trend['depth'].values[::-1]]),
+            fill='toself', mode='lines', line=dict(width=0),
+            fillcolor='rgba(251,191,36,0.18)', showlegend=False, hoverinfo='skip',
         ))
-    fig.add_vline(x=0, line_dash='dash', line_color='#94A3B8', line_width=1)
+        med_x, med_y = trend['med'].values, trend['depth'].values
+        fig.add_trace(go.Scatter(
+            x=med_x, y=med_y, mode='lines',
+            line=dict(color='rgba(251,191,36,0.35)', width=7, shape='spline'),
+            showlegend=False, hoverinfo='skip',
+        ))
+        fig.add_trace(go.Scatter(
+            x=med_x, y=med_y, mode='lines',
+            line=dict(color='#FBBF24', width=3.2, shape='spline'),
+            name='Tendencia (mediana)',
+            hovertemplate=f'Mediana: %{{x:.2f}}<br>{y_title}: %{{y:,.1f}}<extra></extra>' if y_scale != 1.0 else 'Mediana: %{x:.2f}<br>Profundidad: %{y:,.0f}<extra></extra>',
+        ))
+
+    # Puntos (submuestreados para rendimiento)
+    max_points = 1600
+    n_total = len(work)
+    scatter_df = work.iloc[np.linspace(0, n_total - 1, min(max_points, n_total), dtype=int)].copy() if n_total > max_points else work.copy()
+    normal_df = scatter_df[scatter_df['thermal_anomaly'] != 'anomaly']
+    anom_df = scatter_df[scatter_df['thermal_anomaly'] == 'anomaly']
+    _hover_depth = f'Residual: %{{x:.2f}}<br>{y_title}: %{{y:,.1f}}<extra></extra>' if y_scale != 1.0 else 'Residual: %{x:.2f}<br>Profundidad: %{y:,.0f}<extra></extra>'
+    _hover_depth_anom = f'⚠ Residual: %{{x:.2f}}<br>{y_title}: %{{y:,.1f}}<extra></extra>' if y_scale != 1.0 else '⚠ Residual: %{x:.2f}<br>Profundidad: %{y:,.0f}<extra></extra>'
+    if not normal_df.empty:
+        fig.add_trace(go.Scatter(
+            x=normal_df['temp_residual'], y=normal_df[depth_plot], mode='markers',
+            marker=dict(size=6, color='rgba(34,211,238,0.7)', line=dict(width=0.8, color='rgba(103,232,249,0.4)')),
+            name='Normal', opacity=0.75,
+            hovertemplate=_hover_depth,
+        ))
+    if not anom_df.empty:
+        fig.add_trace(go.Scatter(
+            x=anom_df['temp_residual'], y=anom_df[depth_plot], mode='markers',
+            marker=dict(size=10, color='#EF4444', line=dict(width=1.4, color='#FCA5A5')),
+            name='Anomalía', opacity=0.92,
+            hovertemplate=_hover_depth_anom,
+        ))
+
+    fig.add_vline(x=0, line_dash='dot', line_color='rgba(148,163,184,0.55)', line_width=1.2)
     fig.update_layout(
-        height=480,
-        title=dict(text='Anomalías térmicas mientras perforas', font=dict(size=16, color='#F1F5F9')),
+        **_dark_layout,
+        title=dict(text='Anomalías térmicas mientras perforas', font=dict(size=18, color='#F8FAFC')),
+        margin=dict(l=58, r=28, t=82, b=58),
+        hoverlabel=dict(bgcolor='rgba(15,23,42,0.96)', font=dict(color='#F8FAFC', size=12)),
+        legend=dict(
+            orientation='h', yanchor='bottom', y=1.04, x=0,
+            font=dict(color='#E2E8F0', size=11),
+            bgcolor='rgba(6,10,18,0.82)', bordercolor='rgba(34,211,238,0.25)', borderwidth=1,
+        ),
         xaxis=dict(
-            title='Residual de temperatura',
-            title_font=dict(color='#94A3B8'),
-            tickfont=dict(color='#94A3B8'),
-            gridcolor='rgba(148,163,184,0.12)',
-            zeroline=False,
+            title='Residual de temperatura', title_font=dict(color='#94A3B8', size=13),
+            tickfont=dict(color='#94A3B8'), gridcolor='rgba(34,211,238,0.06)', zeroline=False,
         ),
         yaxis=dict(
-            title='Profundidad',
-            title_font=dict(color='#94A3B8'),
-            tickfont=dict(color='#94A3B8'),
-            gridcolor='rgba(148,163,184,0.12)',
-            autorange='reversed',
+            title=y_title, title_font=dict(color='#94A3B8', size=13),
+            tickfont=dict(color='#94A3B8'), gridcolor='rgba(34,211,238,0.06)',
+            autorange='reversed', zeroline=False,
         ),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(15,23,42,0.4)',
-        legend=dict(font=dict(color='#CBD5E1'), orientation='h', yanchor='bottom', y=1.02),
-        font=dict(family='Inter'),
     )
     return fig
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    h = str(hex_color).lstrip('#')
+    if len(h) != 6:
+        return f'rgba(148,163,184,{alpha})'
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f'rgba({r},{g},{b},{alpha})'
+
+
+def _formation_color_palette(n: int) -> List[str]:
+    base = [
+        '#06B6D4', '#8B5CF6', '#F59E0B', '#10B981', '#3B82F6',
+        '#EC4899', '#14B8A6', '#F97316', '#6366F1', '#22C55E',
+        '#A855F7', '#0EA5E9', '#EAB308', '#EF4444', '#64748B',
+        '#2DD4BF', '#FB7185',
+    ]
+    return [base[i % len(base)] for i in range(max(n, 1))]
+
+
+def _formation_gradient_pair(name: str) -> Tuple[str, str]:
+    """Paleta litológica compatible con el tema HD oscuro.
+
+    Devuelve dos colores: borde/acentos y relleno. Evita tonos pastel muy claros
+    que compiten con las curvas de temperatura, y mantiene suficiente contraste
+    para que las etiquetas se lean dentro del track.
+    """
+    palettes = [
+        ('#22D3EE', '#155E75'),  # cyan petróleo
+        ('#A78BFA', '#5B21B6'),  # violeta profundo
+        ('#34D399', '#065F46'),  # verde esmeralda
+        ('#FBBF24', '#92400E'),  # ámbar oscuro
+        ('#F472B6', '#9D174D'),  # magenta roca
+        ('#60A5FA', '#1D4ED8'),  # azul brillante
+        ('#FB923C', '#9A3412'),  # naranja quemado
+        ('#2DD4BF', '#0F766E'),  # teal
+        ('#C084FC', '#6D28D9'),  # púrpura
+        ('#94A3B8', '#334155'),  # slate neutral
+    ]
+    return palettes[abs(hash(str(name))) % len(palettes)]
+
+
+def _short_formation_label(name: Any, max_chars: int = 18) -> str:
+    """Etiqueta corta con salto de línea para que no se salga del track."""
+    txt = str(name or '').strip()
+    if not txt:
+        return 'Sin nombre'
+    parts = txt.replace('_', ' ').split()
+    lines = []
+    cur = ''
+    for part in parts:
+        test = (cur + ' ' + part).strip()
+        if len(test) <= max_chars:
+            cur = test
+        else:
+            if cur:
+                lines.append(cur)
+            cur = part[:max_chars]
+    if cur:
+        lines.append(cur)
+    if len(lines) > 2:
+        lines = lines[:2]
+        lines[-1] = lines[-1][:max_chars-1] + '…'
+    return '<br>'.join(html.escape(x) for x in lines)
+
+
+def _kde_1d(values: np.ndarray, n_grid: int = 320) -> Tuple[np.ndarray, np.ndarray]:
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return np.array([]), np.array([])
+    if values.size == 1:
+        return values.copy(), np.array([1.0])
+    span = float(values.max() - values.min())
+    pad = max(span * 0.18, 4.0)
+    y_grid = np.linspace(values.min() - pad, values.max() + pad, n_grid)
+    try:
+        dens = stats.gaussian_kde(values)(y_grid)
+    except Exception:
+        bins = min(48, max(10, len(values) // 4))
+        hist, edges = np.histogram(values, bins=bins, density=True)
+        centers = (edges[:-1] + edges[1:]) / 2.0
+        dens = np.interp(y_grid, centers, hist, left=0.0, right=0.0)
+    dens = np.maximum(dens, 0.0)
+    peak = float(dens.max()) if dens.size else 0.0
+    if peak > 0:
+        dens = dens / peak
+    return y_grid, dens
+
+
+def _add_gradient_density_ridge(
+    fig: go.Figure,
+    values: np.ndarray,
+    x_center: float,
+    color: str,
+    max_half_width: float = 0.42,
+    n_grid: int = 320,
+) -> None:
+    y_grid, dens = _kde_1d(values, n_grid=n_grid)
+    if y_grid.size == 0:
+        return
+    layers = [
+        (1.00, 0.05), (0.84, 0.09), (0.68, 0.14),
+        (0.52, 0.20), (0.36, 0.28), (0.22, 0.38),
+    ]
+    for scale, alpha in layers:
+        hw = dens * max_half_width * scale
+        x_poly = np.concatenate([[x_center], x_center - hw, [x_center], x_center + hw[::-1], [x_center]])
+        y_poly = np.concatenate([[y_grid[0]], y_grid, [y_grid[-1]], y_grid[::-1], [y_grid[0]]])
+        fig.add_trace(go.Scatter(
+            x=x_poly, y=y_poly, fill='toself', mode='lines',
+            line=dict(width=0), fillcolor=_hex_to_rgba(color, alpha),
+            hoverinfo='skip', showlegend=False,
+        ))
+    edge_hw = dens * max_half_width * 0.34
+    for sign in (-1, 1):
+        fig.add_trace(go.Scatter(
+            x=x_center + sign * edge_hw, y=y_grid, mode='lines',
+            line=dict(color=_hex_to_rgba(color, 0.72), width=1.4, shape='spline'),
+            hoverinfo='skip', showlegend=False,
+        ))
+
+
+def _residual_trend_chip(mean_val: float) -> Tuple[str, str]:
+    if mean_val >= 8:
+        return 'chip-form-hot', 'Caliente'
+    if mean_val <= -8:
+        return 'chip-form-cold', 'Fría'
+    if mean_val >= 3:
+        return 'chip-form-warm', 'Templada +'
+    if mean_val <= -3:
+        return 'chip-form-cool', 'Templada −'
+    return 'chip-form-neutral', 'Normal'
+
+
+def _resolve_lithology_category_col(df: pd.DataFrame) -> Optional[str]:
+    if 'lithology' in df.columns and df['lithology'].notna().any():
+        return 'lithology'
+    if 'formation' in df.columns and df['formation'].notna().any():
+        return 'formation'
+    return None
+
+
+def build_formation_temperature_summary(
+    df: pd.DataFrame,
+    category_col: str,
+    temp_col: str,
+) -> pd.DataFrame:
+    work = df[[category_col, temp_col]].dropna().copy()
+    if work.empty:
+        return pd.DataFrame()
+    work[category_col] = work[category_col].astype(str).str.strip()
+    work = work[~work[category_col].str.lower().isin(['nan', 'none', '', 'unknown'])]
+    summary = (
+        work.groupby(category_col, sort=False)[temp_col]
+        .agg(count='count', mean='mean', std='std')
+        .reset_index()
+        .rename(columns={category_col: 'formation', temp_col: 'metric'})
+    )
+    return summary.sort_values('count', ascending=False).reset_index(drop=True)
+
+
+def formation_temperature_summary_table_html(
+    summary_df: pd.DataFrame,
+    temp_col_label: str = 'Residual térmico',
+    max_rows: int = 50,
+) -> str:
+    if summary_df is None or summary_df.empty:
+        return '<p style="color:#94a3b8;font-size:0.95rem;">Sin datos de resumen por formación.</p>'
+    work = summary_df.head(max_rows).copy()
+    wrap_bg = '#0b0f14'
+    table_bg = 'linear-gradient(180deg, rgba(15,23,42,0.92) 0%, rgba(11,15,20,0.98) 100%)'
+    border_c = 'rgba(44,110,73,0.35)'
+    th_style = (
+        'text-align:left;padding:10px 12px;border-bottom:2px solid #2C6E49;color:#cbd5e1;'
+        'font-size:0.78rem;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;'
+        'background:rgba(27,77,62,0.25);'
+    )
+    td_style = 'padding:10px 12px;border-bottom:1px solid rgba(51,65,85,0.5);font-size:0.88rem;color:#e2e8f0;vertical-align:middle;'
+    headers = ''.join(
+        f'<th style="{th_style}">{label}</th>'
+        for label in ('Formación', 'Tendencia', 'Puntos', f'Media {temp_col_label}', 'σ (std)')
+    )
+    body_rows = []
+    for i, row in work.iterrows():
+        form_name = str(row.get('formation', '—'))
+        c0, c1 = _formation_gradient_pair(form_name)
+        trend_cls, trend_txt = _residual_trend_chip(float(row.get('mean', 0.0)))
+        mean_val = float(row.get('mean', 0.0))
+        std_val = float(row.get('std', 0.0)) if pd.notna(row.get('std')) else 0.0
+        count_val = int(row.get('count', 0))
+        mean_chip_cls = 'chip-form-hot' if mean_val >= 5 else 'chip-form-cold' if mean_val <= -5 else 'chip-form-mean chip-form-neutral'
+        zebra = 'background:rgba(30,41,59,0.25);' if i % 2 else ''
+        body_rows.append(
+            f'<tr style="{zebra}">'
+            f'<td style="{td_style}"><span class="formation-chip-name" style="background:linear-gradient(135deg,{c0} 0%,{c1} 100%);" title="{html.escape(form_name)}">{html.escape(form_name)}</span></td>'
+            f'<td style="{td_style}"><span class="chip {trend_cls}">{html.escape(trend_txt)}</span></td>'
+            f'<td style="{td_style}"><span class="chip chip-form-count">{count_val:,}</span></td>'
+            f'<td style="{td_style}"><span class="chip {mean_chip_cls}">{mean_val:+.2f}</span></td>'
+            f'<td style="{td_style}"><span class="chip chip-form-std">{std_val:.2f}</span></td>'
+            f'</tr>'
+        )
+    caption = (
+        '<p style="margin:0 0 0.65rem 0;font-size:0.8rem;color:#94a3b8;line-height:1.45;">'
+        'Chips de <strong style="color:#e2e8f0">tendencia</strong> según media del residual: '
+        '<span style="color:#f87171">caliente</span> ≥ +8 · '
+        '<span style="color:#38bdf8">fría</span> ≤ −8 · '
+        '<span style="color:#34d399">normal</span> cerca de 0.'
+        '</p>'
+    )
+    return (
+        f'<div style="overflow-x:auto;margin-top:0.5rem;padding:14px 16px;border-radius:12px;'
+        f'background:{wrap_bg};border:1px solid {border_c};box-shadow:0 8px 32px rgba(0,0,0,0.35);">'
+        f'{caption}'
+        f'<table style="width:100%;border-collapse:separate;border-spacing:0;'
+        f'background:{table_bg};border-radius:10px;overflow:hidden;border:1px solid rgba(51,65,85,0.4);">'
+        f'<thead><tr>{headers}</tr></thead><tbody>{"".join(body_rows)}</tbody></table></div>'
+    )
+
+
+def _anomaly_severity_chip(z_abs: float, threshold: float = 2.0) -> Tuple[str, str]:
+    if z_abs >= threshold + 2.0:
+        return 'chip-anom-sev-high', 'Alta'
+    if z_abs >= threshold + 0.5:
+        return 'chip-anom-sev-med', 'Media'
+    return 'chip-anom-sev-low', 'Baja'
+
+
+def thermal_anomalies_table_html(
+    anomalies_df: pd.DataFrame,
+    depth_col: str,
+    target_col: str,
+    z_threshold: float = 2.0,
+    max_rows: int = 50,
+    *,
+    depth_units: str = 'ft',
+) -> str:
+    if anomalies_df is None or anomalies_df.empty:
+        return '<p style="color:#94a3b8;font-size:0.95rem;">Sin anomalías detectadas con el umbral actual.</p>'
+    work = anomalies_df.head(max_rows).copy()
+    wrap_bg = '#0b0f14'
+    table_bg = 'linear-gradient(180deg, rgba(15,23,42,0.92) 0%, rgba(11,15,20,0.98) 100%)'
+    border_c = 'rgba(220,38,38,0.28)'
+    th_style = (
+        'text-align:left;padding:10px 12px;border-bottom:2px solid rgba(239,68,68,0.45);color:#fecaca;'
+        'font-size:0.78rem;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;'
+        'background:rgba(127,29,29,0.22);'
+    )
+    td_style = 'padding:10px 12px;border-bottom:1px solid rgba(51,65,85,0.5);font-size:0.88rem;color:#e2e8f0;vertical-align:middle;'
+
+    col_defs = [
+        ('depth', depth_col, 'Profundidad'),
+        ('temp', target_col, 'Temp. real'),
+        ('expected', 'temp_expected', 'Esperada'),
+        ('residual', 'temp_residual', 'Residual'),
+        ('zscore', 'temp_zscore', '|Z|'),
+        ('formation', 'formation', 'Formación'),
+    ]
+    active_cols = [(key, col, label) for key, col, label in col_defs if col in work.columns]
+    headers = ''.join(f'<th style="{th_style}">{label}</th>' for _, _, label in active_cols)
+    headers += f'<th style="{th_style}">Severidad</th>'
+
+    body_rows = []
+    for i, (_, row) in enumerate(work.iterrows()):
+        cells = []
+        for key, col, _ in active_cols:
+            val = row.get(col)
+            if key == 'depth' and pd.notna(val):
+                cells.append(
+                    f'<td style="{td_style}"><span class="chip chip-anom-depth">'
+                    f'{_format_depth_display(float(val), depth_units)}</span></td>'
+                )
+            elif key == 'residual' and pd.notna(val):
+                rv = float(val)
+                cls = 'chip-anom-res-hot' if rv > 0 else 'chip-anom-res-cold'
+                cells.append(f'<td style="{td_style}"><span class="chip {cls}">{rv:+.2f}</span></td>')
+            elif key == 'zscore' and pd.notna(val):
+                zv = abs(float(val))
+                cells.append(f'<td style="{td_style}"><span class="chip chip-anom-zval">{zv:.2f}</span></td>')
+            elif key == 'formation' and pd.notna(val):
+                fname = str(val).strip()
+                c0, c1 = _formation_gradient_pair(fname)
+                cells.append(
+                    f'<td style="{td_style}"><span class="formation-chip-name" '
+                    f'style="background:linear-gradient(135deg,{c0} 0%,{c1} 100%);" '
+                    f'title="{html.escape(fname)}">{html.escape(fname)}</span></td>'
+                )
+            elif pd.notna(val) and isinstance(val, (int, float, np.integer, np.floating)):
+                cells.append(f'<td style="{td_style}"><span class="chip chip-anom-puntos">{float(val):.2f}</span></td>')
+            else:
+                cells.append(f'<td style="{td_style}">{html.escape(str(val) if pd.notna(val) else "—")}</td>')
+        z_abs = abs(float(row.get('temp_zscore', 0))) if pd.notna(row.get('temp_zscore')) else 0.0
+        sev_cls, sev_txt = _anomaly_severity_chip(z_abs, z_threshold)
+        cells.append(f'<td style="{td_style}"><span class="chip {sev_cls}">{sev_txt}</span></td>')
+        zebra = 'background:rgba(30,41,59,0.28);' if i % 2 else ''
+        body_rows.append(f'<tr style="{zebra}">{"".join(cells)}</tr>')
+
+    caption = (
+        f'<p style="margin:0 0 0.65rem 0;font-size:0.8rem;color:#94a3b8;line-height:1.45;">'
+        f'Top {len(work)} anomalías · umbral |Z| ≥ <strong style="color:#fca5a5">{z_threshold:.1f}</strong> · '
+        f'chips <span style="color:#f87171">rojos</span> = residual positivo · '
+        f'<span style="color:#38bdf8">azules</span> = residual negativo.'
+        f'</p>'
+    )
+    return (
+        f'<div style="overflow-x:auto;margin-top:0.5rem;padding:14px 16px;border-radius:12px;'
+        f'background:{wrap_bg};border:1px solid {border_c};box-shadow:0 8px 32px rgba(239,68,68,0.12);">'
+        f'{caption}'
+        f'<table style="width:100%;border-collapse:separate;border-spacing:0;'
+        f'background:{table_bg};border-radius:10px;overflow:hidden;border:1px solid rgba(127,29,29,0.35);">'
+        f'<thead><tr>{headers}</tr></thead><tbody>{"".join(body_rows)}</tbody></table></div>'
+    )
+
+
+def _zscore_interpretation_label(z: float, threshold: float) -> Tuple[str, str]:
+    """Etiqueta y color neón para la columna de interpretación."""
+    if z >= threshold + 1.5:
+        return 'Caliente Fuerte', '#FF3366'
+    if z >= threshold:
+        return 'Caliente Mod.', '#FF8C42'
+    if z <= -(threshold + 1.5):
+        return 'Fría Fuerte', '#3366FF'
+    if z <= -threshold:
+        return 'Fría Mod.', '#66CCFF'
+    return 'Normal', '#00E676'
+
+
+def _thermal_track_bin_curves(
+    work: pd.DataFrame,
+    depth_col: str,
+    value_cols: List[str],
+    n_bins: int = 140,
+) -> pd.DataFrame:
+    """Serie suavizada por bins de profundidad (mediana) para curvas HD."""
+    cols = [c for c in value_cols if c in work.columns]
+    if work.empty or not cols:
+        return pd.DataFrame()
+    w = work[[depth_col] + cols].dropna(subset=[depth_col]).copy()
+    nb = min(n_bins, max(24, len(w) // 120))
+    w['_bin'] = pd.cut(w[depth_col], bins=nb, labels=False, duplicates='drop')
+    agg_map = {depth_col: (depth_col, 'mean')}
+    for c in cols:
+        agg_map[c] = (c, 'median')
+    return (
+        w.groupby('_bin', observed=True)
+        .agg(**agg_map)
+        .reset_index(drop=True)
+        .dropna()
+        .sort_values(depth_col)
+    )
+
+
+def _formation_intervals_for_thermal_track(
+    df: pd.DataFrame,
+    depth_col: str,
+    formations: Optional[List[Dict]] = None,
+) -> List[Dict]:
+    """Intervalos de formación para la columna litológica del track térmico."""
+    if formations:
+        return [
+            {
+                'name': str(f.get('name', '—')),
+                'lo': float(f['depth_top']),
+                'hi': float(f['depth_bottom']),
+                'color': _formation_gradient_pair(str(f.get('name', '')))[1],
+            }
+            for f in formations
+            if f.get('depth_top') is not None and f.get('depth_bottom') is not None
+        ]
+    if df is not None and 'formation' in df.columns and depth_col in df.columns:
+        w = df[[depth_col, 'formation']].dropna()
+        if w.empty:
+            return []
+        out = []
+        for fname, grp in w.groupby('formation'):
+            out.append({
+                'name': str(fname),
+                'lo': float(grp[depth_col].min()),
+                'hi': float(grp[depth_col].max()),
+                'color': _formation_gradient_pair(str(fname))[1],
+            })
+        return sorted(out, key=lambda x: x['lo'])
+    return []
+
+
+def _thermal_interp_label_desc(z: float, threshold: float) -> Tuple[str, str, str]:
+    """Etiqueta, color y explicación para el panel de interpretación HD."""
+    if not np.isfinite(z):
+        return 'No evaluado', '#64748B', 'Sin datos válidos para Z-score.'
+    az = abs(float(z))
+    sign_hot = z >= 0
+    if az < 1.0:
+        return 'Normal', '#22C55E', 'Dentro del comportamiento esperado.'
+    if az < threshold:
+        if sign_hot:
+            return 'Caliente moderada', '#FB923C', f'Z +1.0 a +{threshold:.1f}: algo mayor al modelo.'
+        return 'Fría moderada', '#38BDF8', f'Z -{threshold:.1f} a -1.0: algo menor al modelo.'
+    if sign_hot:
+        return 'Caliente fuerte', '#FF3B30', f'Z > +{threshold:.1f}: anomalía caliente significativa.'
+    return 'Fría fuerte', '#3B82F6', f'Z < -{threshold:.1f}: anomalía fría significativa.'
+
+
+def _wrap_thermal_interp_text(text: str, max_chars: int = 20) -> str:
+    """Parte el texto en líneas HTML para que no desborde las tarjetas del panel."""
+    safe = html.escape(str(text))
+    words = safe.split()
+    if not words:
+        return ''
+    lines: List[str] = []
+    current = words[0]
+    for word in words[1:]:
+        trial = f'{current} {word}'
+        if len(trial) <= max_chars:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return '<br>'.join(lines)
+
+
+def _thermal_interpretation_segments(
+    work: pd.DataFrame,
+    depth_plot: str,
+    z_col: str,
+    d_lo: float,
+    d_hi: float,
+    threshold: float,
+    max_segments: int = 7,
+) -> List[Dict[str, Any]]:
+    """Construye intervalos interpretables robustos para el panel derecho."""
+    if work is None or work.empty or z_col not in work.columns:
+        return []
+    tmp = work[[depth_plot, z_col]].dropna().sort_values(depth_plot).copy()
+    if tmp.empty or not np.isfinite(d_lo) or not np.isfinite(d_hi) or d_hi <= d_lo:
+        return []
+    n_bins = min(max_segments, max(3, int(len(tmp) / max(len(tmp) / max_segments, 1))))
+    edges = np.linspace(d_lo, d_hi, n_bins + 1)
+    segments = []
+    for i in range(n_bins):
+        y0, y1 = float(edges[i]), float(edges[i + 1])
+        mask = (tmp[depth_plot] >= y0) & (tmp[depth_plot] <= y1 if i == n_bins - 1 else tmp[depth_plot] < y1)
+        seg = tmp.loc[mask]
+        if seg.empty:
+            # fallback al punto más cercano para no dejar el panel vacío
+            mid = (y0 + y1) / 2.0
+            idx = (tmp[depth_plot] - mid).abs().idxmin()
+            zval = float(tmp.loc[idx, z_col])
+        else:
+            zval = float(seg[z_col].median())
+            # si hay anomalía fuerte dentro del tramo, usar el signo del extremo dominante
+            max_abs_idx = seg[z_col].abs().idxmax()
+            z_ext = float(seg.loc[max_abs_idx, z_col])
+            if abs(z_ext) >= threshold:
+                zval = z_ext
+        label, color, desc = _thermal_interp_label_desc(zval, threshold)
+        segments.append({'y0': y0, 'y1': y1, 'z': zval, 'label': label, 'color': color, 'desc': desc})
+    # Compactar intervalos contiguos con la misma etiqueta para parecer más geológico.
+    compact = []
+    for seg in segments:
+        if compact and compact[-1]['label'] == seg['label']:
+            compact[-1]['y1'] = seg['y1']
+            compact[-1]['z'] = float(np.nanmean([compact[-1]['z'], seg['z']]))
+        else:
+            compact.append(dict(seg))
+    return compact
+
+
+def create_thermal_anomaly_track_chart(
+    df: pd.DataFrame,
+    target_col: str,
+    depth_col: str = 'depth_tvd',
+    *,
+    formations: Optional[List[Dict]] = None,
+    z_threshold: float = 2.0,
+    depth_units: str = 'ft',
+) -> go.Figure:
+    """
+    Track térmico HD estilo well-log:
+    formaciones | temperatura real/modelo | residual | Z-score | interpretación.
+    El panel de interpretación usa barras reales, no solo shapes, para evitar que quede vacío en Streamlit.
+    """
+    empty_layout = dict(
+        height=1080,
+        template='plotly_dark',
+        paper_bgcolor='#030712',
+        plot_bgcolor='#07101B',
+        font=dict(family='Inter', color='#E5F2FF'),
+    )
+    fig = make_subplots(
+        rows=1, cols=5,
+        column_widths=[0.135, 0.285, 0.200, 0.210, 0.255],
+        subplot_titles=(
+            'FORMACIONES',
+            'TEMPERATURA (°)',
+            'RESIDUAL TÉRMICO (°)',
+            'Z-SCORE (σ)',
+            'INTERPRETACIÓN (Z-SCORE)',
+        ),
+        shared_yaxes=True,
+        horizontal_spacing=0.022,
+    )
+    if df is None or df.empty:
+        fig.add_annotation(text='Sin datos térmicos para el track', x=0.5, y=0.5, showarrow=False, font=dict(color='#94A3B8'))
+        fig.update_layout(**empty_layout)
+        return fig
+    if depth_col not in df.columns:
+        depth_col = _choose_available_depth_col(df, depth_col) or depth_col
+    if depth_col not in df.columns:
+        fig.add_annotation(text='Sin columna de profundidad', x=0.5, y=0.5, showarrow=False, font=dict(color='#94A3B8'))
+        fig.update_layout(**empty_layout)
+        return fig
+
+    work = df.copy()
+    for c in [depth_col, target_col, 'temp_expected', 'temp_expected_neighbor', 'temp_expected_ml_live', 'temp_residual', 'temp_zscore']:
+        if c and c in work.columns:
+            work[c] = pd.to_numeric(work[c], errors='coerce')
+    if 'temp_residual' not in work.columns and target_col in work.columns and 'temp_expected' in work.columns:
+        work['temp_residual'] = work[target_col] - work['temp_expected']
+    if 'temp_zscore' not in work.columns and 'temp_residual' in work.columns:
+        sig = pd.to_numeric(work.get('temp_sigma_expected', pd.Series(index=work.index, dtype=float)), errors='coerce')
+        rv = work['temp_residual'].dropna()
+        fallback = max(3.0, float(rv.std()) * 0.25) if len(rv) > 3 and np.isfinite(rv.std()) else 3.0
+        work['temp_zscore'] = work['temp_residual'] / sig.fillna(fallback).replace(0, fallback)
+    work = work.dropna(subset=[depth_col, 'temp_residual']).sort_values(depth_col)
+    if work.empty:
+        fig.add_annotation(text='Sin residual térmico válido', x=0.5, y=0.5, showarrow=False, font=dict(color='#94A3B8'))
+        fig.update_layout(**empty_layout)
+        return fig
+
+    y_scale, y_title, depth_suffix = _depth_display_config(depth_units)
+    work['_depth_plot'] = pd.to_numeric(work[depth_col], errors='coerce') * y_scale
+    depth_plot = '_depth_plot'
+    d_lo, d_hi = float(work[depth_plot].min()), float(work[depth_plot].max())
+    if not np.isfinite(d_lo) or not np.isfinite(d_hi) or d_hi <= d_lo:
+        d_lo, d_hi = 0.0, 1.0
+
+    value_cols = [c for c in [target_col, 'temp_expected', 'temp_sigma_expected', 'temp_residual', 'temp_zscore'] if c and c in work.columns]
+    curves = _thermal_track_bin_curves(work, depth_plot, value_cols, n_bins=280)
+    if curves.empty:
+        curves = work[[depth_plot] + value_cols].iloc[::max(1, len(work)//1600)].copy()
+    if len(curves) > 9:
+        win = max(5, min(21, (len(curves)//44)*2+1))
+        win_temp = max(11, min(37, (len(curves)//24)*2+1))
+        _temp_smooth_cols = {target_col, 'temp_expected', 'temp_sigma_expected'}
+        for c in value_cols:
+            if c in curves.columns:
+                w = win_temp if c in _temp_smooth_cols else win
+                curves[c] = curves[c].rolling(w, min_periods=max(3, w//3), center=True).median().interpolate(limit_direction='both')
+
+    hover_y = f'Profundidad: %{{y:,.0f}} {depth_suffix}'
+
+    # Fondo oscuro profesional por panel.
+    for col in range(1, 6):
+        xdom = 'x domain' if col == 1 else f'x{col} domain'
+        fig.add_shape(type='rect', x0=0, x1=1, y0=d_lo, y1=d_hi, xref=xdom, yref='y',
+                      fillcolor='rgba(2,6,23,0.42)', line=dict(color='rgba(148,163,184,0.12)', width=1), layer='below')
+
+    # --- Columna 1: formaciones ---
+    interval_src = work.copy()
+    if formations is None and 'formation' in interval_src.columns:
+        # Usar formaciones reales del CSV si existen; convertir a unidades de visualización.
+        intervals = _formation_intervals_for_thermal_track(interval_src, depth_plot, None)
+    else:
+        # Las formaciones externas están en unidades internas ft; convertir aquí.
+        intervals = []
+        for f in (formations or []):
+            try:
+                intervals.append({
+                    'name': str(f.get('name', '—')),
+                    'lo': float(f.get('depth_top')) * y_scale,
+                    'hi': float(f.get('depth_bottom')) * y_scale,
+                    'color': _formation_gradient_pair(str(f.get('name', '')))[1],
+                })
+            except Exception:
+                continue
+    intervals = [it for it in intervals if np.isfinite(it.get('lo', np.nan)) and np.isfinite(it.get('hi', np.nan)) and it['hi'] > it['lo']]
+    if not intervals and 'formation' in interval_src.columns:
+        intervals = _formation_intervals_for_thermal_track(interval_src, depth_plot, None)
+    if intervals:
+        for i, it in enumerate(intervals):
+            y0, y1 = max(float(it['lo']), d_lo), min(float(it['hi']), d_hi)
+            if y1 <= y0:
+                continue
+            c0, c1 = _formation_gradient_pair(it['name'])
+            # Relleno y borde brillante.
+            fig.add_shape(type='rect', x0=0.08, x1=0.92, y0=y0, y1=y1, xref='x', yref='y',
+                          fillcolor=_hex_to_rgba(c1, 0.88), line=dict(color=c0, width=1.4), layer='below')
+            fig.add_shape(type='rect', x0=0.08, x1=0.92, y0=y0, y1=y1, xref='x', yref='y',
+                          fillcolor='rgba(255,255,255,0)', line=dict(color=_hex_to_rgba(c0, 0.55), width=3.0), layer='below')
+            label = _short_formation_label(it['name'], 15)
+            font_size = 11 if (y1-y0) > (d_hi-d_lo)*0.06 else 8
+            if (y1-y0) > (d_hi-d_lo)*0.018:
+                fig.add_annotation(x=0.50, y=(y0+y1)/2, xref='x', yref='y', text=f'<b>{label}</b>',
+                                   showarrow=False, font=dict(size=font_size, color='#BDF9FF'),
+                                   bgcolor='rgba(2,6,23,0.35)', bordercolor=_hex_to_rgba(c0, 0.55), borderwidth=0.8, borderpad=2)
+    else:
+        fig.add_annotation(x=0.5, y=(d_lo+d_hi)/2, xref='x', yref='y', text='<b>Sin formaciones</b>', showarrow=False,
+                           font=dict(color='#94A3B8'))
+
+    # --- Columna 2: temperatura — solo real + modelo con banda degradada ---
+    yy_temp = curves[depth_plot].astype(float)
+    temp_cols = [c for c in [target_col, 'temp_expected'] if c in curves.columns]
+    if temp_cols:
+        vals = pd.concat([curves[c] for c in temp_cols], axis=0).dropna()
+        if not vals.empty:
+            tmin, tmax = float(vals.quantile(0.01)), float(vals.quantile(0.99))
+            pad = max((tmax - tmin) * 0.18, 6.0)
+            fig.add_vrect(x0=tmin - pad, x1=tmax + pad, fillcolor='rgba(14,165,233,0.05)', layer='below', line_width=0, row=1, col=2)
+    if 'temp_expected' in curves.columns:
+        model = pd.to_numeric(curves['temp_expected'], errors='coerce')
+        sigma = pd.to_numeric(
+            curves.get('temp_sigma_expected', pd.Series(np.nan, index=curves.index)),
+            errors='coerce',
+        )
+        if sigma.notna().sum() < max(8, len(curves) // 6):
+            diffs = model.diff().abs()
+            fallback_sig = max(3.5, float(diffs.median()) * 2.8 if diffs.notna().sum() > 3 else 5.0)
+            sigma = sigma.fillna(fallback_sig)
+        sigma = sigma.clip(lower=2.5)
+        outer_hw = sigma * 1.55
+        inner_hw = sigma * 0.72
+        fig.add_trace(go.Scatter(
+            x=model + outer_hw, y=yy_temp, mode='lines', line=dict(width=0),
+            showlegend=False, hoverinfo='skip',
+        ), row=1, col=2)
+        fig.add_trace(go.Scatter(
+            x=model - outer_hw, y=yy_temp, mode='lines', fill='tonextx',
+            fillcolor='rgba(0,229,255,0.11)', line=dict(width=0),
+            name='Banda modelo (±1.5σ)', showlegend=False, hoverinfo='skip',
+        ), row=1, col=2)
+        fig.add_trace(go.Scatter(
+            x=model + inner_hw, y=yy_temp, mode='lines', line=dict(width=0),
+            showlegend=False, hoverinfo='skip',
+        ), row=1, col=2)
+        fig.add_trace(go.Scatter(
+            x=model - inner_hw, y=yy_temp, mode='lines', fill='tonextx',
+            fillcolor='rgba(250,204,21,0.24)', line=dict(width=0),
+            showlegend=False, hoverinfo='skip',
+        ), row=1, col=2)
+        fig.add_trace(go.Scatter(
+            x=model, y=yy_temp, mode='lines', name='Modelo esperado',
+            line=dict(color='#FACC15', width=2.2, dash='dot', shape='spline', smoothing=1.0),
+            hovertemplate=f'Modelo: %{{x:.1f}}°<br>{hover_y}<extra></extra>',
+        ), row=1, col=2)
+    if target_col in curves.columns:
+        real = pd.to_numeric(curves[target_col], errors='coerce')
+        fig.add_trace(go.Scatter(
+            x=real, y=yy_temp, mode='lines', showlegend=False, hoverinfo='skip',
+            line=dict(color='rgba(255,45,117,0.20)', width=10, shape='spline', smoothing=1.0),
+        ), row=1, col=2)
+        fig.add_trace(go.Scatter(
+            x=real, y=yy_temp, mode='lines', name='Temp. real',
+            line=dict(color='#FF2D75', width=3.6, shape='spline', smoothing=1.0),
+            hovertemplate=f'Real: %{{x:.1f}}°<br>{hover_y}<extra></extra>',
+        ), row=1, col=2)
+
+    # --- Columna 3: residual con relleno brillante ---
+    if 'temp_residual' in curves.columns:
+        res = curves['temp_residual'].astype(float)
+        yy = curves[depth_plot].astype(float)
+        finite = res[np.isfinite(res)]
+        max_abs = max(5.0, float(np.nanpercentile(np.abs(finite), 98)) if len(finite) else 5.0)
+        normal_hw = max(1.5, max_abs * 0.16)
+        fig.add_vrect(x0=-max_abs*1.25, x1=-normal_hw, fillcolor='rgba(14,165,233,0.25)', layer='below', line_width=0, row=1, col=3)
+        fig.add_vrect(x0=-normal_hw, x1=normal_hw, fillcolor='rgba(34,197,94,0.14)', layer='below', line_width=0, row=1, col=3)
+        fig.add_vrect(x0=normal_hw, x1=max_abs*1.25, fillcolor='rgba(255,59,48,0.25)', layer='below', line_width=0, row=1, col=3)
+        fig.add_vline(x=0, line_color='rgba(248,250,252,0.75)', line_width=1.3, line_dash='dot', row=1, col=3)
+        fig.add_trace(go.Scatter(x=np.zeros(len(yy)), y=yy, mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'), row=1, col=3)
+        fig.add_trace(go.Scatter(x=res.where(res >= 0), y=yy, mode='lines', fill='tonextx', fillcolor='rgba(255,59,48,0.62)',
+                                 line=dict(color='#FF3B30', width=2.5, shape='spline'), name='Residual caliente (>0)',
+                                 hovertemplate=f'Residual: %{{x:+.2f}}°<br>{hover_y}<extra></extra>'), row=1, col=3)
+        fig.add_trace(go.Scatter(x=np.zeros(len(yy)), y=yy, mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'), row=1, col=3)
+        fig.add_trace(go.Scatter(x=res.where(res < 0), y=yy, mode='lines', fill='tonextx', fillcolor='rgba(59,130,246,0.62)',
+                                 line=dict(color='#22D3EE', width=2.5, shape='spline'), name='Residual frío (<0)',
+                                 hovertemplate=f'Residual: %{{x:+.2f}}°<br>{hover_y}<extra></extra>'), row=1, col=3)
+        fig.update_xaxes(range=[-max_abs*1.15, max_abs*1.15], row=1, col=3)
+
+    # --- Columna 4: Z-score con sombras frías/calientes ---
+    if 'temp_zscore' in curves.columns:
+        z = curves['temp_zscore'].astype(float).clip(-8, 8)
+        yy = curves[depth_plot].astype(float)
+        z_abs = max(4.0, float(np.nanpercentile(np.abs(z.dropna()), 98)) + 0.4 if z.notna().any() else 4.0, float(z_threshold)+0.8)
+        fig.add_vrect(x0=-z_abs, x1=-z_threshold, fillcolor='rgba(37,99,235,0.36)', layer='below', line_width=0, row=1, col=4)
+        fig.add_vrect(x0=-z_threshold, x1=z_threshold, fillcolor='rgba(34,197,94,0.10)', layer='below', line_width=0, row=1, col=4)
+        fig.add_vrect(x0=z_threshold, x1=z_abs, fillcolor='rgba(190,18,60,0.34)', layer='below', line_width=0, row=1, col=4)
+        fig.add_vline(x=-z_threshold, line_color='rgba(248,250,252,0.86)', line_width=1.8, line_dash='dash', row=1, col=4)
+        fig.add_vline(x=z_threshold, line_color='rgba(248,250,252,0.86)', line_width=1.8, line_dash='dash', row=1, col=4)
+        fig.add_vline(x=0, line_color='rgba(248,250,252,0.48)', line_width=1.1, line_dash='dot', row=1, col=4)
+        fig.add_trace(go.Scatter(x=np.zeros(len(yy)), y=yy, mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'), row=1, col=4)
+        fig.add_trace(go.Scatter(x=z.where(z >= 0), y=yy, mode='lines', fill='tonextx', fillcolor='rgba(250,204,21,0.35)',
+                                 line=dict(color='#FACC15', width=2.8, shape='spline'), name='Z caliente (>+umbral)',
+                                 hovertemplate=f'Z: %{{x:+.2f}}σ<br>{hover_y}<extra></extra>'), row=1, col=4)
+        fig.add_trace(go.Scatter(x=np.zeros(len(yy)), y=yy, mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'), row=1, col=4)
+        fig.add_trace(go.Scatter(x=z.where(z < 0), y=yy, mode='lines', fill='tonextx', fillcolor='rgba(59,130,246,0.38)',
+                                 line=dict(color='#38BDF8', width=2.8, shape='spline'), name='Z frío (<-umbral)',
+                                 hovertemplate=f'Z: %{{x:+.2f}}σ<br>{hover_y}<extra></extra>'), row=1, col=4)
+        fig.update_xaxes(range=[-z_abs, z_abs], row=1, col=4)
+
+    # --- Columna 5: interpretación robusta con tarjetas por intervalo ---
+    fig.add_trace(go.Scatter(x=[0.5, 0.5], y=[d_lo, d_hi], mode='lines', line=dict(width=0),
+                             showlegend=False, hoverinfo='skip'), row=1, col=5)
+    segments = _thermal_interpretation_segments(work, depth_plot, 'temp_zscore', d_lo, d_hi, float(z_threshold), max_segments=7)
+    if not segments:
+        label, color, desc = ('Sin Z-score', '#64748B', 'No hay datos suficientes para clasificar intervalos.')
+        segments = [{'y0': d_lo, 'y1': d_hi, 'z': np.nan, 'label': label, 'color': color, 'desc': desc}]
+    for seg in segments:
+        y0, y1 = float(seg['y0']), float(seg['y1'])
+        height = max(y1 - y0, (d_hi-d_lo)*0.025)
+        mid = (y0 + y1) / 2.0
+        color = seg['color']
+        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+        fig.add_trace(go.Bar(
+            x=[0.92], y=[mid], base=[0.05], width=[height*0.94], orientation='h',
+            marker=dict(color=f'rgba({r},{g},{b},0.20)', line=dict(color=f'rgba({r},{g},{b},0.86)', width=1.6)),
+            showlegend=False,
+            hovertemplate=(
+                f'<b>{html.escape(seg["label"])}</b><br>'
+                f'{seg["y0"]:,.0f} – {seg["y1"]:,.0f} {depth_suffix}<br>'
+                f'Z representativo: {seg["z"]:+.2f}σ<br>{html.escape(seg["desc"])}<extra></extra>'
+            ),
+        ), row=1, col=5)
+        interval_txt = f'{y0:,.0f} – {y1:,.0f} {depth_suffix}'
+        seg_frac = height / max(d_hi - d_lo, 1.0)
+        z_txt = '' if not np.isfinite(seg['z']) else (
+            f'<br><span style="font-size:8px;color:#CBD5E1">Z rep.: {seg["z"]:+.2f}σ</span>'
+        )
+        desc_wrapped = _wrap_thermal_interp_text(seg['desc'], max_chars=20)
+        y_text = y0 + max(height * 0.05, (d_hi - d_lo) * 0.004)
+        if seg_frac >= 0.13:
+            txt = (
+                f'<b style="color:#F8FAFC;font-size:9px">{interval_txt}</b><br>'
+                f'<b style="color:{color};font-size:9px">{html.escape(seg["label"])}</b>'
+                f'{z_txt}<br>'
+                f'<span style="font-size:8px;color:#CBD5E1;line-height:1.15">{desc_wrapped}</span>'
+            )
+            fig.add_annotation(
+                x=0.06, y=y_text, xref='x5 domain', yref='y5', text=txt, showarrow=False,
+                xanchor='left', yanchor='top', align='left',
+                font=dict(size=9, color='#E5E7EB'), bgcolor='rgba(2,6,23,0.18)', borderpad=2,
+            )
+        elif seg_frac >= 0.07:
+            txt = (
+                f'<b style="color:#F8FAFC;font-size:8px">{interval_txt}</b><br>'
+                f'<b style="color:{color};font-size:8px">{html.escape(seg["label"])}</b>'
+                f'{z_txt}'
+            )
+            fig.add_annotation(
+                x=0.06, y=y_text, xref='x5 domain', yref='y5', text=txt, showarrow=False,
+                xanchor='left', yanchor='top', align='left',
+                font=dict(size=8, color='#E5E7EB'), bgcolor='rgba(2,6,23,0.18)', borderpad=2,
+            )
+        else:
+            fig.add_annotation(
+                x=0.06, y=mid, xref='x5 domain', yref='y5',
+                text=f'<b style="color:{color};font-size:8px">{html.escape(seg["label"])}</b>',
+                showarrow=False, xanchor='left', yanchor='middle', align='left',
+                font=dict(size=8, color=color), bgcolor='rgba(2,6,23,0.25)', borderpad=2,
+            )
+
+    # Ejes y layout final
+    for col in range(1, 6):
+        fig.update_yaxes(range=[d_hi, d_lo], title_text=y_title if col == 1 else None,
+                         gridcolor='rgba(148,163,184,0.16)', zeroline=False,
+                         tickfont=dict(size=11, color='#CBD5E1'), row=1, col=col)
+        fig.update_xaxes(gridcolor='rgba(148,163,184,0.13)', zeroline=False,
+                         tickfont=dict(size=10, color='#CBD5E1'), row=1, col=col)
+    fig.update_xaxes(visible=False, range=[0,1], row=1, col=1)
+    for _col in (2, 3, 4):
+        fig.update_xaxes(
+            side='top', title_text='', ticks='outside', ticklen=3,
+            ticklabelposition='outside', row=1, col=_col,
+        )
+    fig.update_xaxes(visible=False, range=[0,1], row=1, col=5)
+
+    # Guías discretas dentro de residual / Z-score.
+    fig.add_annotation(x=0.02, y=0.02, xref='x3 domain', yref='paper', text='<b>Más frío</b>', showarrow=False, font=dict(size=11, color='#60A5FA'))
+    fig.add_annotation(x=0.98, y=0.02, xref='x3 domain', yref='paper', text='<b>Más caliente</b>', showarrow=False, font=dict(size=11, color='#FF3B30'))
+    fig.add_annotation(x=0.04, y=0.02, xref='x4 domain', yref='paper', text='<b>Frío<br>Anómalo</b>', showarrow=False, font=dict(size=11, color='#60A5FA'))
+    fig.add_annotation(x=0.50, y=0.02, xref='x4 domain', yref='paper', text='<b>Normal</b>', showarrow=False, font=dict(size=11, color='#F8FAFC'))
+    fig.add_annotation(x=0.94, y=0.02, xref='x4 domain', yref='paper', text='<b>Caliente<br>Anómalo</b>', showarrow=False, font=dict(size=11, color='#FF3B30'))
+
+    fig.update_layout(
+        **empty_layout,
+        title=dict(
+            text='TRACK TÉRMICO HD — REAL, MODELO ESPERADO Y ANOMALÍAS POR PROFUNDIDAD',
+            font=dict(size=21, color='#F8FAFC'), x=0.5, xanchor='center'
+        ),
+        legend=dict(orientation='h', yanchor='bottom', y=1.045, xanchor='center', x=0.5,
+                    bgcolor='rgba(2,6,23,0.78)', bordercolor='rgba(148,163,184,0.30)', borderwidth=1,
+                    font=dict(size=10)),
+        margin=dict(l=82, r=34, t=138, b=58),
+        hovermode='closest',
+        barmode='overlay',
+        uirevision='thermal_track_hd_v3',
+    )
+    # Solo títulos de subplots; no tocar tarjetas de interpretación (col 5, xref x5).
+    for i, ann in enumerate(fig.layout.annotations):
+        if ann.xref and 'x5' in str(ann.xref):
+            continue
+        yref = str(ann.yref or '')
+        yval = ann.y
+        if yref == 'paper' and yval is not None and float(yval) < 0.5:
+            continue
+        if yref == 'paper' and yval is not None and float(yval) >= 0.9:
+            fig.layout.annotations[i].update(
+                font=dict(color='#6EE7F9', size=12),
+                yshift=-20,
+            )
+        else:
+            fig.layout.annotations[i].update(font=dict(color='#6EE7F9', size=12))
+    return fig
+
+def build_thermal_track_summary_html(
+    df: pd.DataFrame,
+    depth_col: str,
+    z_threshold: float,
+    n_anom: int,
+    n_puntos: int,
+    res_mean: float,
+    zmax: float,
+    *,
+    depth_units: str = 'ft',
+) -> str:
+    """Resumen compacto bajo el track térmico (sustituye texto redundante)."""
+    if df is None or df.empty or depth_col not in df.columns:
+        return ''
+    work = df.dropna(subset=[depth_col, 'temp_residual'])
+    dmin = float(work[depth_col].min()) if not work.empty else 0.0
+    dmax = float(work[depth_col].max()) if not work.empty else 0.0
+    pct = (100.0 * n_anom / n_puntos) if n_puntos > 0 else 0.0
+    res_min = float(work['temp_residual'].min()) if not work.empty else 0.0
+    res_max = float(work['temp_residual'].max()) if not work.empty else 0.0
+    worst_depth = '—'
+    if 'temp_zscore' in df.columns and not work.empty:
+        if 'thermal_anomaly' in work.columns:
+            anom = work[work['thermal_anomaly'] == 'anomaly']
+        else:
+            anom = work[work['temp_zscore'].abs() >= z_threshold]
+        if not anom.empty and 'temp_zscore' in anom.columns:
+            worst = anom.reindex(anom['temp_zscore'].abs().sort_values(ascending=False).index).iloc[0]
+            worst_depth = _format_depth_display(float(worst[depth_col]), depth_units)
+    wrap = (
+        'margin-top:0.75rem;padding:14px 18px;border-radius:12px;'
+        'background:linear-gradient(180deg,rgba(15,23,42,0.92) 0%,rgba(11,15,20,0.98) 100%);'
+        'border:1px solid rgba(6,182,212,0.28);'
+    )
+    return (
+        f'<div style="{wrap}">'
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 20px;font-size:0.84rem;color:#cbd5e1;">'
+        f'<div><span style="color:#94a3b8">Rango prof.</span><br><strong style="color:#f8fafc">'
+        f'{_format_depth_display(dmin, depth_units)} – {_format_depth_display(dmax, depth_units)}</strong></div>'
+        f'<div><span style="color:#94a3b8">Registros</span><br><strong style="color:#22d3ee">{n_puntos:,}</strong></div>'
+        f'<div><span style="color:#94a3b8">Anomalías (|Z|≥{z_threshold:.1f})</span><br>'
+        f'<strong style="color:#f87171">{n_anom:,}</strong> <span style="color:#94a3b8">({pct:.1f}%)</span></div>'
+        f'<div><span style="color:#94a3b8">|Z| máx</span><br><strong style="color:#fbbf24">{zmax:.2f}</strong> '
+        f'<span style="color:#94a3b8">en {worst_depth}</span></div>'
+        f'<div><span style="color:#94a3b8">Residual</span><br>'
+        f'<strong style="color:#a78bfa">{res_mean:+.2f}</strong> '
+        f'<span style="color:#94a3b8">({res_min:+.1f} … {res_max:+.1f})</span></div>'
+        '</div>'
+        '<p style="margin:10px 0 0;font-size:0.78rem;color:#64748b;line-height:1.5;">'
+        '<span style="color:#00e676">■</span> Normal &nbsp;'
+        '<span style="color:#ff3366">■</span> Caliente anómalo &nbsp;'
+        '<span style="color:#3366ff">■</span> Frío anómalo &nbsp;· '
+        f'Umbral |Z| = <strong style="color:#fbbf24">{z_threshold:.1f}</strong>σ'
+        '</p></div>'
+    )
+
+
+def build_thermal_anomaly_reading_guide() -> str:
+    """Texto de ayuda: cómo interpretar el track de anomalías térmicas."""
+    return r"""
+**¿Qué muestra el track?**
+
+Cinco paneles alineados por **profundidad** (eje Y compartido, hacia abajo conforme perforas):
+
+| Panel | Contenido |
+|-------|-----------|
+| **Formaciones** | Columna litológica con intervalos de formación. |
+| **Temperatura** | Línea **roja** = observada · línea **cyan** punteada = esperada (modelo vecinos). |
+| **Residual** | Diferencia *observada − esperada*. Bandas: azul = más frío, verde = normal, rojo = más caliente. |
+| **Z-Score** | Desviación en σ respecto a la dispersión esperada. Líneas doradas = umbral \|Z\|. |
+| **Interpretación** | Etiquetas automáticas en intervalos anómalos. |
+
+**Lectura rápida**
+
+- Si la línea roja se separa sostenidamente de la cyan → cambio térmico real vs vecinos.
+- Residual positivo + Z alto → anomalía **caliente**; negativo → anomalía **fría**.
+- Bandas verticales de etiquetas rojas/azules a una profundidad → intervalo anómalo, no ruido puntual.
+"""
+
+
+def build_thermal_anomaly_observations(
+    df: pd.DataFrame,
+    depth_col: str,
+    z_threshold: float,
+    n_anom: int,
+    n_puntos: int,
+    res_mean: float,
+    zmax: float,
+    *,
+    depth_units: str = 'ft',
+) -> str:
+    """Genera resumen en lenguaje natural de los resultados observados en la traza actual."""
+    if df is None or df.empty or 'temp_residual' not in df.columns:
+        return 'Sin datos suficientes para generar observaciones.'
+
+    lines = []
+    pct = (100.0 * n_anom / n_puntos) if n_puntos > 0 else 0.0
+    lines.append(
+        f'- Se analizaron **{n_puntos:,}** registros con residual térmico válido. '
+        f'Con umbral **|Z| ≥ {z_threshold:.1f}**, se detectaron **{n_anom:,}** anomalías '
+        f'(**{pct:.1f}%** del total).'
+    )
+
+    if res_mean > 2.0:
+        lines.append(
+            f'- El **residual medio global es +{res_mean:.2f}**: en promedio el pozo perfora '
+            '**más caliente** de lo que predicen los vecinos.'
+        )
+    elif res_mean < -2.0:
+        lines.append(
+            f'- El **residual medio global es {res_mean:.2f}**: en promedio el pozo corre '
+            '**más frío** que el perfil esperado.'
+        )
+    else:
+        lines.append(
+            f'- El **residual medio global es {res_mean:+.2f}**: el pozo está **cerca del perfil esperado** '
+            'en conjunto, aunque puedan existir intervalos locales anómalos.'
+        )
+
+    if zmax >= z_threshold:
+        lines.append(
+            f'- La desviación máxima observada es **|Z| = {zmax:.2f}**. '
+            + ('Valores muy altos indican puntos con fuerte alejamiento respecto a la dispersión esperada.' if zmax >= z_threshold + 2 else 'Hay desviaciones marcadas puntuales respecto al modelo de vecinos.')
+        )
+
+    work = df.dropna(subset=[depth_col, 'temp_residual']).copy()
+    if not work.empty:
+        dmin, dmax = float(work[depth_col].min()), float(work[depth_col].max())
+        lines.append(
+            f'- Rango de profundidad analizado: **{_format_depth_display(dmin, depth_units)} – {_format_depth_display(dmax, depth_units)}**.'
+        )
+
+    anom = work[work.get('thermal_anomaly', 'normal') == 'anomaly'] if 'thermal_anomaly' in work.columns else work.iloc[0:0]
+    if not anom.empty:
+        admin, admax = float(anom[depth_col].min()), float(anom[depth_col].max())
+        ares = float(anom['temp_residual'].mean())
+        lines.append(
+            f'- Las anomalías se concentran entre **{_format_depth_display(admin, depth_units)} y {_format_depth_display(admax, depth_units)}** '
+            f'(residual medio en anomalías: **{ares:+.2f}**).'
+        )
+        if 'formation' in anom.columns and anom['formation'].notna().any():
+            top = anom['formation'].astype(str).value_counts().head(3)
+            parts = [f'**{name}** ({int(cnt)})' for name, cnt in top.items()]
+            lines.append(f'- Formaciones con más anomalías: {", ".join(parts)}.')
+        if 'temp_zscore' in anom.columns:
+            worst = anom.reindex(anom['temp_zscore'].abs().sort_values(ascending=False).index).iloc[0]
+            lines.append(
+                f'- Anomalía más severa: profundidad **{_format_depth_display(float(worst[depth_col]), depth_units)}**, '
+                f'residual **{float(worst["temp_residual"]):+.2f}**, |Z| **{abs(float(worst["temp_zscore"])):.2f}**.'
+            )
+    elif n_puntos > 0:
+        lines.append(
+            '- **No se detectaron anomalías** con el umbral actual: la traza sigue el perfil térmico de vecinos '
+            'dentro de la dispersión esperada.'
+        )
+
+    if pct > 15 and n_anom > 50:
+        lines.append(
+            '- **Alerta:** más del 15% de los puntos son anomalías. Revisa unidades de profundidad, '
+            'calidad del perfil de vecinos o considera subir el umbral |Z| antes de concluir.'
+        )
+    elif pct > 5:
+        lines.append(
+            '- Hay un volumen moderado de anomalías. Contrasta con la pestaña **Litología / formación** '
+            'para ver si coinciden con cambios de formación.'
+        )
+
+    return '\n'.join(lines)
+
 
 def create_lithology_temperature_chart(df: pd.DataFrame, target_col: str) -> go.Figure:
     fig = go.Figure()
     if df is None or df.empty:
-        fig.add_annotation(text='Sin datos para correlación temperatura-litología', x=0.5, y=0.5, showarrow=False)
-        fig.update_layout(height=420)
+        fig.add_annotation(text='Sin datos para correlación temperatura-litología', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'))
+        fig.update_layout(height=480, template='plotly_dark', paper_bgcolor='#0b0f14', plot_bgcolor='#111827')
         return fig
-    category_col = None
-    if 'lithology' in df.columns and df['lithology'].notna().any():
-        category_col = 'lithology'
-    elif 'formation' in df.columns and df['formation'].notna().any():
-        category_col = 'formation'
-    if category_col is None or target_col not in df.columns:
-        fig.add_annotation(text='No hay litología/formación disponible', x=0.5, y=0.5, showarrow=False)
-        fig.update_layout(height=420)
+    category_col = _resolve_lithology_category_col(df)
+    if category_col is None:
+        fig.add_annotation(text='No hay litología/formación disponible', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'))
+        fig.update_layout(height=480, template='plotly_dark', paper_bgcolor='#0b0f14', plot_bgcolor='#111827')
         return fig
     temp_col = 'temp_residual' if 'temp_residual' in df.columns and df['temp_residual'].notna().any() else target_col
-    plot_df = df[[category_col, temp_col]].dropna().copy()
-    if plot_df.empty:
-        fig.add_annotation(text='Sin datos suficientes para boxplot', x=0.5, y=0.5, showarrow=False)
-        fig.update_layout(height=420)
+    if temp_col not in df.columns:
+        fig.add_annotation(text='No hay columna de temperatura disponible', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'))
+        fig.update_layout(height=480, template='plotly_dark', paper_bgcolor='#0b0f14', plot_bgcolor='#111827')
         return fig
-    fig = px.box(plot_df, x=category_col, y=temp_col, points='outliers', template='plotly_white', title='Correlación temperatura-litología/formación')
+    plot_df = df[[category_col, temp_col]].dropna().copy()
+    plot_df[category_col] = plot_df[category_col].astype(str).str.strip()
+    plot_df = plot_df[~plot_df[category_col].str.lower().isin(['nan', 'none', '', 'unknown'])]
+    if plot_df.empty:
+        fig.add_annotation(text='Sin datos suficientes para el análisis', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'))
+        fig.update_layout(height=480, template='plotly_dark', paper_bgcolor='#0b0f14', plot_bgcolor='#111827')
+        return fig
+
+    counts = plot_df.groupby(category_col, sort=False)[temp_col].count().sort_values(ascending=False)
+    cat_list = counts.index.tolist()
+    colors = _formation_color_palette(len(cat_list))
     ylabel = 'Residual térmico' if temp_col == 'temp_residual' else 'Temperatura'
-    fig.update_layout(height=420, xaxis_title=category_col.title(), yaxis_title=ylabel)
+    cat_title = 'Litología' if category_col == 'lithology' else 'Formación'
+
+    for i, cat in enumerate(cat_list):
+        vals = plot_df.loc[plot_df[category_col] == cat, temp_col].astype(float).values
+        if vals.size == 0:
+            continue
+        color = colors[i % len(colors)]
+        _add_gradient_density_ridge(fig, vals, float(i), color, max_half_width=0.44, n_grid=360)
+        fig.add_trace(go.Box(
+            x=[float(i)] * len(vals),
+            y=vals,
+            name=str(cat),
+            boxpoints='outliers',
+            jitter=0.28,
+            pointpos=0,
+            marker=dict(color=_hex_to_rgba(color, 0.92), size=5, line=dict(width=0)),
+            line=dict(color=_hex_to_rgba(color, 0.95), width=2),
+            fillcolor=_hex_to_rgba(color, 0.14),
+            whiskerwidth=0.65,
+            width=0.22,
+            showlegend=False,
+            hovertemplate=f'{html.escape(str(cat))}<br>{ylabel}: %{{y:.2f}}<extra></extra>',
+        ))
+        if vals.size >= 1:
+            fig.add_trace(go.Scatter(
+                x=[float(i)], y=[float(np.median(vals))],
+                mode='markers',
+                marker=dict(symbol='diamond', size=11, color='#F8FAFC', line=dict(color=color, width=2)),
+                showlegend=False,
+                hovertemplate=f'Mediana · {html.escape(str(cat))}<br>{ylabel}: %{{y:.2f}}<extra></extra>',
+            ))
+
+    fig.add_hline(y=0, line_dash='dot', line_color='rgba(148,163,184,0.45)', line_width=1)
+    fig.update_layout(
+        height=520,
+        title=dict(
+            text=f'Distribución {ylabel.lower()} por {cat_title.lower()}',
+            font=dict(size=16, color='#F1F5F9'),
+        ),
+        template='plotly_dark',
+        paper_bgcolor='#0b0f14',
+        plot_bgcolor='rgba(15,23,42,0.55)',
+        font=dict(family='Inter', color='#E2E8F0'),
+        margin=dict(l=48, r=24, t=72, b=110),
+        hoverlabel=dict(bgcolor='rgba(15,23,42,0.96)', font=dict(color='#F8FAFC', size=12)),
+        legend=dict(font=dict(color='#CBD5E1')),
+    )
+    fig.update_xaxes(
+        tickmode='array',
+        tickvals=list(range(len(cat_list))),
+        ticktext=[str(c) for c in cat_list],
+        tickangle=-38,
+        title=dict(text=cat_title, font=dict(color='#94A3B8', size=13)),
+        tickfont=dict(color='#94A3B8', size=10),
+        gridcolor='rgba(148,163,184,0.08)',
+        zeroline=False,
+        showgrid=False,
+    )
+    fig.update_yaxes(
+        title=dict(text=ylabel, font=dict(color='#94A3B8', size=13)),
+        tickfont=dict(color='#94A3B8', size=11),
+        gridcolor='rgba(148,163,184,0.12)',
+        zeroline=False,
+    )
     return fig
 
 
@@ -3030,13 +4265,96 @@ def compute_temperature_roadmap_by_formation(
                             roadmap.append(row)
     return pd.DataFrame(roadmap)
 
+def temperature_roadmap_table_html(
+    roadmap_df: pd.DataFrame,
+    max_rows: int = 50,
+    *,
+    depth_units: str = 'ft',
+) -> str:
+    """Tabla HTML del roadmap térmico con chips brillantes por formación."""
+    if roadmap_df is None or roadmap_df.empty:
+        return '<p style="color:#94a3b8;font-size:0.95rem;">Sin datos de roadmap por formación.</p>'
+    work = roadmap_df.head(max_rows).copy()
+    _, _, depth_suffix = _depth_display_config(depth_units)
+    depth_scale, _, _ = _depth_display_config(depth_units)
+    wrap_bg = '#0b0f14'
+    table_bg = 'linear-gradient(180deg, rgba(15,23,42,0.92) 0%, rgba(11,15,20,0.98) 100%)'
+    border_c = 'rgba(6,182,212,0.28)'
+    th_style = (
+        'text-align:left;padding:10px 12px;border-bottom:2px solid rgba(6,182,212,0.45);color:#a5f3fc;'
+        'font-size:0.78rem;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;'
+        'background:rgba(8,47,73,0.28);'
+    )
+    td_style = 'padding:10px 12px;border-bottom:1px solid rgba(51,65,85,0.5);font-size:0.88rem;color:#e2e8f0;vertical-align:middle;'
+    col_map = [
+        ('Formación', 'Formación', 'form'),
+        (f'Prof. min ({depth_suffix})', 'Prof_min_ft', 'depth'),
+        (f'Prof. max ({depth_suffix})', 'Prof_max_ft', 'depth'),
+        ('Temp. media', 'Temp_media', 'temp'),
+        ('P10', 'Temp_P10', 'p10'),
+        ('P90', 'Temp_P90', 'p90'),
+        ('Puntos', 'N_puntos', 'pts'),
+        ('Residual', 'Residual_medio', 'res'),
+    ]
+    active = [(label, col, kind) for label, col, kind in col_map if col in work.columns]
+    headers = ''.join(f'<th style="{th_style}">{label}</th>' for label, _, _ in active)
+    body_rows = []
+    for i, (_, row) in enumerate(work.iterrows()):
+        cells = []
+        for label, col, kind in active:
+            val = row.get(col)
+            if kind == 'form' and pd.notna(val):
+                fname = str(val).strip()
+                c0, c1 = _formation_gradient_pair(fname)
+                cells.append(
+                    f'<td style="{td_style}"><span class="formation-chip-name" '
+                    f'style="background:linear-gradient(135deg,{c0} 0%,{c1} 100%);" '
+                    f'title="{html.escape(fname)}">{html.escape(fname)}</span></td>'
+                )
+            elif kind == 'depth' and pd.notna(val):
+                dv = float(val) * depth_scale
+                fmt = f'{dv:,.1f}' if depth_suffix == 'm' else f'{dv:,.0f}'
+                cells.append(f'<td style="{td_style}"><span class="chip chip-roadmap-depth">{fmt}</span></td>')
+            elif kind == 'temp' and pd.notna(val):
+                tv = float(val)
+                cls = 'chip-roadmap-temp' if tv >= 90 else 'chip-form-warm' if tv >= 75 else 'chip-roadmap-p10'
+                cells.append(f'<td style="{td_style}"><span class="chip {cls}">{tv:.1f}</span></td>')
+            elif kind == 'p10' and pd.notna(val):
+                cells.append(f'<td style="{td_style}"><span class="chip chip-roadmap-p10">{float(val):.1f}</span></td>')
+            elif kind == 'p90' and pd.notna(val):
+                cells.append(f'<td style="{td_style}"><span class="chip chip-roadmap-p90">{float(val):.1f}</span></td>')
+            elif kind == 'pts' and pd.notna(val):
+                cells.append(f'<td style="{td_style}"><span class="chip chip-roadmap-pts">{int(val):,}</span></td>')
+            elif kind == 'res' and pd.notna(val):
+                rv = float(val)
+                cls = 'chip-anom-res-hot' if rv > 0 else 'chip-anom-res-cold'
+                cells.append(f'<td style="{td_style}"><span class="chip {cls}">{rv:+.2f}</span></td>')
+            else:
+                cells.append(f'<td style="{td_style}">{html.escape(str(val) if pd.notna(val) else "—")}</td>')
+        zebra = 'background:rgba(30,41,59,0.28);' if i % 2 else ''
+        body_rows.append(f'<tr style="{zebra}">{"".join(cells)}</tr>')
+    caption = (
+        '<p style="margin:0 0 0.65rem 0;font-size:0.8rem;color:#94a3b8;line-height:1.45;">'
+        'Roadmap térmico por formación · temperaturas esperadas según perfil de pozos vecinos.'
+        '</p>'
+    )
+    return (
+        f'<div style="overflow-x:auto;margin-top:0.5rem;padding:14px 16px;border-radius:12px;'
+        f'background:{wrap_bg};border:1px solid {border_c};box-shadow:0 8px 32px rgba(6,182,212,0.10);">'
+        f'{caption}'
+        f'<table style="width:100%;border-collapse:separate;border-spacing:0;'
+        f'background:{table_bg};border-radius:10px;overflow:hidden;border:1px solid rgba(6,182,212,0.22);">'
+        f'<thead><tr>{headers}</tr></thead><tbody>{"".join(body_rows)}</tbody></table></div>'
+    )
+
+
 def create_temperature_roadmap_chart(roadmap_df: pd.DataFrame) -> go.Figure:
-    """Gráfico de barras: temperatura esperada por formación (roadmap antes de perforar)."""
+    """Barras con degradado neón y bandas P10–P90 por formación."""
     fig = go.Figure()
     _dark_axes = dict(
         title_font=dict(color='#e2e8f0'),
         tickfont=dict(color='#cbd5e1'),
-        gridcolor='rgba(148,163,184,0.15)',
+        gridcolor='rgba(34,211,238,0.08)',
     )
     if roadmap_df is None or roadmap_df.empty or 'Formación' not in roadmap_df.columns:
         fig.add_annotation(
@@ -3044,39 +4362,67 @@ def create_temperature_roadmap_chart(roadmap_df: pd.DataFrame) -> go.Figure:
             x=0.5, y=0.5, showarrow=False, font=dict(size=12, color='#94a3b8'),
         )
         fig.update_layout(
-            height=420, template='plotly_dark', paper_bgcolor='#0b0f14', plot_bgcolor='#111827',
+            height=460, template='plotly_dark', paper_bgcolor='#06080d', plot_bgcolor='rgba(8,12,20,0.92)',
             font=dict(color='#e2e8f0'),
         )
         return fig
+    work = roadmap_df.copy()
+    forms = work['Formación'].astype(str).tolist()
+    bar_colors = [_formation_gradient_pair(f)[1] for f in forms]
+    x_idx = list(range(len(forms)))
+    if 'Temp_P10' in work.columns and 'Temp_P90' in work.columns:
+        for i, (_, row) in enumerate(work.iterrows()):
+            p10 = _safe_float(row.get('Temp_P10'), np.nan)
+            p90 = _safe_float(row.get('Temp_P90'), np.nan)
+            if np.isfinite(p10) and np.isfinite(p90):
+                c0, c1 = _formation_gradient_pair(str(row['Formación']))
+                fig.add_trace(go.Bar(
+                    x=[i], y=[p90 - p10], base=[p10],
+                    marker=dict(color=f'rgba({int(c0[1:3],16)},{int(c0[3:5],16)},{int(c0[5:7],16)},0.22)', line=dict(width=0)),
+                    showlegend=False, hoverinfo='skip', width=0.55,
+                ))
     fig.add_trace(go.Bar(
-        x=roadmap_df['Formación'],
-        y=roadmap_df['Temp_media'],
+        x=x_idx,
+        y=work['Temp_media'],
         name='Temp. esperada',
-        marker_color='#38bdf8',
-        text=roadmap_df['Temp_media'].round(1),
+        marker=dict(
+            color=bar_colors,
+            line=dict(color='rgba(255,255,255,0.35)', width=1.2),
+        ),
+        text=work['Temp_media'].round(1),
         textposition='outside',
-        textfont=dict(color='#f1f5f9'),
+        textfont=dict(color='#F8FAFC', size=11),
+        width=0.42,
+        hovertemplate='%{customdata}<br>Temp.: %{y:.1f}<extra></extra>',
+        customdata=forms,
     ))
-    if 'Temp_P10' in roadmap_df.columns and 'Temp_P90' in roadmap_df.columns:
-        fig.add_trace(go.Bar(
-            x=roadmap_df['Formación'], y=roadmap_df['Temp_P10'],
-            name='P10', marker_color='rgba(56, 189, 248, 0.45)'
+    if 'Temp_P10' in work.columns:
+        fig.add_trace(go.Scatter(
+            x=x_idx, y=work['Temp_P10'], mode='markers',
+            marker=dict(symbol='triangle-down', size=10, color='#38BDF8', line=dict(width=1, color='#BAE6FD')),
+            name='P10', hovertemplate='P10: %{y:.1f}<extra></extra>',
         ))
-        fig.add_trace(go.Bar(
-            x=roadmap_df['Formación'], y=roadmap_df['Temp_P90'],
-            name='P90', marker_color='#22c55e'
+    if 'Temp_P90' in work.columns:
+        fig.add_trace(go.Scatter(
+            x=x_idx, y=work['Temp_P90'], mode='markers',
+            marker=dict(symbol='triangle-up', size=10, color='#F87171', line=dict(width=1, color='#FECACA')),
+            name='P90', hovertemplate='P90: %{y:.1f}<extra></extra>',
         ))
     fig.update_layout(
-        title=dict(text='Roadmap: temperatura esperada por formación (antes de perforar)', font=dict(color='#f1f5f9')),
-        xaxis=dict(title='Formación', **_dark_axes),
+        title=dict(text='Roadmap: temperatura esperada por formación', font=dict(color='#F8FAFC', size=16)),
+        xaxis=dict(
+            title='Formación', tickmode='array', tickvals=x_idx, ticktext=forms,
+            tickangle=-32, **_dark_axes,
+        ),
         yaxis=dict(title='Temperatura', **_dark_axes),
-        barmode='group',
-        height=420,
+        height=460,
         template='plotly_dark',
-        paper_bgcolor='#0b0f14',
-        plot_bgcolor='#111827',
+        paper_bgcolor='#06080d',
+        plot_bgcolor='rgba(8,12,20,0.92)',
         font=dict(family='Inter', color='#e2e8f0'),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5, font=dict(color='#e2e8f0')),
+        hoverlabel=dict(bgcolor='rgba(15,23,42,0.96)', font=dict(color='#F8FAFC')),
+        margin=dict(l=56, r=24, t=72, b=110),
     )
     return fig
 
@@ -3126,7 +4472,7 @@ def create_temperature_wob_rpm_heatmap(
     rpm_range: tuple = (40.0, 220.0),
     profile_df: Optional[pd.DataFrame] = None,
     depth_ft: float = 10000.0,
-    grid_n: int = 40,
+    grid_n: int = 96,
     *,
     subtitle_extra: str = '',
 ) -> go.Figure:
@@ -3212,7 +4558,8 @@ def create_temperature_wob_rpm_heatmap(
     if temperature_predictor is not None and getattr(temperature_predictor, 'target_col', None):
         target_name = str(temperature_predictor.target_col)
 
-    sub_bits = [f'Prof.: {depth_ft:,.0f} ft']
+    _d_scale, _, _d_suffix = _depth_display_config()
+    sub_bits = [f'Prof.: {_format_depth_display(depth_ft)}']
     if subtitle_extra:
         sub_bits.append(subtitle_extra)
     if mode == 'ml':
@@ -3223,39 +4570,54 @@ def create_temperature_wob_rpm_heatmap(
         sub_bits.append(f'Variable: {target_name}')
     subtitle = ' · '.join(sub_bits)
 
-    # Heatmap en lugar de Contour: evita fallos de render en algunos navegadores / Streamlit con tema oscuro.
+    # Heatmap alta resolución con suavizado y paleta neón (degradado brillante)
+    _temp_colorscale = [
+        [0.0, '#0a0f1a'],
+        [0.12, '#0c4a6e'],
+        [0.28, '#0891b2'],
+        [0.42, '#06b6d4'],
+        [0.56, '#22d3ee'],
+        [0.68, '#34d399'],
+        [0.80, '#fbbf24'],
+        [0.90, '#fb923c'],
+        [1.0, '#ef4444'],
+    ]
     fig = go.Figure(
         data=go.Heatmap(
             z=Z,
             x=wob_values,
             y=rpm_values,
-            colorscale=[
-                [0.0, '#2d1b69'],
-                [0.25, '#1f4e79'],
-                [0.5, '#2c6e49'],
-                [0.75, '#f4d03f'],
-                [1.0, '#e85d4c'],
-            ],
+            zsmooth='best',
+            colorscale=_temp_colorscale,
             zmin=zmin,
             zmax=zmax,
             colorbar=dict(
-                title=dict(text='Temperatura', side='right', font=dict(size=13, color='#e2e8f0')),
-                thickness=18,
-                len=0.85,
-                tickfont=dict(size=11, color='#cbd5e1'),
-                bgcolor='rgba(15,23,42,0.75)',
-                bordercolor='rgba(148,163,184,0.35)',
+                title=dict(text='Temperatura', side='right', font=dict(size=13, color='#f1f5f9')),
+                thickness=20,
+                len=0.88,
+                tickfont=dict(size=11, color='#e2e8f0'),
+                bgcolor='rgba(15,23,42,0.82)',
+                bordercolor='rgba(6,182,212,0.45)',
                 borderwidth=1,
+                outlinecolor='rgba(6,182,212,0.3)',
             ),
             hovertemplate='<b>WOB</b>: %{x:.1f} klb<br><b>RPM</b>: %{y:.0f}<br><b>Temp.</b>: %{z:.2f}<extra></extra>',
         )
     )
+    fig.add_trace(go.Contour(
+        z=Z, x=wob_values, y=rpm_values,
+        colorscale=_temp_colorscale,
+        zmin=zmin, zmax=zmax,
+        contours=dict(coloring='lines', showlabels=False, start=zmin, end=zmax, size=(zmax - zmin) / 14),
+        line=dict(width=0.6, color='rgba(255,255,255,0.18)'),
+        showscale=False, hoverinfo='skip', name='Isotermas',
+    ))
 
     fig.add_shape(
         type='rect', x0=18, y0=100, x1=26, y1=140,
         xref='x', yref='y',
-        line=dict(color='#16a34a', width=3, dash='dot'),
-        fillcolor='rgba(34,197,94,0.12)',
+        line=dict(color='#22d3ee', width=3, dash='dot'),
+        fillcolor='rgba(34,211,238,0.10)',
         layer='above',
     )
 
@@ -3263,7 +4625,7 @@ def create_temperature_wob_rpm_heatmap(
         template='plotly_dark',
         title={
             'text': f'Temperatura esperada — WOB vs RPM<br><sup style="color:#94a3b8">{subtitle}</sup>',
-            'font': {'size': 19, 'color': '#f1f5f9', 'family': 'Inter'},
+            'font': {'size': 19, 'color': '#f8fafc', 'family': 'Inter'},
             'x': 0.5,
             'xanchor': 'center',
             'y': 0.97,
@@ -3271,32 +4633,35 @@ def create_temperature_wob_rpm_heatmap(
         xaxis=dict(
             title='WOB (klb)',
             title_font=dict(size=14, color='#e2e8f0'),
-            showgrid=False, zeroline=False, showline=True,
-            linecolor='#64748b', linewidth=1,
+            showgrid=True, gridcolor='rgba(148,163,184,0.06)',
+            zeroline=False, showline=True,
+            linecolor='rgba(6,182,212,0.35)', linewidth=1,
             tickfont=dict(size=11, color='#cbd5e1'),
             constrain='domain',
         ),
         yaxis=dict(
             title='RPM (rev/min)',
             title_font=dict(size=14, color='#e2e8f0'),
-            showgrid=False, zeroline=False, showline=True,
-            linecolor='#64748b', linewidth=1,
+            showgrid=True, gridcolor='rgba(148,163,184,0.06)',
+            zeroline=False, showline=True,
+            linecolor='rgba(6,182,212,0.35)', linewidth=1,
             tickfont=dict(size=11, color='#cbd5e1'),
         ),
-        height=560,
-        margin=dict(l=72, r=100, t=100, b=72),
+        height=580,
+        margin=dict(l=72, r=108, t=100, b=72),
         paper_bgcolor='#0b0f14',
-        plot_bgcolor='#111827',
+        plot_bgcolor='rgba(15,23,42,0.65)',
         font=dict(family='Inter', size=12, color='#e2e8f0'),
+        hoverlabel=dict(bgcolor='rgba(15,23,42,0.96)', font=dict(color='#f8fafc', size=12)),
         annotations=[
             dict(
                 x=22, y=120,
                 text='<b>Ventana de referencia</b><br>WOB 18–26 klb · RPM 100–140',
                 showarrow=False,
                 xref='x', yref='y',
-                font=dict(size=11, color='#f8fafc', family='Inter'),
-                bgcolor='rgba(30,41,59,0.95)',
-                bordercolor='#22c55e',
+                font=dict(size=11, color='#f0fdfa', family='Inter'),
+                bgcolor='rgba(15,23,42,0.92)',
+                bordercolor='#22d3ee',
                 borderwidth=1.5,
                 borderpad=8,
             )
@@ -3312,114 +4677,134 @@ def create_temperature_roadmap_depth_contour(
     depth_col_lo: str = 'Prof_min_ft',
     depth_col_hi: str = 'Prof_max_ft',
     temp_col: str = 'Temp_media',
+    depth_units: str = 'ft',
 ) -> go.Figure:
     """
-    Vista tipo mapa de calor por profundidad: eje X = profundidad (ft), eje Y fijo,
-    color = temperatura esperada por intervalo (roadmap por formación).
+    Mapa de calor HD por profundidad: eje X = profundidad (ft), degradado suave de temperatura
+    esperada por intervalo de formación.
     """
     fig = go.Figure()
+    _empty_layout = dict(
+        height=400, template='plotly_dark', paper_bgcolor='#06080d',
+        plot_bgcolor='rgba(8,12,20,0.92)', font=dict(color='#e2e8f0'),
+    )
     if roadmap_df is None or roadmap_df.empty:
-        fig.add_annotation(
-            text='Sin datos de roadmap por formación', x=0.5, y=0.5, showarrow=False,
-            font=dict(color='#94a3b8'),
-        )
-        fig.update_layout(
-            height=360, template='plotly_dark', paper_bgcolor='#0b0f14', plot_bgcolor='#111827',
-            font=dict(color='#e2e8f0'),
-        )
+        fig.add_annotation(text='Sin datos de roadmap por formación', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'))
+        fig.update_layout(**_empty_layout)
         return fig
     req = [depth_col_lo, depth_col_hi, temp_col, 'Formación']
     if not all(c in roadmap_df.columns for c in req):
-        fig.add_annotation(
-            text='Tabla de roadmap incompleta', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'),
-        )
-        fig.update_layout(
-            height=360, template='plotly_dark', paper_bgcolor='#0b0f14', plot_bgcolor='#111827',
-        )
+        fig.add_annotation(text='Tabla de roadmap incompleta', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'))
+        fig.update_layout(**_empty_layout)
         return fig
 
-    mids = []
-    temps = []
-    labels = []
+    intervals = []
     for _, row in roadmap_df.iterrows():
         lo = _safe_float(row[depth_col_lo], np.nan)
         hi = _safe_float(row[depth_col_hi], np.nan)
         tv = _safe_float(row[temp_col], np.nan)
-        if not (np.isfinite(lo) and np.isfinite(hi) and np.isfinite(tv)):
-            continue
-        mids.append((lo + hi) / 2.0)
-        temps.append(tv)
-        labels.append(str(row['Formación']))
-    if len(mids) < 1:
-        fig.add_annotation(
-            text='Sin filas válidas en el roadmap', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'),
-        )
-        fig.update_layout(
-            height=360, template='plotly_dark', paper_bgcolor='#0b0f14', plot_bgcolor='#111827',
-        )
+        if np.isfinite(lo) and np.isfinite(hi) and np.isfinite(tv):
+            if hi < lo:
+                lo, hi = hi, lo
+            intervals.append({'lo': lo, 'hi': hi, 'temp': tv, 'label': str(row['Formación'])})
+    if not intervals:
+        fig.add_annotation(text='Sin filas válidas en el roadmap', x=0.5, y=0.5, showarrow=False, font=dict(color='#94a3b8'))
+        fig.update_layout(**_empty_layout)
         return fig
 
-    order = np.argsort(mids)
-    mids = np.array(mids)[order]
-    temps = np.array(temps)[order]
-    labels = [labels[i] for i in order]
+    x_scale, x_title, _ = _depth_display_config(depth_units)
 
-    d_min, d_max = float(mids.min()), float(mids.max())
-    pad = max((d_max - d_min) * 0.04, 50.0)
-    depth_grid = np.linspace(d_min - pad, d_max + pad, 80)
-    temp_grid = np.interp(depth_grid, mids, temps)
-    Z = np.tile(temp_grid, (2, 1))
-    zlo, zhi = float(np.nanmin(temp_grid)), float(np.nanmax(temp_grid))
+    intervals.sort(key=lambda x: x['lo'])
+    d_min = min(iv['lo'] for iv in intervals)
+    d_max = max(iv['hi'] for iv in intervals)
+    pad = max((d_max - d_min) * 0.05, 80.0)
+    depth_grid = np.linspace(d_min - pad, d_max + pad, 640)
+    depth_grid_display = depth_grid * x_scale
+
+    temp_profile = np.full(depth_grid.shape, np.nan, dtype=float)
+    for iv in intervals:
+        mask = (depth_grid >= iv['lo']) & (depth_grid <= iv['hi'])
+        temp_profile[mask] = iv['temp']
+    temp_series = pd.Series(temp_profile).interpolate(method='linear').ffill().bfill()
+    smooth_win = max(9, min(41, len(depth_grid) // 40))
+    temp_smooth = temp_series.rolling(smooth_win, center=True, min_periods=1).mean().values
+
+    zlo, zhi = float(np.nanmin(temp_smooth)), float(np.nanmax(temp_smooth))
     if not np.isfinite(zlo) or not np.isfinite(zhi) or zhi <= zlo:
         zhi = zlo + 1e-6
 
-    fig.add_trace(
-        go.Heatmap(
-            z=Z,
-            x=depth_grid,
-            y=[0.0, 1.0],
-            colorscale=[
-                [0.0, '#2d1b69'], [0.25, '#1f4e79'], [0.5, '#2c6e49'],
-                [0.75, '#f4d03f'], [1.0, '#e85d4c'],
-            ],
-            zmin=zlo,
-            zmax=zhi,
-            colorbar=dict(
-                title=dict(text='Temp. esperada', side='right', font=dict(size=12, color='#e2e8f0')),
-                thickness=14, len=0.82, tickfont=dict(color='#cbd5e1'),
-                bgcolor='rgba(15,23,42,0.6)',
-                bordercolor='rgba(148,163,184,0.35)',
-                borderwidth=1,
-            ),
-            hovertemplate='Prof.: %{x:,.0f} ft<br>Temp.: %{z:.2f}<extra></extra>',
-        )
-    )
-    for mi, ti, lb in zip(mids, temps, labels):
+    _roadmap_colorscale = [
+        [0.0, '#0a0f1a'],
+        [0.10, '#0c4a6e'],
+        [0.25, '#0891b2'],
+        [0.40, '#06b6d4'],
+        [0.55, '#22d3ee'],
+        [0.68, '#34d399'],
+        [0.78, '#fbbf24'],
+        [0.88, '#fb923c'],
+        [1.0, '#ef4444'],
+    ]
+    Z = np.tile(temp_smooth, (4, 1))
+    y_bands = [0.0, 0.33, 0.66, 1.0]
+
+    _hover_depth = f'{x_title}: %{{x:,.1f}}<br>Temp.: %{{z:.2f}}<extra></extra>' if x_scale != 1.0 else 'Prof.: %{x:,.0f} ft<br>Temp.: %{z:.2f}<extra></extra>'
+
+    fig.add_trace(go.Contour(
+        z=Z, x=depth_grid_display, y=y_bands,
+        colorscale=_roadmap_colorscale, zmin=zlo, zmax=zhi,
+        contours=dict(coloring='fill', showlines=False, start=zlo, end=zhi, size=(zhi - zlo) / 28),
+        ncontours=36, showscale=False, hoverinfo='skip', name='Campo temp.',
+    ))
+    fig.add_trace(go.Heatmap(
+        z=Z, x=depth_grid_display, y=y_bands, zsmooth='best',
+        colorscale=_roadmap_colorscale, zmin=zlo, zmax=zhi,
+        opacity=0.72, showscale=False,
+        hovertemplate=_hover_depth,
+        colorbar=dict(
+            title=dict(text='Temp. esperada', side='right', font=dict(size=13, color='#f1f5f9')),
+            thickness=18, len=0.85, tickfont=dict(size=11, color='#e2e8f0'),
+            bgcolor='rgba(15,23,42,0.82)', bordercolor='rgba(6,182,212,0.45)', borderwidth=1,
+        ),
+    ))
+    fig.add_trace(go.Scatter(
+        x=depth_grid_display, y=np.full_like(depth_grid_display, 0.5, dtype=float), mode='lines',
+        line=dict(color='rgba(251,191,36,0.55)', width=2.5, shape='spline'),
+        showlegend=False, hoverinfo='skip', name='Perfil temp.',
+    ))
+
+    for bi, iv in enumerate(intervals):
+        mid = (iv['lo'] + iv['hi']) / 2.0 * x_scale
+        lo_disp = iv['lo'] * x_scale
+        c0, c1 = _formation_gradient_pair(iv['label'])
+        y_ann = 0.72 if bi % 2 == 0 else 0.28
+        fig.add_vline(x=lo_disp, line_width=1, line_dash='dot', line_color='rgba(148,163,184,0.35)')
         fig.add_annotation(
-            x=mi, y=0.5, xref='x', yref='y',
-            text=f'<b>{lb}</b><br>{ti:.1f}',
+            x=mid, y=y_ann, xref='x', yref='y',
+            text=f'<b>{html.escape(iv["label"])}</b><br><span style="color:#FDE68A">{iv["temp"]:.1f}</span>',
             showarrow=False, font=dict(size=9, color='#f8fafc'),
-            bgcolor='rgba(30,41,59,0.92)', borderpad=3, bordercolor='rgba(34,197,94,0.55)',
+            bgcolor=f'rgba({int(c0[1:3],16)},{int(c0[3:5],16)},{int(c0[5:7],16)},0.88)',
+            borderpad=5, bordercolor=c1, borderwidth=1.5,
         )
 
     fig.update_layout(
         title=dict(
             text='Roadmap térmico vs profundidad (por formación)',
-            font=dict(size=17, color='#f1f5f9', family='Inter'),
+            font=dict(size=18, color='#F8FAFC', family='Inter'),
             x=0.5, xanchor='center',
         ),
         xaxis=dict(
-            title='Profundidad (ft)',
-            title_font=dict(color='#e2e8f0'),
-            showgrid=True, gridcolor='rgba(148,163,184,0.18)', tickfont=dict(color='#cbd5e1'),
+            title=x_title, title_font=dict(color='#94A3B8', size=13),
+            showgrid=True, gridcolor='rgba(34,211,238,0.06)', tickfont=dict(color='#cbd5e1'),
+            zeroline=False,
         ),
-        yaxis=dict(visible=False, range=[-0.1, 1.1], showgrid=False),
-        height=340,
-        margin=dict(l=60, r=80, t=70, b=50),
+        yaxis=dict(visible=False, range=[-0.05, 1.05], showgrid=False),
+        height=400,
+        margin=dict(l=60, r=100, t=76, b=52),
         template='plotly_dark',
-        paper_bgcolor='#0b0f14',
-        plot_bgcolor='#111827',
+        paper_bgcolor='#06080d',
+        plot_bgcolor='rgba(8,12,20,0.92)',
         font=dict(family='Inter', color='#e2e8f0'),
+        hoverlabel=dict(bgcolor='rgba(15,23,42,0.96)', font=dict(color='#F8FAFC', size=12)),
     )
     return fig
 
@@ -3443,6 +4828,36 @@ def _get_trace_unit_system() -> str:
         return TRACE_UNIT_SYSTEM_MAP.get(label, 'auto')
     except Exception:
         return 'auto'
+
+
+def _get_depth_display_units() -> str:
+    """Unidad de visualización de profundidad independiente de la unidad original del CSV."""
+    try:
+        label = st.session_state.get('depth_display_units', DEPTH_DISPLAY_UNIT_LABELS[0])
+        return DEPTH_DISPLAY_UNIT_MAP.get(label, 'm')
+    except Exception:
+        return 'm'
+
+
+def _depth_display_config(depth_units: Optional[str] = None) -> Tuple[float, str, str]:
+    """
+    Escala (× valor interno en ft), etiqueta de eje y sufijo para tablas.
+    Los datos internos siempre están en ft; solo cambia la presentación.
+    """
+    units = (depth_units or _get_depth_display_units()).lower()
+    use_m = units in ('m', 'meter', 'meters', 'metros', 'metro')
+    if use_m:
+        return UnitConverter.ft_to_m(1.0), 'Profundidad (m)', 'm'
+    return 1.0, 'Profundidad (ft)', 'ft'
+
+
+def _format_depth_display(depth_ft: float, depth_units: Optional[str] = None) -> str:
+    """Formatea profundidad interna (ft) para mostrar en tablas o texto."""
+    scale, _, suffix = _depth_display_config(depth_units)
+    value = float(depth_ft) * scale
+    if suffix == 'm':
+        return f'{value:,.1f} {suffix}'
+    return f'{value:,.0f} {suffix}'
 
 
 def _looks_like_unit_token(value: Any) -> bool:
@@ -4001,6 +5416,73 @@ def temperature_predict_trace_live(
     return y_num.to_numpy(dtype=float), pred, depths
 
 
+
+
+def apply_live_temperature_model_to_anomaly_df(
+    prediction_df: pd.DataFrame,
+    tp: Any,
+    live_params: Dict[str, Any],
+    *,
+    target_col: Optional[str],
+    z_threshold: float = 2.0,
+) -> pd.DataFrame:
+    """Actualiza el perfil esperado con el ML vivo para que WOB/RPM/torque/SPP/caudal muevan el track.
+    Conserva temp_expected_neighbor como referencia de vecinos y usa temp_expected como modelo activo.
+    """
+    if prediction_df is None or prediction_df.empty:
+        return prediction_df
+    out = prediction_df.copy()
+    if getattr(tp, 'model', None) is None or not live_params:
+        return out
+    try:
+        tcol = target_col or getattr(tp, 'target_col', None)
+        if not tcol or tcol not in out.columns:
+            return out
+        if 'temp_expected_neighbor' not in out.columns and 'temp_expected' in out.columns:
+            out['temp_expected_neighbor'] = out['temp_expected']
+        feature_df = out.drop(columns=[tcol], errors='ignore').copy()
+        # Los sliders sustituyen los parámetros operacionales en toda la traza para crear un escenario vivo.
+        feature_df = overlay_live_operational_params(feature_df, live_params)
+        ref_params = _temperature_ref_operational_params(tp)
+        pred_ml = temperature_apply_model_predictions(
+            tp,
+            feature_df,
+            live_params=live_params,
+            ref_params=ref_params,
+            apply_operational_calibration=True,
+            apply_display_calibration=True,
+        )
+        pred_ml = np.asarray(pred_ml, dtype=float)
+        if len(pred_ml) != len(out):
+            return out
+        out['temp_expected_ml_live'] = pred_ml
+        # Modelo activo: ML vivo si existe; se mezcla ligeramente con vecinos para no perder contexto geológico.
+        neigh = pd.to_numeric(out.get('temp_expected_neighbor', out.get('temp_expected')), errors='coerce')
+        ml = pd.Series(pred_ml, index=out.index)
+        out['temp_expected'] = (0.72 * ml + 0.28 * neigh).where(ml.notna(), neigh)
+        obs = pd.to_numeric(out[tcol], errors='coerce')
+        out['temp_residual'] = obs - out['temp_expected']
+        res = out['temp_residual'].dropna()
+        if len(res) > 3:
+            med = float(res.median())
+            mad = float((res - med).abs().median())
+            robust_sigma = 1.4826 * mad if mad > 0 else float(res.std())
+        else:
+            robust_sigma = np.nan
+        sig = pd.to_numeric(out.get('temp_sigma_expected', pd.Series(index=out.index, dtype=float)), errors='coerce')
+        if np.isfinite(robust_sigma) and robust_sigma > 0:
+            sig = sig.fillna(robust_sigma)
+            min_sig = max(1.5, robust_sigma * 0.20)
+        else:
+            min_sig = 2.0
+        sig = sig.replace(0, np.nan).fillna(min_sig).clip(lower=min_sig)
+        out['temp_zscore'] = out['temp_residual'] / sig
+        out['thermal_anomaly'] = np.where(out['temp_zscore'].abs() >= float(z_threshold), 'anomaly', 'normal')
+        out['thermal_severity'] = pd.cut(out['temp_zscore'].abs(), bins=[-np.inf, float(z_threshold), float(z_threshold)+1.0, np.inf], labels=['normal','media','alta']).astype(str)
+        out.attrs['thermal_expected_source'] = 'ML vivo + vecinos'
+        return out
+    except Exception:
+        return prediction_df
 def temperature_predict_grid_from_params(
     temperature_predictor: Any,
     params: Dict[str, Any],
@@ -4521,6 +6003,8 @@ def main():
         st.session_state.thermal_anomaly_z_threshold = 2.0
     if 'trace_unit_system' not in st.session_state:
         st.session_state.trace_unit_system = TRACE_UNIT_SYSTEM_LABELS[0]
+    if 'depth_display_units' not in st.session_state:
+        st.session_state.depth_display_units = DEPTH_DISPLAY_UNIT_LABELS[0]
     if 'real_trace_raw_df' not in st.session_state:
         st.session_state.real_trace_raw_df = None
     if 'trace_unit_system_prev' not in st.session_state:
@@ -4619,6 +6103,18 @@ def main():
                     'Tus pozos en **metros** son correctos: la app convierte **una sola vez** a ft/kilopie/lbf internamente.'
                 ),
             )
+            st.selectbox(
+                'Unidad para mostrar profundidad en gráficas',
+                options=DEPTH_DISPLAY_UNIT_LABELS,
+                index=DEPTH_DISPLAY_UNIT_LABELS.index(st.session_state.depth_display_units)
+                if st.session_state.depth_display_units in DEPTH_DISPLAY_UNIT_LABELS else 0,
+                key='depth_display_units',
+                help=(
+                    'Solo cambia la visualización: la app mantiene una profundidad interna consistente. '
+                    'Úsalo para alternar todos los tracks entre metros y pies sin volver a convertir dos veces.'
+                ),
+            )
+
             if st.session_state.trace_unit_system != st.session_state.trace_unit_system_prev:
                 st.session_state.neighbor_profile_df = pd.DataFrame()
                 st.session_state.neighbor_prediction_df = pd.DataFrame()
@@ -4887,15 +6383,27 @@ def main():
             )
             
             st.markdown("**Parámetros del pozo**")
-            
-            depth_ft = st.slider(
-                "Profundidad (ft)",
-                min_value=2000,
-                max_value=25000,
-                value=12000,
-                step=500,
-                help="Profundidad medida actual - pies"
-            )
+
+            _sidebar_depth_units = _get_depth_display_units()
+            if _sidebar_depth_units == 'm':
+                depth_display_m = st.slider(
+                    "Profundidad (m)",
+                    min_value=float(converter.ft_to_m(2000)),
+                    max_value=float(converter.ft_to_m(25000)),
+                    value=float(converter.ft_to_m(12000)),
+                    step=50.0,
+                    help="Profundidad medida actual — se convierte internamente a ft para los modelos.",
+                )
+                depth_ft = float(converter.m_to_ft(depth_display_m))
+            else:
+                depth_ft = st.slider(
+                    "Profundidad (ft)",
+                    min_value=2000,
+                    max_value=25000,
+                    value=12000,
+                    step=500,
+                    help="Profundidad medida actual — pies",
+                )
             
             inclination_deg = st.slider(
                 "Inclinación (grados)",
@@ -5101,7 +6609,7 @@ def main():
                 st.markdown("**Seguimiento**")
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    st.metric("Profundidad", f"{depth_ft:,.0f} ft")
+                    st.metric("Profundidad", _format_depth_display(depth_ft))
                 with c2:
                     st.metric("WOB / RPM", f"{wob_klb:.1f} klb / {rpm}")
                 with c3:
@@ -5247,7 +6755,7 @@ def main():
                 st.markdown("**Seguimiento**")
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Profundidad", f"{depth_ft:,.0f} ft")
+                    st.metric("Profundidad", _format_depth_display(depth_ft))
                 with col2:
                     st.metric("Formación actual", form_at_depth['name'] if form_at_depth else "—")
                 with col3:
@@ -5565,10 +7073,33 @@ def main():
                     if _fresh_pred is not None and not _fresh_pred.empty:
                         st.session_state.neighbor_prediction_df = _fresh_pred
             neighbor_prediction_df = st.session_state.neighbor_prediction_df
+            # Actualizar el modelo térmico esperado cada vez que cambian los sliders de perforación.
+            # Antes solo se recalculaba al presionar el botón de perfil de vecinos, por eso WOB/RPM/etc. no movían el track.
+            try:
+                _live_params_for_anom = st.session_state.get('current_temperature_params') or build_current_temperature_params(
+                    depth_ft=depth_ft, inclination_deg=inclination_deg, rpm=rpm, wob_klb=wob_klb,
+                    torque_ftlb=torque_ftlb, flow_gpm=flow_gpm, spp_psi=spp_psi,
+                    mud_density_ppg=mud_density_ppg, pv_cp=pv_cp, yp_lb100ft2=yp_lb100ft2,
+                    bit_diameter_in=bit_diameter_in,
+                    rop_value=(st.session_state.current_prediction or {}).get('Ensemble'),
+                    formation_info=(get_formation_at_depth(depth_ft, st.session_state.geological_formations) if st.session_state.use_geological_tracking else None),
+                    trace_df=st.session_state.real_trace_df,
+                )
+                if neighbor_prediction_df is not None and not neighbor_prediction_df.empty:
+                    neighbor_prediction_df = apply_live_temperature_model_to_anomaly_df(
+                        neighbor_prediction_df, tp, _live_params_for_anom,
+                        target_col=(profiler.target_col or getattr(tp, 'target_col', None)),
+                        z_threshold=float(st.session_state.get('thermal_anomaly_z_threshold', 2.0)),
+                    )
+                    st.session_state.neighbor_prediction_df = neighbor_prediction_df
+            except Exception:
+                pass
 
             subtab1, subtab2, subtab3, subtab4, subtab5 = st.tabs([
                 'ML temperatura', 'Perfil esperado vecinos', 'Litología / formación', 'Anomalías térmicas', 'Roadmap por formación'
             ])
+            _depth_units = _get_depth_display_units()
+            _depth_scale, _depth_axis_label, _depth_suffix = _depth_display_config(_depth_units)
 
             with subtab1:
                 if tp.model is not None:
@@ -5687,14 +7218,11 @@ def main():
                     _dref = html.escape(str(profiler.depth_col or 'depth'))
 
                     st.markdown('**Escala y ventana de profundidad**')
-                    depth_unit_prof = st.radio(
-                        'Unidad eje Y (profundidad)',
-                        ['Pies (ft)', 'Metros (m)'],
-                        horizontal=True,
-                        key='neighbor_prof_depth_unit',
-                        help='El perfil interno está en pies; en metros solo cambia la escala del eje, chips y slider.',
+                    use_m_prof = _depth_units == 'm'
+                    st.caption(
+                        f'Unidad de profundidad: **{_depth_axis_label}** '
+                        '(según «Sistema de unidades de las trazas» en el panel lateral).'
                     )
-                    use_m_prof = depth_unit_prof == 'Metros (m)'
                     if use_m_prof:
                         _chip_lo = converter.ft_to_m(_d_lo)
                         _chip_hi = converter.ft_to_m(_d_hi)
@@ -5753,7 +7281,7 @@ def main():
                             actual_overlay,
                             target_overlay,
                             depth_overlay,
-                            depth_units='m' if use_m_prof else 'ft',
+                            depth_units=_depth_units,
                             depth_range_ft=depth_range_ft_prof,
                         ),
                         use_container_width=True,
@@ -5782,21 +7310,61 @@ def main():
 
             with subtab3:
                 if neighbor_prediction_df is not None and not neighbor_prediction_df.empty:
-                    st.plotly_chart(create_lithology_temperature_chart(neighbor_prediction_df, profiler.target_col), use_container_width=True, key='lith_temp_chart')
-                    if 'lithology' in neighbor_prediction_df.columns or 'formation' in neighbor_prediction_df.columns:
-                        category_col = 'lithology' if 'lithology' in neighbor_prediction_df.columns else 'formation'
-                        temp_metric_col = 'temp_residual' if 'temp_residual' in neighbor_prediction_df.columns else profiler.target_col
-                        summary = neighbor_prediction_df.groupby(category_col)[temp_metric_col].agg(['count', 'mean', 'std']).reset_index()
-                        st.dataframe(summary, use_container_width=True)
+                    category_col = _resolve_lithology_category_col(neighbor_prediction_df)
+                    temp_metric_col = 'temp_residual' if 'temp_residual' in neighbor_prediction_df.columns and neighbor_prediction_df['temp_residual'].notna().any() else profiler.target_col
+                    temp_label = 'Residual térmico' if temp_metric_col == 'temp_residual' else 'Temperatura'
+                    if category_col is not None:
+                        _lith_work = neighbor_prediction_df[[category_col, temp_metric_col]].dropna()
+                        _n_forms = int(_lith_work[category_col].nunique()) if not _lith_work.empty else 0
+                        _n_pts = int(len(_lith_work))
+                        _cat_label = 'Litologías' if category_col == 'lithology' else 'Formaciones'
+                        st.markdown(
+                            '<div class="chip-row">'
+                            f'<span class="chip chip-temp-target">{_cat_label} · {_n_forms}</span>'
+                            f'<span class="chip chip-anom-puntos">Puntos · {_n_pts:,}</span>'
+                            f'<span class="chip chip-temp-r2">Métrica · {html.escape(temp_label)}</span>'
+                            '<span class="chip chip-temp-ok">Curvas KDE + box</span>'
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.plotly_chart(create_lithology_temperature_chart(neighbor_prediction_df, profiler.target_col), use_container_width=True, key='lith_temp_chart')
+                        summary = build_formation_temperature_summary(neighbor_prediction_df, category_col, temp_metric_col)
+                        st.markdown('#### **Resumen por formación / litología**')
+                        st.markdown(formation_temperature_summary_table_html(summary, temp_col_label=temp_label), unsafe_allow_html=True)
                     else:
                         st.info('El pozo objetivo no trae litología/formación para correlacionar con temperatura.')
                 elif st.session_state.real_trace_df is not None:
                     base_target = _detect_temperature_target(st.session_state.real_trace_df)
-                    st.plotly_chart(create_lithology_temperature_chart(st.session_state.real_trace_df, base_target or ''), use_container_width=True, key='lith_temp_chart_raw')
+                    _raw_df = st.session_state.real_trace_df
+                    category_col = _resolve_lithology_category_col(_raw_df)
+                    temp_metric_col = 'temp_residual' if 'temp_residual' in _raw_df.columns and _raw_df['temp_residual'].notna().any() else (base_target or '')
+                    temp_label = 'Residual térmico' if temp_metric_col == 'temp_residual' else 'Temperatura'
+                    if category_col and temp_metric_col:
+                        _lith_work = _raw_df[[category_col, temp_metric_col]].dropna()
+                        st.markdown(
+                            '<div class="chip-row">'
+                            f'<span class="chip chip-temp-target">Formaciones · {int(_lith_work[category_col].nunique())}</span>'
+                            f'<span class="chip chip-anom-puntos">Puntos · {len(_lith_work):,}</span>'
+                            '<span class="chip chip-temp-ok">Traza real · KDE + box</span>'
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
+                    st.plotly_chart(create_lithology_temperature_chart(_raw_df, base_target or ''), use_container_width=True, key='lith_temp_chart_raw')
+                    if category_col and temp_metric_col:
+                        summary = build_formation_temperature_summary(_raw_df, category_col, temp_metric_col)
+                        st.markdown('#### **Resumen por formación / litología**')
+                        st.markdown(formation_temperature_summary_table_html(summary, temp_col_label=temp_label), unsafe_allow_html=True)
                 else:
                     st.info('No hay datos suficientes para la correlación temperatura-litología.')
 
             with subtab4:
+                st.markdown(
+                    'Compara la temperatura **real** del pozo objetivo frente al **perfil esperado** '
+                    'de pozos vecinos. Las anomalías marcan intervalos donde el comportamiento térmico '
+                    'se aleja de lo previsto para esa profundidad.'
+                )
+                with st.expander('**Guía: cómo leer las anomalías térmicas**', expanded=False):
+                    st.markdown(build_thermal_anomaly_reading_guide())
                 st.session_state.thermal_anomaly_z_threshold = st.slider(
                     'Umbral de anomalía |Z|',
                     min_value=1.0, max_value=4.0, value=float(st.session_state.get('thermal_anomaly_z_threshold', 2.0)),
@@ -5862,11 +7430,55 @@ def main():
                         '</div>',
                         unsafe_allow_html=True,
                     )
-                    st.plotly_chart(create_temperature_residual_chart(neighbor_prediction_df, profiler.target_col, depth_col), use_container_width=True, key='thermal_residual_chart')
+                    try:
+                        with st.spinner('Generando track térmico (alta resolución)…'):
+                            _track_formations = None
+                            if 'formation' not in neighbor_prediction_df.columns or not neighbor_prediction_df['formation'].notna().any():
+                                _track_formations = st.session_state.geological_formations or None
+                            _fig_track = create_thermal_anomaly_track_chart(
+                                neighbor_prediction_df,
+                                profiler.target_col,
+                                depth_col,
+                                formations=_track_formations,
+                                z_threshold=float(st.session_state.thermal_anomaly_z_threshold),
+                                depth_units=_depth_units,
+                            )
+                        st.plotly_chart(_fig_track, use_container_width=True, key='thermal_anomaly_track')
+                        st.markdown(
+                            build_thermal_track_summary_html(
+                                neighbor_prediction_df,
+                                depth_col=depth_col,
+                                z_threshold=float(st.session_state.thermal_anomaly_z_threshold),
+                                n_anom=n_anom,
+                                n_puntos=n_puntos,
+                                res_mean=float(res_mean),
+                                zmax=float(zmax),
+                                depth_units=_depth_units,
+                            ),
+                            unsafe_allow_html=True,
+                        )
+                    except Exception as _chart_err:
+                        st.warning(f'No se pudo renderizar el track térmico ({_chart_err}).')
                     anomalies = neighbor_prediction_df[neighbor_prediction_df.get('thermal_anomaly', 'normal') == 'anomaly'].copy()
                     if not anomalies.empty:
-                        keep_cols = [c for c in [depth_col, profiler.target_col, 'temp_expected', 'temp_residual', 'temp_zscore', 'lithology', 'formation'] if c in anomalies.columns]
-                        st.dataframe(anomalies[keep_cols].head(50), use_container_width=True)
+                        if 'temp_zscore' in anomalies.columns:
+                            anomalies = anomalies.reindex(
+                                anomalies['temp_zscore'].abs().sort_values(ascending=False).index
+                            )
+                        st.markdown('#### **Top anomalías térmicas**')
+                        st.markdown(
+                            thermal_anomalies_table_html(
+                                anomalies,
+                                depth_col=depth_col,
+                                target_col=profiler.target_col,
+                                z_threshold=float(st.session_state.thermal_anomaly_z_threshold),
+                                max_rows=50,
+                                depth_units=_depth_units,
+                            ),
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.success('Sin anomalías con el umbral |Z| actual.')
                 else:
                     st.info('La detección de anomalías térmicas se habilita cuando existe pozo objetivo y perfil esperado de vecinos.')
 
@@ -5900,7 +7512,7 @@ def main():
                     )
                 elif not _has_prof:
                     st.info(
-                        'El mapa WOB–RPM usa el **modelo ML**. El **roadmap por formación** (tabla y barras abajo) '
+                        'El mapa WOB–RPM usa el **modelo ML**. El **roadmap por formación** (contorno y tabla abajo) '
                         'requiere además el perfil de pozos vecinos.'
                     )
                 with st.expander('**Guía: WOB – RPM vs temperatura esperada**', expanded=False):
@@ -5943,7 +7555,7 @@ def main():
                 )
 
                 st.markdown('---')
-                st.markdown('#### **Roadmap por formación (tabla y barras)**')
+                st.markdown('#### **Roadmap por formación (contorno y tabla)**')
                 st.markdown('Antes de perforar el pozo en el mismo campo (PD), consulta aquí **qué temperatura esperar por formación**, basado en el perfil térmico de pozos vecinos.')
                 depth_col_profile = 'depth'
                 roadmap_df = compute_temperature_roadmap_by_formation(
@@ -5953,11 +7565,28 @@ def main():
                     depth_col=_choose_available_depth_col(neighbor_prediction_df, profiler.depth_col) if (neighbor_prediction_df is not None and not neighbor_prediction_df.empty) else depth_col_profile,
                 )
                 if roadmap_df is not None and not roadmap_df.empty:
+                    _n_rm = len(roadmap_df)
+                    _t_lo = float(roadmap_df['Temp_media'].min()) if 'Temp_media' in roadmap_df.columns else 0.0
+                    _t_hi = float(roadmap_df['Temp_media'].max()) if 'Temp_media' in roadmap_df.columns else 0.0
+                    st.markdown(
+                        '<div class="chip-row">'
+                        f'<span class="chip chip-temp-target">Formaciones · {_n_rm}</span>'
+                        f'<span class="chip chip-roadmap-temp">Temp. min · {_t_lo:.1f}</span>'
+                        f'<span class="chip chip-roadmap-p90">Temp. máx · {_t_hi:.1f}</span>'
+                        '<span class="chip chip-temp-ok">Heatmap HD + degradado</span>'
+                        '</div>',
+                        unsafe_allow_html=True,
+                    )
                     st.markdown('**Vista contorno — temperatura esperada vs profundidad (por formación)**')
-                    st.plotly_chart(create_temperature_roadmap_depth_contour(roadmap_df), use_container_width=True, key='temp_roadmap_depth_contour')
+                    st.plotly_chart(
+                        create_temperature_roadmap_depth_contour(roadmap_df, depth_units=_depth_units),
+                        use_container_width=True, key='temp_roadmap_depth_contour',
+                    )
                     st.markdown('**Tabla: temperatura esperada por formación**')
-                    st.dataframe(roadmap_df, use_container_width=True, hide_index=True)
-                    st.plotly_chart(create_temperature_roadmap_chart(roadmap_df), use_container_width=True, key='temp_roadmap_chart')
+                    st.markdown(
+                        temperature_roadmap_table_html(roadmap_df, depth_units=_depth_units),
+                        unsafe_allow_html=True,
+                    )
                     st.caption('Usa esta tabla como roadmap: por cada formación verás el rango de profundidad y la temperatura que puedes esperar en el pozo a perforar, según los pozos vecinos del mismo campo.')
                 else:
                     st.info('Genera el **perfil esperado desde pozos vecinos** en el panel lateral. Con ese perfil se construye el roadmap de temperatura por formación (por datos de litología/formación en la traza o por intervalos de profundidad de las formaciones geológicas).')
@@ -6512,13 +8141,17 @@ def main():
             with col_geo2:
                 form_at_depth = get_formation_at_depth(depth_ft, formations)
                 if form_at_depth:
-                    st.info(f"**Formación actual** ({depth_ft:,.0f} ft): **{form_at_depth['name']}** — UCS: {form_at_depth['ucs_psi']:,.0f} psi")
+                    st.info(
+                        f"**Formación actual** ({_format_depth_display(depth_ft)}): "
+                        f"**{form_at_depth['name']}** — UCS: {form_at_depth['ucs_psi']:,.0f} psi"
+                    )
                 else:
-                    st.warning(f"Profundidad {depth_ft:,.0f} ft fuera del rango de formaciones definidas.")
+                    st.warning(f"Profundidad {_format_depth_display(depth_ft)} fuera del rango de formaciones definidas.")
             
             # Track de Seguimiento Geológico (formaciones vs profundidad)
             st.markdown("**Track de Seguimiento Geológico**")
-            fig_track = create_geological_track(formations, depth_ft)
+            _geo_depth_units = _get_depth_display_units()
+            fig_track = create_geological_track(formations, depth_ft, depth_units=_geo_depth_units)
             st.plotly_chart(fig_track, use_container_width=True, key="tab6_geo_track")
             
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
