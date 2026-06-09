@@ -27,6 +27,7 @@ Thumbs.db
 *.csv
 *.parquet
 *.png
+!apps/ML_Rogii/rogii_logo.png
 *.jpg
 *.jpeg
 *.pdf

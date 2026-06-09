@@ -27,8 +27,12 @@ import io
 import html
 from scipy import stats
 import warnings
+from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 warnings.filterwarnings('ignore')
+
+BASE_DIR = Path(__file__).resolve().parent
+LOGO_PATH = BASE_DIR / "rogii_logo.png"
 
 try:
     from pptx import Presentation
@@ -4444,7 +4448,8 @@ def main():
         st.session_state.lang = 'es'
     
     # Header: logo ROGII encima del título, a lo largo
-    st.image("rogii_logo.png", width="stretch")
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), width="stretch")
     st.markdown('<h1 class="main-header" style="text-align: center; margin-top: 0.5rem;">Drilling Analytics</h1>', 
                 unsafe_allow_html=True)
     
@@ -4536,7 +4541,8 @@ def main():
     # ========================================================================
     
     with st.sidebar:
-        st.image("rogii_logo.png", width="stretch")
+        if LOGO_PATH.exists():
+            st.image(str(LOGO_PATH), width="stretch")
         lang_selected = st.selectbox(
             ("Idioma / Language" if st.session_state.lang == 'es' else "Language / Idioma"),
             options=['es', 'en'],
