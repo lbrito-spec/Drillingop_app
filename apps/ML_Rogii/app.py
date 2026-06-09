@@ -2437,9 +2437,9 @@ class NeighborTemperatureProfiler:
             interp = np.interp(grid, local[work_depth].values, local[target_col].values)
             prof = pd.DataFrame({'depth': grid, 'temperature_interp': interp, 'weight': weight, 'well_name': meta['well_name'], 'distance': distance})
             if 'formation' in local.columns:
-                prof['formation'] = pd.Series(local['formation']).fillna(method='ffill').fillna(method='bfill').iloc[0] if not local['formation'].dropna().empty else 'unknown'
+                prof['formation'] = pd.Series(local['formation']).ffill().bfill().iloc[0] if not local['formation'].dropna().empty else 'unknown'
             if 'lithology' in local.columns:
-                prof['lithology'] = pd.Series(local['lithology']).fillna(method='ffill').fillna(method='bfill').iloc[0] if not local['lithology'].dropna().empty else 'unknown'
+                prof['lithology'] = pd.Series(local['lithology']).ffill().bfill().iloc[0] if not local['lithology'].dropna().empty else 'unknown'
             profiles.append(prof)
             temp_gradient = np.polyfit(local[work_depth].values, local[target_col].values, 1)[0] if len(local) >= 2 else np.nan
             summary_rows.append({'well_name': meta['well_name'], 'x': meta.get('x', np.nan), 'y': meta.get('y', np.nan), 'x_col': meta.get('x_col'), 'y_col': meta.get('y_col'), 'distance': distance, 'weight': weight, 'temp_min': float(local[target_col].min()), 'temp_max': float(local[target_col].max()), 'gradient': float(temp_gradient), 'rows': int(len(local))})
