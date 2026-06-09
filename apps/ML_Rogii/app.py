@@ -5922,6 +5922,179 @@ def create_temperature_real_vs_pred_chart(
 # APLICACIÓN PRINCIPAL STREAMLIT
 # ============================================================================
 
+
+
+# ============================================================================
+# TEMPERATURA - PREDICCIÓN PARA NUEVO POZO DEL MISMO CAMPO
+# ============================================================================
+
+def predict_temperature_for_new_well_profile(
+    neighbor_trace_dfs: List[pd.DataFrame],
+    temperature_predictor: Optional[Any],
+    target_col: str,
+    depth_col: str,
+    new_x: float,
+    new_y: float,
+    td_value: float,
+    td_units: str = 'm',
+    weighting: str = 'inverse_distance',
+    base_params: Optional[Dict[str, Any]] = None,
+    formations: Optional[List[Dict]] = None,
+    n_points: int = 160,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Predice el perfil térmico de un pozo futuro en el mismo campo.
+
+    Filosofía:
+    1) Reconstruye el perfil regional usando los pozos vecinos, pero ponderados contra
+       las coordenadas del NUEVO pozo, no contra el pozo objetivo cargado.
+    2) Interpola P10/P50/P90 regionales sobre una trayectoria de 0 a TD.
+    3) Si existe ML de temperatura entrenado, genera una predicción operacional con
+       los parámetros actuales de perforación y la mezcla con la predicción regional.
+
+    Salidas:
+    - prediction_df: curva del nuevo pozo por profundidad.
+    - neighbor_summary: tabla de influencia de pozos vecinos para el nuevo pozo.
+    """
+    base_params = dict(base_params or {})
+    td_ft = float(td_value) * 3.28084 if str(td_units).lower().startswith('m') else float(td_value)
+    td_ft = max(td_ft, 1.0)
+    depths_ft = np.linspace(0.0, td_ft, int(max(20, n_points)))
+
+    local_profiler = NeighborTemperatureProfiler()
+    regional_profile = pd.DataFrame()
+    neighbor_summary = pd.DataFrame()
+    if neighbor_trace_dfs and target_col:
+        try:
+            regional_profile = local_profiler.build_from_neighbors(
+                neighbor_trace_dfs,
+                target_col=target_col,
+                depth_col=depth_col,
+                target_x=float(new_x),
+                target_y=float(new_y),
+                weighting=weighting,
+            )
+            neighbor_summary = local_profiler.neighbor_summary.copy()
+        except Exception:
+            regional_profile = pd.DataFrame()
+            neighbor_summary = pd.DataFrame()
+
+    out = pd.DataFrame({'depth_ft': depths_ft})
+    out['depth_m'] = out['depth_ft'] / 3.28084
+    out['formation'] = None
+    out['lithology'] = None
+    if formations:
+        for i, d in enumerate(out['depth_ft'].values):
+            f = get_formation_at_depth(float(d), formations)
+            if f:
+                out.at[i, 'formation'] = f.get('name')
+                out.at[i, 'lithology'] = f.get('lithology')
+
+    if regional_profile is not None and not regional_profile.empty and 'depth' in regional_profile.columns:
+        prof = regional_profile.dropna(subset=['depth', 'temp_expected']).sort_values('depth').copy()
+        if not prof.empty:
+            xp = prof['depth'].astype(float).values
+            out['temp_regional_p50'] = np.interp(out['depth_ft'], xp, prof['temp_expected'])
+            if 'temp_p10' in prof.columns:
+                out['temp_regional_p10'] = np.interp(out['depth_ft'], xp, prof['temp_p10'])
+            else:
+                out['temp_regional_p10'] = out['temp_regional_p50'] - 5.0
+            if 'temp_p90' in prof.columns:
+                out['temp_regional_p90'] = np.interp(out['depth_ft'], xp, prof['temp_p90'])
+            else:
+                out['temp_regional_p90'] = out['temp_regional_p50'] + 5.0
+
+    ml_values = []
+    if temperature_predictor is not None and getattr(temperature_predictor, 'model', None) is not None:
+        for d in out['depth_ft'].values:
+            p = dict(base_params)
+            p['depth_md'] = float(d)
+            p['depth_tvd'] = float(d)
+            if 'depth_ft' in p:
+                p['depth_md'] = float(d)
+            f = get_formation_at_depth(float(d), formations or []) if formations else None
+            if f:
+                p['formation'] = f.get('name')
+                p['lithology'] = f.get('lithology')
+            try:
+                ml_values.append(float(temperature_predictor.predict_from_params(p)))
+            except Exception:
+                ml_values.append(np.nan)
+        out['temp_ml'] = ml_values
+
+    # Selección/mezcla final.
+    has_reg = 'temp_regional_p50' in out.columns and out['temp_regional_p50'].notna().any()
+    has_ml = 'temp_ml' in out.columns and out['temp_ml'].notna().any()
+    if has_reg and has_ml:
+        # El regional manda para pozo nuevo; el ML agrega corrección operacional sin dominar.
+        out['temp_pred_p50'] = 0.70 * out['temp_regional_p50'] + 0.30 * out['temp_ml']
+        spread_low = (out['temp_regional_p50'] - out.get('temp_regional_p10', out['temp_regional_p50'] - 5)).abs().fillna(5.0)
+        spread_high = (out.get('temp_regional_p90', out['temp_regional_p50'] + 5) - out['temp_regional_p50']).abs().fillna(5.0)
+        out['temp_pred_p10'] = out['temp_pred_p50'] - spread_low
+        out['temp_pred_p90'] = out['temp_pred_p50'] + spread_high
+        out['modelo_usado'] = 'Regional vecinos 70% + ML operacional 30%'
+    elif has_reg:
+        out['temp_pred_p50'] = out['temp_regional_p50']
+        out['temp_pred_p10'] = out.get('temp_regional_p10', out['temp_pred_p50'] - 5.0)
+        out['temp_pred_p90'] = out.get('temp_regional_p90', out['temp_pred_p50'] + 5.0)
+        out['modelo_usado'] = 'Regional por pozos vecinos'
+    elif has_ml:
+        out['temp_pred_p50'] = out['temp_ml']
+        out['temp_pred_p10'] = out['temp_ml'] - 7.5
+        out['temp_pred_p90'] = out['temp_ml'] + 7.5
+        out['modelo_usado'] = 'ML operacional'
+    else:
+        out['temp_pred_p50'] = np.nan
+        out['temp_pred_p10'] = np.nan
+        out['temp_pred_p90'] = np.nan
+        out['modelo_usado'] = 'Sin modelo disponible'
+
+    return out, neighbor_summary
+
+
+def create_new_well_temperature_profile_chart(pred_df: pd.DataFrame, depth_units: str = 'm') -> go.Figure:
+    """Track de temperatura esperada P10/P50/P90 para un nuevo pozo."""
+    fig = go.Figure()
+    if pred_df is None or pred_df.empty or 'temp_pred_p50' not in pred_df.columns:
+        fig.add_annotation(text='No hay predicción disponible. Carga pozos vecinos o entrena el ML térmico.', x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(height=560, template='plotly_dark', paper_bgcolor='#0b0f14', plot_bgcolor='#111827')
+        return fig
+    dcol = 'depth_m' if depth_units == 'm' and 'depth_m' in pred_df.columns else 'depth_ft'
+    ytitle = 'Profundidad (m)' if dcol == 'depth_m' else 'Profundidad (ft)'
+    work = pred_df.dropna(subset=['temp_pred_p50', dcol]).copy()
+    if work.empty:
+        fig.add_annotation(text='La predicción quedó vacía.', x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(height=560, template='plotly_dark', paper_bgcolor='#0b0f14', plot_bgcolor='#111827')
+        return fig
+    fig.add_trace(go.Scatter(
+        x=work['temp_pred_p90'], y=work[dcol], mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=work['temp_pred_p10'], y=work[dcol], mode='lines', line=dict(width=0), fill='tonextx',
+        fillcolor='rgba(56,189,248,0.22)', name='Banda P10–P90', hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=work['temp_pred_p50'], y=work[dcol], mode='lines', name='P50 esperado',
+        line=dict(color='#F59E0B', width=3),
+        hovertemplate='Temp P50: %{x:.1f} °C<br>Prof: %{y:,.1f}<extra></extra>'
+    ))
+    fig.add_trace(go.Scatter(
+        x=work['temp_pred_p10'], y=work[dcol], mode='lines', name='P10', line=dict(color='#38BDF8', width=1.5, dash='dash')
+    ))
+    fig.add_trace(go.Scatter(
+        x=work['temp_pred_p90'], y=work[dcol], mode='lines', name='P90', line=dict(color='#FB7185', width=1.5, dash='dash')
+    ))
+    fig.update_layout(
+        title='Nuevo pozo — temperatura esperada por profundidad',
+        height=620, template='plotly_dark', paper_bgcolor='#0b0f14', plot_bgcolor='#111827',
+        xaxis=dict(title='Temperatura esperada (°C)', gridcolor='rgba(148,163,184,0.12)'),
+        yaxis=dict(title=ytitle, autorange='reversed', gridcolor='rgba(148,163,184,0.12)'),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+        margin=dict(l=70, r=40, t=80, b=50),
+        font=dict(color='#e2e8f0')
+    )
+    return fig
+
 def main():
     """Aplicación principal Streamlit - Imperial Units"""
     
@@ -7095,8 +7268,8 @@ def main():
             except Exception:
                 pass
 
-            subtab1, subtab2, subtab3, subtab4, subtab5 = st.tabs([
-                'ML temperatura', 'Perfil esperado vecinos', 'Litología / formación', 'Anomalías térmicas', 'Roadmap por formación'
+            subtab1, subtab2, subtab3, subtab4, subtab5, subtab6 = st.tabs([
+                'ML temperatura', 'Perfil esperado vecinos', 'Litología / formación', 'Anomalías térmicas', 'Roadmap por formación', 'Nuevo pozo a perforar'
             ])
             _depth_units = _get_depth_display_units()
             _depth_scale, _depth_axis_label, _depth_suffix = _depth_display_config(_depth_units)
@@ -7607,6 +7780,111 @@ def main():
         # TAB 2: MODEL PERFORMANCE - IMPERIAL
         # ====================================================================
         
+
+            with subtab6:
+                st.markdown('#### **Predicción de temperatura para nuevo pozo a perforar**')
+                st.markdown(
+                    'Este módulo estima la curva térmica de un pozo futuro en el mismo campo. '
+                    'Usa los **pozos vecinos cargados** para construir un perfil regional ponderado por distancia '
+                    'hacia las coordenadas del nuevo pozo. Si además existe ML térmico entrenado, aplica una '
+                    'corrección operacional con los parámetros actuales.'
+                )
+                _has_neighbors_for_new = bool(st.session_state.get('neighbor_trace_dfs'))
+                _has_ml_for_new = getattr(st.session_state.temperature_predictor, 'model', None) is not None
+                st.markdown(
+                    '<div class="chip-row">'
+                    f'<span class="chip {"chip-temp-ok" if _has_neighbors_for_new else "chip-anom-warn"}">Vecinos · {"OK" if _has_neighbors_for_new else "pendiente"}</span>'
+                    f'<span class="chip {"chip-temp-ok" if _has_ml_for_new else "chip-anom-warn"}">ML térmico · {"OK" if _has_ml_for_new else "opcional"}</span>'
+                    f'<span class="chip chip-temp-target">Target · {html.escape(str(st.session_state.get("neighbor_target_col", getattr(tp, "target_col", "temperatura"))))}</span>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+                if not _has_neighbors_for_new and not _has_ml_for_new:
+                    st.warning('Carga pozos vecinos o entrena el modelo ML de temperatura antes de predecir un nuevo pozo.')
+                cnp1, cnp2, cnp3 = st.columns(3)
+                with cnp1:
+                    new_well_name = st.text_input('Nombre del nuevo pozo', value='Nuevo_pozo_campo', key='new_well_name_temp')
+                    new_x = st.number_input('Coordenada X nuevo pozo', value=float(st.session_state.get('target_x_coord', 0.0)), step=1.0, key='new_well_x_temp')
+                with cnp2:
+                    td_units_label = st.selectbox('Unidad TD / profundidad', options=['m', 'ft'], index=0 if _get_depth_display_units() == 'm' else 1, key='new_well_td_units')
+                    new_y = st.number_input('Coordenada Y nuevo pozo', value=float(st.session_state.get('target_y_coord', 0.0)), step=1.0, key='new_well_y_temp')
+                with cnp3:
+                    default_td = 6000.0 if td_units_label == 'm' else 20000.0
+                    new_td = st.number_input('TD planificado', min_value=100.0, value=default_td, step=100.0, key='new_well_td_temp')
+                    new_points = st.slider('Resolución de la curva', min_value=50, max_value=400, value=180, step=10, key='new_well_temp_points')
+
+                st.markdown('**Escenario operacional para corrección ML**')
+                st.caption('Estos valores se usan sólo si existe ML térmico entrenado. Si no, la predicción sale del perfil regional de vecinos.')
+                op1, op2, op3, op4 = st.columns(4)
+                with op1:
+                    scen_wob = st.number_input('WOB escenario (klb)', value=float(wob_klb), step=0.5, key='new_well_scen_wob')
+                with op2:
+                    scen_rpm = st.number_input('RPM escenario', value=float(rpm), step=5.0, key='new_well_scen_rpm')
+                with op3:
+                    scen_flow = st.number_input('Caudal escenario (gpm)', value=float(flow_gpm), step=25.0, key='new_well_scen_flow')
+                with op4:
+                    scen_spp = st.number_input('SPP escenario (psi)', value=float(spp_psi), step=50.0, key='new_well_scen_spp')
+
+                if st.button('Predecir temperatura del nuevo pozo', use_container_width=True, key='btn_predict_new_well_temp'):
+                    base_new_params = build_current_temperature_params(
+                        depth_ft=depth_ft, inclination_deg=inclination_deg, rpm=scen_rpm, wob_klb=scen_wob,
+                        torque_ftlb=torque_ftlb, flow_gpm=scen_flow, spp_psi=scen_spp,
+                        mud_density_ppg=mud_density_ppg, pv_cp=pv_cp, yp_lb100ft2=yp_lb100ft2,
+                        bit_diameter_in=bit_diameter_in,
+                        rop_value=(st.session_state.current_prediction or {}).get('Ensemble'),
+                        formation_info=(get_formation_at_depth(depth_ft, st.session_state.geological_formations) if st.session_state.use_geological_tracking else None),
+                        trace_df=st.session_state.real_trace_df,
+                    )
+                    target_for_new = st.session_state.get('neighbor_target_col') or getattr(tp, 'target_col', None) or 'mud_out_temp'
+                    depth_for_new = st.session_state.get('neighbor_depth_col') or 'depth_tvd'
+                    try:
+                        pred_new_df, neigh_new_summary = predict_temperature_for_new_well_profile(
+                            st.session_state.get('neighbor_trace_dfs', []),
+                            st.session_state.temperature_predictor,
+                            target_col=target_for_new,
+                            depth_col=depth_for_new,
+                            new_x=float(new_x),
+                            new_y=float(new_y),
+                            td_value=float(new_td),
+                            td_units=td_units_label,
+                            weighting=st.session_state.get('neighbor_weighting', 'inverse_distance'),
+                            base_params=base_new_params,
+                            formations=st.session_state.geological_formations if st.session_state.use_geological_tracking else None,
+                            n_points=int(new_points),
+                        )
+                        st.session_state.new_well_temperature_prediction = pred_new_df
+                        st.session_state.new_well_neighbor_summary = neigh_new_summary
+                        st.session_state.new_well_temperature_name = new_well_name
+                        st.success(f'Predicción generada para {new_well_name}.')
+                    except Exception as e:
+                        st.error(f'No se pudo generar la predicción del nuevo pozo: {e}')
+
+                pred_new_df = st.session_state.get('new_well_temperature_prediction')
+                if pred_new_df is not None and not pred_new_df.empty and pred_new_df['temp_pred_p50'].notna().any():
+                    _du = td_units_label
+                    valid_new = pred_new_df.dropna(subset=['temp_pred_p50'])
+                    cmet1, cmet2, cmet3, cmet4 = st.columns(4)
+                    cmet1.metric('Temp inicial P50', f"{valid_new['temp_pred_p50'].iloc[0]:.1f} °C")
+                    cmet2.metric('Temp final P50', f"{valid_new['temp_pred_p50'].iloc[-1]:.1f} °C")
+                    cmet3.metric('Temp máxima P90', f"{valid_new['temp_pred_p90'].max():.1f} °C")
+                    cmet4.metric('Modelo', str(valid_new['modelo_usado'].iloc[0]))
+                    st.plotly_chart(create_new_well_temperature_profile_chart(pred_new_df, depth_units=_du), use_container_width=True, key='new_well_temp_profile_chart')
+                    st.markdown('**Influencia de pozos vecinos para el nuevo pozo**')
+                    neigh_new_summary = st.session_state.get('new_well_neighbor_summary', pd.DataFrame())
+                    if neigh_new_summary is not None and not neigh_new_summary.empty:
+                        st.markdown(neighbor_summary_table_html(neigh_new_summary), unsafe_allow_html=True)
+                    cols_export = ['depth_m', 'depth_ft', 'formation', 'lithology', 'temp_pred_p10', 'temp_pred_p50', 'temp_pred_p90', 'temp_regional_p50', 'temp_ml', 'modelo_usado']
+                    cols_export = [c for c in cols_export if c in pred_new_df.columns]
+                    csv_bytes = pred_new_df[cols_export].to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        'Descargar predicción nuevo pozo CSV', data=csv_bytes,
+                        file_name=f"temperatura_{st.session_state.get('new_well_temperature_name','nuevo_pozo')}.csv",
+                        mime='text/csv', use_container_width=True,
+                        key='download_new_well_temp_csv'
+                    )
+                else:
+                    st.info('Configura coordenadas y TD, luego presiona **Predecir temperatura del nuevo pozo**.')
+
         with tab2:
             with st.expander("**Recomendaciones para esta sección**", expanded=True):
                 for s in get_section_suggestions('model_performance'):
