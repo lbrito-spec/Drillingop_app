@@ -19,7 +19,9 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-st.set_page_config(page_title="Daily Report -> Rogii Email Parsing", page_icon="🛢️", layout="wide")
+from mud_report import render_mud_report
+
+st.set_page_config(page_title="Rogii Reports – Daily & Mud", page_icon="🛢️", layout="wide")
 
 GREEN = colors.HexColor("#68cbb3")
 BORDER = colors.HexColor("#222222")
@@ -1095,22 +1097,23 @@ st.markdown(
     """
 <div class="rogii-title-row">
   <span class="rogii-title-flame" aria-hidden="true">🔥</span>
-  <h1 class="rogii-title-text">Conversor de Daily Report a formato general para Rogii Email Parsing</h1>
+  <h1 class="rogii-title-text">Rogii Reports – Daily Report & Mud Report</h1>
 </div>
 """,
     unsafe_allow_html=True,
 )
-st.caption(
-    "Carga un Daily Report en Excel, CSV, TXT o PDF. "
-    "Incluye soporte OCR para PDFs tipo Baker Hughes que vienen como imagen."
-)
+
+tab_daily, tab_mud = st.tabs(["Daily Report", "Mud Report"])
 
 with st.sidebar:
     st.header("Parsing Email")
-    st.caption("Las credenciales SMTP se leen desde .streamlit/secrets.toml y no se muestran en la app.")
+    st.caption("Las credenciales SMTP/IMAP se leen desde .streamlit/secrets.toml. La contraseña no se muestra en la app.")
     sender_email = get_secret("SMTP_USER", "No configurado")
     st.text_input("From email", value=sender_email, disabled=True)
-    to_email = st.text_input("To email parsing", value="solobox+pemex@rogii.com")
+    to_email = st.text_input(
+        "To email parsing",
+        value=get_secret("SMTP_TO", get_secret("TO_EMAIL", "solobox+pemex@rogii.com")),
+    )
 
     st.divider()
     st.header("Monitoreo de correo del cliente")
@@ -1121,139 +1124,148 @@ with st.sidebar:
     inbox_subject_filter = st.text_input("Filtrar asunto", value=get_secret("CLIENT_REPORT_SUBJECT", ""))
     check_now = st.button("Buscar ahora", use_container_width=True)
 
-uploaded = st.file_uploader("Sube Daily Report", type=["xlsx", "xls", "csv", "txt", "pdf"])
+with tab_daily:
+    st.caption(
+        "Carga un Daily Report en Excel, CSV, TXT o PDF. "
+        "Incluye soporte OCR para PDFs tipo Baker Hughes que vienen como imagen."
+    )
 
-if "email_report" not in st.session_state:
-    st.session_state.email_report = None
-if "email_report_status" not in st.session_state:
-    st.session_state.email_report_status = ""
+    uploaded = st.file_uploader("Sube Daily Report", type=["xlsx", "xls", "csv", "txt", "pdf"])
 
-if monitor_enabled:
-    try:
-        from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=int(poll_seconds) * 1000, key="email_report_autorefresh")
-    except Exception:
-        st.caption("Tip: instala streamlit-autorefresh para que el monitoreo se ejecute automáticamente sin recargar manualmente.")
+    if "email_report" not in st.session_state:
+        st.session_state.email_report = None
+    if "email_report_status" not in st.session_state:
+        st.session_state.email_report_status = ""
 
-if monitor_enabled or check_now:
-    try:
-        found = latest_report_from_inbox(inbox_sender_filter, inbox_subject_filter)
-        if found:
-            st.session_state.email_report = found
-            st.session_state.email_report_status = f"Reporte recibido por correo: {found.subject or found.filename}"
-        elif check_now:
-            st.session_state.email_report_status = "No encontré correos nuevos no leídos con esos filtros."
-    except Exception as exc:
-        st.session_state.email_report_status = f"Error leyendo correo: {exc}"
+    if monitor_enabled:
+        try:
+            from streamlit_autorefresh import st_autorefresh
+            st_autorefresh(interval=int(poll_seconds) * 1000, key="email_report_autorefresh")
+        except Exception:
+            st.caption("Tip: instala streamlit-autorefresh para que el monitoreo se ejecute automáticamente sin recargar manualmente.")
 
-if st.session_state.email_report_status:
-    if st.session_state.email_report and st.session_state.email_report_status.startswith("Reporte recibido"):
-        st.success(st.session_state.email_report_status)
-    else:
-        st.info(st.session_state.email_report_status)
+    if monitor_enabled or check_now:
+        try:
+            found = latest_report_from_inbox(inbox_sender_filter, inbox_subject_filter)
+            if found:
+                st.session_state.email_report = found
+                st.session_state.email_report_status = f"Reporte recibido por correo: {found.subject or found.filename}"
+            elif check_now:
+                st.session_state.email_report_status = "No encontré correos nuevos no leídos con esos filtros."
+        except Exception as exc:
+            st.session_state.email_report_status = f"Error leyendo correo: {exc}"
 
-if "manual_report_open" not in st.session_state:
-    st.session_state.manual_report_open = False
-
-if uploaded:
-    st.session_state.manual_report_open = False
-else:
-    manual_label = "Ocultar captura manual" if st.session_state.manual_report_open else "Capturar reporte sin adjuntar archivo"
-    if st.button(manual_label, type="secondary", use_container_width=True):
-        st.session_state.manual_report_open = not st.session_state.manual_report_open
-
-show_editor = uploaded is not None or st.session_state.manual_report_open or st.session_state.email_report is not None
-
-if show_editor:
-    try:
-        if uploaded:
-            sheets, file_type, raw_text = read_any_file(uploaded)
-            report = force_24h_operation_if_summary_only(extract_report(raw_text, uploaded.name), raw_text)
-            st.success(f"Archivo leído como {file_type.upper()}")
-        elif st.session_state.email_report is not None:
-            email_report = st.session_state.email_report
-            raw_text = email_report.raw_text
-            report = force_24h_operation_if_summary_only(
-                extract_report(
-                    raw_text,
-                    email_report.filename,
-                    email_body=getattr(email_report, "body_text", "") or "",
-                ),
-                raw_text,
-            )
-            st.success(f"Correo leído: {email_report.subject or email_report.filename}")
-            st.caption(f"From: {email_report.sender} | Fecha: {email_report.date} | Fuente: {email_report.source_type}")
+    if st.session_state.email_report_status:
+        if st.session_state.email_report and st.session_state.email_report_status.startswith("Reporte recibido"):
+            st.success(st.session_state.email_report_status)
         else:
-            raw_text = ""
-            report = extract_report(raw_text)
-            st.info("Captura manual activa. Completa los campos y escribe las operaciones sin adjuntar un reporte.")
+            st.info(st.session_state.email_report_status)
 
-        left, right = st.columns([1, 1])
+    if "manual_report_open" not in st.session_state:
+        st.session_state.manual_report_open = False
 
-        with left:
-            st.subheader("Campos detectados / editables")
-            for key in ["cliente", "compania", "pozo", "ciudad", "estado", "folio", "fecha", "hora", "profundidad"]:
-                report[key] = st.text_input(key.replace("_", " ").title(), value=report.get(key, ""))
+    if uploaded:
+        st.session_state.manual_report_open = False
+    else:
+        manual_label = "Ocultar captura manual" if st.session_state.manual_report_open else "Capturar reporte sin adjuntar archivo"
+        if st.button(manual_label, type="secondary", use_container_width=True):
+            st.session_state.manual_report_open = not st.session_state.manual_report_open
 
-            report["operacion_actual"] = st.text_input("Operación Actual", value=report.get("operacion_actual", ""))
-            report["siguiente"] = st.text_area("Siguiente", value=report.get("siguiente", ""), height=80)
-            report["programa"] = st.text_area("Programa", value=report.get("programa", ""), height=100)
+    show_editor = uploaded is not None or st.session_state.manual_report_open or st.session_state.email_report is not None
 
-            well_for_file = sanitize_filename(report.get("pozo", ""))
-            date_for_file = sanitize_filename(report.get("fecha", "").replace("/", "-"), datetime.now().strftime("%d-%m-%Y"))
-            default_output_name = f"{well_for_file}_Daily_Report_{date_for_file}.pdf"
-
-            st.markdown("### 📎 Nombre del archivo adjunto de salida")
-            output_name = st.text_input(
-                "Así quedará el nombre del PDF que se descargará o enviará por email:",
-                value=default_output_name,
-                help="Puedes editarlo antes de descargar o enviar. Se recomienda mantener el nombre del pozo en el archivo.",
-            )
-            output_name = sanitize_filename(output_name.replace(".pdf", "")) + ".pdf"
-
-        with right:
-            st.subheader("Operaciones normalizadas")
-            if raw_text:
-                if report.get("_operacion_cuerpo_correo"):
-                    st.info(
-                        "Texto de operaciones tomado del cuerpo del correo: bloque «Últimas 24 hrs» "
-                        "(copiado tal cual en el correo, sin usar el adjunto)."
-                    )
-                else:
-                    st.info(
-                        "Se extrae la tabla Daily Activity Summary cuando existe. "
-                        "Se eliminan secciones no necesarias como BHA, bit, personal, costos, parámetros, lodo e hidráulica."
-                    )
-
-                activities = report.get("_activities") if report.get("_activities") is not None else split_activity_text(raw_text)
-                warnings = validate_hour_sequence(activities)
-                if warnings:
-                    st.warning("\n".join(warnings))
+    if show_editor:
+        try:
+            if uploaded:
+                sheets, file_type, raw_text = read_any_file(uploaded)
+                report = force_24h_operation_if_summary_only(extract_report(raw_text, uploaded.name), raw_text)
+                st.success(f"Archivo leído como {file_type.upper()}")
+            elif st.session_state.email_report is not None:
+                email_report = st.session_state.email_report
+                raw_text = email_report.raw_text
+                report = force_24h_operation_if_summary_only(
+                    extract_report(
+                        raw_text,
+                        email_report.filename,
+                        email_body=getattr(email_report, "body_text", "") or "",
+                    ),
+                    raw_text,
+                )
+                st.success(f"Correo leído: {email_report.subject or email_report.filename}")
+                st.caption(f"From: {email_report.sender} | Fecha: {email_report.date} | Fuente: {email_report.source_type}")
             else:
-                st.info("Escribe o pega aquí el texto de operaciones que llevará el PDF.")
+                raw_text = ""
+                report = extract_report(raw_text)
+                st.info("Captura manual activa. Completa los campos y escribe las operaciones sin adjuntar un reporte.")
 
-            report["operacion"] = st.text_area("Texto de operaciones", value=report.get("operacion", ""), height=520)
+            left, right = st.columns([1, 1])
 
-        pdf_bytes = make_pdf(report)
+            with left:
+                st.subheader("Campos detectados / editables")
+                for key in ["cliente", "compania", "pozo", "ciudad", "estado", "folio", "fecha", "hora", "profundidad"]:
+                    report[key] = st.text_input(key.replace("_", " ").title(), value=report.get(key, ""))
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.download_button("⬇️ Descargar PDF", data=pdf_bytes, file_name=output_name, mime="application/pdf", use_container_width=True)
+                report["operacion_actual"] = st.text_input("Operación Actual", value=report.get("operacion_actual", ""))
+                report["siguiente"] = st.text_area("Siguiente", value=report.get("siguiente", ""), height=80)
+                report["programa"] = st.text_area("Programa", value=report.get("programa", ""), height=100)
 
-        with c2:
-            if st.button("📧 Enviar por email", type="primary", use_container_width=True):
-                if not to_email:
-                    st.error("Completa el correo destino antes de enviar.")
+                well_for_file = sanitize_filename(report.get("pozo", ""))
+                date_for_file = sanitize_filename(report.get("fecha", "").replace("/", "-"), datetime.now().strftime("%d-%m-%Y"))
+                default_output_name = f"{well_for_file}_Daily_Report_{date_for_file}.pdf"
+
+                st.markdown("### 📎 Nombre del archivo adjunto de salida")
+                output_name = st.text_input(
+                    "Así quedará el nombre del PDF que se descargará o enviará por email:",
+                    value=default_output_name,
+                    help="Puedes editarlo antes de descargar o enviar. Se recomienda mantener el nombre del pozo en el archivo.",
+                )
+                output_name = sanitize_filename(output_name.replace(".pdf", "")) + ".pdf"
+
+            with right:
+                st.subheader("Operaciones normalizadas")
+                if raw_text:
+                    if report.get("_operacion_cuerpo_correo"):
+                        st.info(
+                            "Texto de operaciones tomado del cuerpo del correo: bloque «Últimas 24 hrs» "
+                            "(copiado tal cual en el correo, sin usar el adjunto)."
+                        )
+                    else:
+                        st.info(
+                            "Se extrae la tabla Daily Activity Summary cuando existe. "
+                            "Se eliminan secciones no necesarias como BHA, bit, personal, costos, parámetros, lodo e hidráulica."
+                        )
+
+                    activities = report.get("_activities") if report.get("_activities") is not None else split_activity_text(raw_text)
+                    warnings = validate_hour_sequence(activities)
+                    if warnings:
+                        st.warning("\n".join(warnings))
                 else:
-                    send_email_with_attachment(to_email, pdf_bytes, output_name, "application/pdf")
-                    st.success(f"PDF enviado correctamente a {to_email} con el archivo {output_name}")
+                    st.info("Escribe o pega aquí el texto de operaciones que llevará el PDF.")
 
-        if raw_text:
-            with st.expander("Vista previa del texto fuente detectado"):
-                st.text(clean_multiline_text(raw_text)[:20000])
+                report["operacion"] = st.text_area("Texto de operaciones", value=report.get("operacion", ""), height=520)
 
-    except Exception as exc:
-        st.exception(exc)
+            pdf_bytes = make_pdf(report)
 
-else:
-    st.info("Esperando archivo. También puedes usar el botón para capturar un reporte manualmente.")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.download_button("⬇️ Descargar PDF", data=pdf_bytes, file_name=output_name, mime="application/pdf", use_container_width=True)
+
+            with c2:
+                if st.button("📧 Enviar por email", type="primary", use_container_width=True):
+                    if not to_email:
+                        st.error("Completa el correo destino antes de enviar.")
+                    else:
+                        send_email_with_attachment(to_email, pdf_bytes, output_name, "application/pdf")
+                        st.success(f"PDF enviado correctamente a {to_email} con el archivo {output_name}")
+
+            if raw_text:
+                with st.expander("Vista previa del texto fuente detectado"):
+                    st.text(clean_multiline_text(raw_text)[:20000])
+
+        except Exception as exc:
+            st.exception(exc)
+
+    else:
+        st.info("Esperando archivo. También puedes usar el botón para capturar un reporte manualmente.")
+
+with tab_mud:
+    render_mud_report()
