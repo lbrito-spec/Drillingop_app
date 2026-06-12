@@ -306,26 +306,29 @@ MUD_EXPORT_HEADER_SPECS = [
     ("Time", "Time", "time"),
     ("DateTime", "DateTime", "YYYY-MM-DDTHH:MM:SS"),
     ("FL Temp", "FL Temp", "°C"),
-    ("Density @ °C", "D @ °C", "kg/m³"),
-    ("FV @ °C", "Fv @ °C", "s/qt"),
-    ("PV @ °C", "PV @ °C", "cP"),
+    ("D @ 54°C", "D @ 54°C", "kg/m³"),
+    ("D @ 45°C", "D @ 45°C", "kg/m³"),
+    ("D @ 44°C", "D @ 44°C", "kg/m³"),
+    ("Fv @ 54°C", "Fv @ 54°C", "s/qt"),
+    ("Fv @ 45°C", "Fv @ 45°C", "s/qt"),
+    ("Fv @ 44°C", "Fv @ 44°C", "s/qt"),
+    ("PV @ 65°C", "PV @ 65°C", "cP"),
     ("YP", "YP", "lb/100ft²"),
     ("Gel_10s", "GELS 10s", "lb/100ft²"),
     ("Gel_10min", "GELS 10min", "lb/100ft²"),
     ("Gel_30min", "GELS 30min", "lb/100ft²"),
     ("tau0", "tau0", "lb/100ft²"),
-    ("L600", "600", "600"),
-    ("L300", "300", "300"),
-    ("L200", "200", "200"),
-    ("L100", "100", "100"),
-    ("L6", "6", "6"),
-    ("L3", "3", "3"),
-    ("HTHP", "HTHP", "HTHP"),
-    ("HTHP @ °C", "°C", "°C"),
+    ("L600", "Lectura 600", "lb/100 ft2"),
+    ("L300", "Lectura 300", "lb/100 ft2"),
+    ("L200", "Lectura 200", "lb/100 ft2"),
+    ("L100", "Lectura 100", "lb/100 ft2"),
+    ("L6", "Lectura 6", "lb/100 ft2"),
+    ("L3", "Lectura 3", "lb/100 ft2"),
+    ("HTHP @ 149°C", "HTHP @ 149°C", "HTHP"),
     ("Corr Solid", "Corr Solid", "%"),
     ("NAP", "NAP", "%"),
     ("Water", "Water", "%"),
-    ("NAP Ratio", "NAP", "%"),
+    ("NAP 2", "NAP 2", "%"),
     ("Water Ratio", "Water Ratio", "%"),
     ("Sand", "Sand", "%"),
     ("Cake (HTHP)", "Cake (HTHP)", "32nd"),
@@ -333,20 +336,20 @@ MUD_EXPORT_HEADER_SPECS = [
     ("Calcium", "Calcium", "mg/L"),
     ("CaCl2", "CaCl2", "mg/L"),
     ("Water Phase Salinity", "Water Phase Salinity", "ppm"),
-    ("NaCL (Sol/Insol)", "NaCL (Sol/Insol)", "kg/m³"),
     ("Excess Lime", "Excess Lime", "kg/m³"),
     ("Electrical_Stability", "Elec. Stability", "V"),
     ("LGS (%)", "LGS", "%"),
     ("HGS (%)", "HGS", "%"),
-    ("LGS (kg/m³)", "LGS", "kg/m³"),
-    ("HGS (kg/m³)", "HGS", "kg/m³"),
+    ("LGS (kg/m³)", "LGS 2", "kg/m³"),
+    ("HGS (kg/m³)", "HGS 2", "kg/m³"),
     ("ASG", "ASG", "SG"),
     ("Additional Properties", "Additional Properties", "Properties"),
     ("n (HB)", "n (HB)", "dec"),
     ("K (HB)", "K (HB)", "lb*s^n'/100ft2"),
     ("Viscometer Sag Shoe Test", "Viscometer Sag Shoe Test", "lbm/gal"),
-    ("(VSST)", "(VSST)", ""),
 ]
+MUD_DENSITY_TEMP_COLS = {54: "D @ 54°C", 45: "D @ 45°C", 44: "D @ 44°C"}
+MUD_FV_TEMP_COLS = {54: "Fv @ 54°C", 45: "Fv @ 45°C", 44: "Fv @ 44°C"}
 
 
 def _normalize_mud_property_name(label: str) -> str | None:
@@ -554,6 +557,18 @@ def _mud_apply_daily_property(row_record: dict, label: str, unit: str, raw_value
         if nums:
             row_record["FL Temp"] = nums[0]
         return
+    if low.startswith("d @") or (low.startswith("density") and "@" in low):
+        temp_match = re.search(r"@\s*(\d+)", low)
+        if temp_match and nums:
+            row_record[f"D @ {temp_match.group(1)}°C"] = nums[0]
+        row_record["Density @ °C"] = _mud_pair_string(raw_value)
+        if nums:
+            row_record["Density"] = nums[0]
+        if len(nums) >= 2:
+            row_record["Density Temp"] = nums[1]
+        elif temp_match:
+            row_record["Density Temp"] = float(temp_match.group(1))
+        return
     if low.startswith("density"):
         row_record["Density @ °C"] = _mud_pair_string(raw_value)
         if nums:
@@ -562,15 +577,21 @@ def _mud_apply_daily_property(row_record: dict, label: str, unit: str, raw_value
             row_record["Density Temp"] = nums[1]
         return
     if low.startswith("fv @"):
+        temp_match = re.search(r"@\s*(\d+)", low)
+        if temp_match and nums:
+            row_record[f"Fv @ {temp_match.group(1)}°C"] = nums[0]
         if nums:
             row_record["FV"] = nums[0]
         if len(nums) >= 2:
             row_record["FV Temp"] = nums[1]
+        elif temp_match:
+            row_record["FV Temp"] = float(temp_match.group(1))
         row_record["FV @ °C"] = _mud_pair_string(raw_value)
         return
     if low.startswith("pv @"):
         if nums:
             row_record["PV"] = nums[0]
+            row_record["PV @ 65°C"] = nums[0]
         if len(nums) >= 2:
             row_record["PV Temp"] = nums[1]
         row_record["PV @ °C"] = _mud_pair_string(raw_value)
@@ -613,6 +634,7 @@ def _mud_apply_daily_property(row_record: dict, label: str, unit: str, raw_value
     if low.startswith("hthp"):
         if nums:
             row_record["HTHP"] = nums[0]
+            row_record["HTHP @ 149°C"] = nums[0]
         if len(nums) >= 2:
             row_record["HTHP @ °C"] = nums[1]
         return
@@ -623,6 +645,7 @@ def _mud_apply_daily_property(row_record: dict, label: str, unit: str, raw_value
     if low.startswith("nap / water ratio"):
         if len(nums) >= 1:
             row_record["NAP Ratio"] = nums[0]
+            row_record["NAP 2"] = nums[0]
         if len(nums) >= 2:
             row_record["Water Ratio"] = nums[1]
         return
@@ -1146,6 +1169,74 @@ def _mud_numeric_property_columns(bitacora: pd.DataFrame) -> list[str]:
     return cols
 
 
+def _mud_temp_column(value, temp, temp_map: dict[int, str], view: pd.DataFrame, idx) -> str | None:
+    """Devuelve la columna de temperatura donde debe ir el valor."""
+    num = _extract_numeric(value)
+    if num is None:
+        return None
+    temp_num = _extract_numeric(temp)
+    if temp_num is not None:
+        col = temp_map.get(int(round(temp_num)))
+        if col:
+            return col
+    for col in temp_map.values():
+        if col not in view.columns or pd.isna(view.at[idx, col]):
+            return col
+    return None
+
+
+def _mud_spread_temp_columns(view: pd.DataFrame) -> pd.DataFrame:
+    """Distribuye densidad, FV y PV en columnas por temperatura (formato parser)."""
+    for col in list(MUD_DENSITY_TEMP_COLS.values()) + list(MUD_FV_TEMP_COLS.values()) + ["PV @ 65°C", "HTHP @ 149°C", "NAP 2"]:
+        if col not in view.columns:
+            view[col] = np.nan
+
+    for idx, row in view.iterrows():
+        density_val = row.get("Density")
+        density_temp = row.get("Density Temp")
+        density_pair = row.get("Density @ °C")
+        if pd.isna(density_val) and density_pair:
+            nums = _extract_all_numbers(density_pair)
+            if nums:
+                density_val = nums[0]
+            if len(nums) >= 2:
+                density_temp = nums[1]
+        has_density_col = any(pd.notna(row.get(c)) for c in MUD_DENSITY_TEMP_COLS.values())
+        if not has_density_col:
+            d_col = _mud_temp_column(density_val, density_temp, MUD_DENSITY_TEMP_COLS, view, idx)
+            if d_col:
+                view.at[idx, d_col] = _extract_numeric(density_val)
+
+        fv_val = row.get("FV")
+        fv_temp = row.get("FV Temp")
+        fv_pair = row.get("FV @ °C")
+        if pd.isna(fv_val) and fv_pair:
+            nums = _extract_all_numbers(fv_pair)
+            if nums:
+                fv_val = nums[0]
+            if len(nums) >= 2:
+                fv_temp = nums[1]
+        has_fv_col = any(pd.notna(row.get(c)) for c in MUD_FV_TEMP_COLS.values())
+        if not has_fv_col:
+            fv_col = _mud_temp_column(fv_val, fv_temp, MUD_FV_TEMP_COLS, view, idx)
+            if fv_col:
+                view.at[idx, fv_col] = _extract_numeric(fv_val)
+
+        pv_val = row.get("PV")
+        if pd.notna(pv_val):
+            view.at[idx, "PV @ 65°C"] = pv_val
+
+        hthp_val = row.get("HTHP")
+        if pd.notna(hthp_val):
+            view.at[idx, "HTHP @ 149°C"] = hthp_val
+
+        nap_ratio = row.get("NAP Ratio")
+        if pd.notna(nap_ratio):
+            view.at[idx, "NAP 2"] = nap_ratio
+
+    return view
+
+
 def _mud_build_view_df(bitacora: pd.DataFrame) -> pd.DataFrame:
     if bitacora is None or bitacora.empty:
         return pd.DataFrame()
@@ -1159,23 +1250,17 @@ def _mud_build_view_df(bitacora: pd.DataFrame) -> pd.DataFrame:
             view.loc[mask, "DateTime"] = dt_series.loc[mask].dt.strftime("%Y-%m-%dT%H:%M:%S")
     if "Time" not in view.columns and "Date" in view.columns:
         view["Time"] = pd.to_datetime(view["Date"], errors="coerce").dt.strftime("%H:%M")
-    if "FV @ °C" not in view.columns and "FV" in view.columns:
-        if "FV Temp" in view.columns:
-            view["FV @ °C"] = view.apply(lambda r: f"{_mud_num_to_text(r['FV'])} @ {_mud_num_to_text(r['FV Temp'])}" if pd.notna(r.get("FV")) and pd.notna(r.get("FV Temp")) else (_mud_num_to_text(r['FV']) if pd.notna(r.get("FV")) else ""), axis=1)
-        else:
-            view["FV @ °C"] = view["FV"].map(_mud_num_to_text)
-    if "PV @ °C" not in view.columns and "PV" in view.columns:
-        if "PV Temp" in view.columns:
-            view["PV @ °C"] = view.apply(lambda r: f"{_mud_num_to_text(r['PV'])} @ {_mud_num_to_text(r['PV Temp'])}" if pd.notna(r.get("PV")) and pd.notna(r.get("PV Temp")) else (_mud_num_to_text(r['PV']) if pd.notna(r.get("PV")) else ""), axis=1)
-        else:
-            view["PV @ °C"] = view["PV"].map(_mud_num_to_text)
     if "Properties" not in view.columns:
         view["Properties"] = np.arange(1, len(view) + 1)
     if "Additional Properties" not in view.columns:
         view["Additional Properties"] = view["Properties"]
-    export_cols = [c for c, _, _ in MUD_EXPORT_HEADER_SPECS if c in view.columns]
+    view = _mud_spread_temp_columns(view)
+    export_cols = [c for c, _, _ in MUD_EXPORT_HEADER_SPECS]
     for c in export_cols:
-        if c in ("DateTime", "Time"):
+        if c not in view.columns:
+            view[c] = np.nan
+    for c in export_cols:
+        if c in ("DateTime", "Time", "Fluid set", "Source"):
             view[c] = view[c].fillna("")
     return view[export_cols]
 
@@ -1187,33 +1272,26 @@ def _export_mud_bitacora_excel(view_df: pd.DataFrame) -> bytes:
 
     wb = Workbook()
     ws = wb.active
-    ws.title = "Table 1.1"
+    ws.title = "Mud Bitacora Parser"
 
-    headers = [(c, h1, h2) for c, h1, h2 in MUD_EXPORT_HEADER_SPECS if c in view_df.columns]
+    headers = list(MUD_EXPORT_HEADER_SPECS)
     last_col = len(headers)
-    if last_col == 0:
-        buf = io.BytesIO()
-        wb.save(buf)
-        buf.seek(0)
-        return buf.getvalue()
 
-    title_date = ""
-    if "Date" in view_df.columns:
-        dt0 = pd.to_datetime(view_df["Date"], errors="coerce")
-        if hasattr(dt0, "notna") and dt0.notna().any():
-            title_date = dt0.dropna().min().strftime("%Y-%m-%d")
-    elif "DateTime" in view_df.columns:
-        dt0 = pd.to_datetime(view_df["DateTime"], errors="coerce")
-        if hasattr(dt0, "notna") and dt0.notna().any():
-            title_date = dt0.dropna().min().strftime("%Y-%m-%d")
+    title_date = _mud_bitacora_title_date(view_df)
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
-    ws.cell(1, 1).value = f"Daily Fluid Properties Daily Report\nReport: {title_date}" if title_date else "Daily Fluid Properties Daily Report"
-    ws.cell(1, 1).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    ws.cell(1, 1).font = Font(size=14, bold=True)
-    ws.row_dimensions[1].height = 34
+    title_cell = ws.cell(1, 1)
+    title_cell.value = (
+        f"Daily Fluid Properties Daily Report Report: {title_date}"
+        if title_date
+        else "Daily Fluid Properties Daily Report"
+    )
+    title_cell.alignment = Alignment(horizontal="left", vertical="center")
+    title_cell.font = Font(bold=True)
+    title_cell.fill = PatternFill("solid", fgColor="F2F2F2")
+    ws.row_dimensions[1].height = 30
 
-    fill_header = PatternFill("solid", fgColor="D9D9D9")
-    fill_sub = PatternFill("solid", fgColor="EDEDED")
+    fill_header = PatternFill("solid", fgColor="BFBFBF")
+    fill_sub = PatternFill("solid", fgColor="E6E6E6")
     thin_gray = Side(style="thin", color="BFBFBF")
     border = Border(top=thin_gray, bottom=thin_gray)
 
@@ -1228,16 +1306,20 @@ def _export_mud_bitacora_excel(view_df: pd.DataFrame) -> bytes:
         c3.fill = fill_sub
 
     widths = {
-        "Depth (MD)": 11, "Depth (TVD)": 11, "Properties": 10, "Fluid set": 16, "Source": 14,
-        "Time": 10, "DateTime": 22, "FL Temp": 10, "Density @ °C": 14,
-        "FV @ °C": 12, "PV @ °C": 12, "YP": 10, "Gel_10s": 10, "Gel_10min": 11,
-        "Gel_30min": 11, "tau0": 10, "L600": 9, "L300": 9, "L200": 9, "L100": 9, "L6": 9, "L3": 9,
-        "HTHP": 10, "HTHP @ °C": 9, "Corr Solid": 11, "NAP": 9, "Water": 9, "NAP Ratio": 10,
-        "Water Ratio": 12, "Sand": 9, "Cake (HTHP)": 12, "Chlorides": 12, "Calcium": 12,
-        "CaCl2": 11, "Water Phase Salinity": 16, "NaCL (Sol/Insol)": 16, "Excess Lime": 12,
-        "Electrical_Stability": 13, "LGS (%)": 10, "HGS (%)": 10, "LGS (kg/m³)": 12, "HGS (kg/m³)": 12,
-        "ASG": 9, "Additional Properties": 16, "n (HB)": 12, "K (HB)": 12,
-        "Viscometer Sag Shoe Test": 20, "(VSST)": 10,
+        "Depth (MD)": 13.71, "Depth (TVD)": 14.71, "Properties": 13.71, "Fluid set": 12.71,
+        "Source": 10.71, "Time": 13.0, "DateTime": 20.71, "FL Temp": 10.71,
+        "D @ 54°C": 11.71, "D @ 45°C": 13.0, "D @ 44°C": 13.0,
+        "Fv @ 54°C": 12.71, "Fv @ 45°C": 13.0, "Fv @ 44°C": 13.0,
+        "PV @ 65°C": 13.0, "YP": 10.71, "Gel_10s": 11.71, "Gel_10min": 13.71,
+        "Gel_30min": 13.0, "tau0": 10.71, "L600": 14.71, "L300": 13.0, "L200": 13.0,
+        "L100": 13.0, "L6": 12.71, "L3": 13.0, "HTHP @ 149°C": 15.71,
+        "Corr Solid": 13.71, "NAP": 10.71, "Water": 13.0, "NAP 2": 13.0,
+        "Water Ratio": 14.71, "Sand": 10.71, "Cake (HTHP)": 14.71, "Chlorides": 12.71,
+        "Calcium": 10.71, "CaCl2": 13.0, "Water Phase Salinity": 22.71, "Excess Lime": 14.71,
+        "Electrical_Stability": 18.71, "LGS (%)": 10.71, "HGS (%)": 13.0,
+        "LGS (kg/m³)": 13.0, "HGS (kg/m³)": 13.0, "ASG": 13.0,
+        "Additional Properties": 22.71, "n (HB)": 10.71, "K (HB)": 13.0,
+        "Viscometer Sag Shoe Test": 22.71,
     }
     num_format = "0.00"
     int_format = "0"
@@ -1265,6 +1347,152 @@ def _export_mud_bitacora_excel(view_df: pd.DataFrame) -> bytes:
     wb.save(buf)
     buf.seek(0)
     return buf.getvalue()
+
+
+def _mud_pdf_escape(text) -> str:
+    s = _mud_clean_cell_text(text)
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _mud_bitacora_title_date(view_df: pd.DataFrame) -> str:
+    if "Date" in view_df.columns:
+        dt0 = pd.to_datetime(view_df["Date"], errors="coerce")
+        if hasattr(dt0, "notna") and dt0.notna().any():
+            return dt0.dropna().min().strftime("%Y-%m-%d")
+    if "DateTime" in view_df.columns:
+        dt0 = pd.to_datetime(view_df["DateTime"], errors="coerce")
+        if hasattr(dt0, "notna") and dt0.notna().any():
+            return dt0.dropna().min().strftime("%Y-%m-%d")
+    return ""
+
+
+def _mud_pdf_format_cell(val) -> str:
+    if val is None or (isinstance(val, float) and (pd.isna(val) or not np.isfinite(val))):
+        return ""
+    if isinstance(val, (int, np.integer)):
+        return str(int(val))
+    if isinstance(val, (float, np.floating)):
+        return _mud_num_to_text(val)
+    return _mud_clean_cell_text(val)
+
+
+def _export_mud_bitacora_pdf(view_df: pd.DataFrame) -> bytes:
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    headers = list(MUD_EXPORT_HEADER_SPECS)
+    if view_df is None or view_df.empty:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
+        doc.build([Paragraph("Sin datos para exportar.", getSampleStyleSheet()["Normal"])])
+        return buffer.getvalue()
+
+    title_date = _mud_bitacora_title_date(view_df)
+    title_text = (
+        f"Daily Fluid Properties Daily Report — {title_date}"
+        if title_date
+        else "Daily Fluid Properties Daily Report"
+    )
+
+    buffer = io.BytesIO()
+    page_size = landscape(letter)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=page_size,
+        rightMargin=6 * mm,
+        leftMargin=6 * mm,
+        topMargin=8 * mm,
+        bottomMargin=8 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "mud_pdf_title",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        alignment=TA_CENTER,
+        leading=13,
+    )
+    hdr_style = ParagraphStyle(
+        "mud_pdf_hdr",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=5,
+        alignment=TA_CENTER,
+        leading=6,
+    )
+    cell_style = ParagraphStyle(
+        "mud_pdf_cell",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=4.5,
+        alignment=TA_CENTER,
+        leading=5,
+    )
+
+    green = colors.HexColor("#68cbb3")
+    border = colors.HexColor("#222222")
+    hdr_bg = colors.HexColor("#D9D9D9")
+    sub_bg = colors.HexColor("#EDEDED")
+
+    story = []
+    title_tbl = Table([[Paragraph(_mud_pdf_escape(title_text), title_style)]], colWidths=[page_size[0] - 12 * mm])
+    title_tbl.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, border),
+        ("BACKGROUND", (0, 0), (-1, -1), green),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(title_tbl)
+    story.append(Spacer(1, 4))
+
+    chunk_size = 14
+    for chunk_idx in range(0, len(headers), chunk_size):
+        chunk = headers[chunk_idx : chunk_idx + chunk_size]
+        if chunk_idx > 0:
+            story.append(Spacer(1, 8))
+            cont = Table(
+                [[Paragraph(f"<i>Continuación — columnas {chunk_idx + 1}–{chunk_idx + len(chunk)}</i>", hdr_style)]],
+                colWidths=[page_size[0] - 12 * mm],
+            )
+            cont.setStyle(TableStyle([
+                ("GRID", (0, 0), (-1, -1), 0.35, border),
+                ("BACKGROUND", (0, 0), (-1, -1), sub_bg),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            story.append(cont)
+            story.append(Spacer(1, 4))
+
+        col_w = (page_size[0] - 12 * mm) / max(len(chunk), 1)
+        row_h1 = [Paragraph(_mud_pdf_escape(h1), hdr_style) for _, h1, _ in chunk]
+        row_h2 = [Paragraph(_mud_pdf_escape(h2), hdr_style) for _, _, h2 in chunk]
+        data_rows = [row_h1, row_h2]
+        for _, row in view_df.iterrows():
+            data_rows.append([
+                Paragraph(_mud_pdf_escape(_mud_pdf_format_cell(row.get(col_name))), cell_style)
+                for col_name, _, _ in chunk
+            ])
+
+        tbl = Table(data_rows, colWidths=[col_w] * len(chunk), repeatRows=2)
+        tbl.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.25, border),
+            ("BACKGROUND", (0, 0), (-1, 0), hdr_bg),
+            ("BACKGROUND", (0, 1), (-1, 1), sub_bg),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+        ]))
+        story.append(tbl)
+
+    doc.build(story)
+    return buffer.getvalue()
 
 
 def _send_mud_bitacora_email(
@@ -1541,23 +1769,27 @@ def render_mud_report() -> None:
         bitacora_view.to_csv(buf_csv, index=False, encoding="utf-8-sig")
         buf_csv.seek(0)
         xlsx_bytes = _export_mud_bitacora_excel(bitacora_view)
+        pdf_bytes = _export_mud_bitacora_pdf(bitacora_view)
 
         default_base = _default_mud_bitacora_basename(bitacora)
         st.markdown("### 📎 Nombre del archivo de salida")
         output_base = st.text_input(
-            "Nombre base para CSV, Excel y adjunto de correo:",
+            "Nombre base para CSV, Excel, PDF y adjunto de correo:",
             value=default_base,
             key="mud_output_basename",
-            help="Puedes editarlo antes de descargar o enviar. Se añade .csv o .xlsx según el formato.",
+            help="Puedes editarlo antes de descargar o enviar. Se añade .csv, .xlsx o .pdf según el formato.",
         )
         output_base = _sanitize_filename(
-            output_base.replace(".csv", "").replace(".xlsx", "").replace(".xls", "")
+            output_base.replace(".csv", "").replace(".xlsx", "").replace(".xls", "").replace(".pdf", "")
         )
         csv_name = f"{output_base}.csv"
         xlsx_name = f"{output_base}.xlsx"
-        st.caption(f"Descarga: **{csv_name}** · **{xlsx_name}** · Correo adjunta: **{xlsx_name}**")
+        pdf_name = f"{output_base}.pdf"
+        st.caption(
+            f"Descarga: **{csv_name}** · **{xlsx_name}** · **{pdf_name}** · Correo adjunta: **{xlsx_name}**"
+        )
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.download_button(
                 "Exportar bitácora (CSV)",
@@ -1575,6 +1807,14 @@ def render_mud_report() -> None:
                 key="mud_export_xlsx",
             )
         with col3:
+            st.download_button(
+                "Exportar bitácora (PDF)",
+                data=pdf_bytes,
+                file_name=pdf_name,
+                mime="application/pdf",
+                key="mud_export_pdf",
+            )
+        with col4:
             if st.button("Enviar bitácora por correo", key="mud_send_email_btn", type="secondary"):
                 date_label = ""
                 try:
