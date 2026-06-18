@@ -4,11 +4,17 @@ import re
 import smtplib
 import imaplib
 import email
+import sys
 from email.header import decode_header
 from dataclasses import dataclass
 from datetime import datetime
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+_APP_DIR = Path(__file__).resolve().parent
+if str(_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(_APP_DIR))
 
 import pandas as pd
 import streamlit as st
@@ -771,6 +777,7 @@ def parse_baker_daily_activity(text: str) -> List[Activity]:
     return normalize_activity_sequence(activities)
 
 
+
 def clean_weatherford_activity_text(body: str) -> str:
     """Limpia basura OCR frecuente al final de las boletas Weatherford/Pemex."""
     body = clean_text(body)
@@ -932,6 +939,8 @@ def build_operation_text(activities: List[Activity], fallback_text: str) -> str:
                 r"\bOPERACIÓN\b",
                 r"Operational Summary",
                 r"Daily Activity Summary",
+                r"Tiempos de Operaci[oó]n",
+                r"Boleta de Campo",
             ],
             stop_markers=[
                 r"\n\s*% Solubilidad\b",
@@ -1025,6 +1034,7 @@ def improve_weatherford_fields(report: Dict[str, str], blob: str, uploaded_name:
     if contrato:
         report["folio"] = contrato
 
+    # Profundidad más confiable en estas boletas: Profundidad Total 24 hrs (m).
     m = re.search(r"Profundidad\s+Total\s+24\s*hrs\s*\(m\)\s*[:\-]?\s*(\d{3,5})", blob, re.IGNORECASE)
     if m:
         report["profundidad"] = m.group(1)
@@ -1037,7 +1047,6 @@ def improve_weatherford_fields(report: Dict[str, str], blob: str, uploaded_name:
         report["compania"] = "WEATHERFORD DE MEXICO S. DE R.L. DE C.V."
 
     return report
-
 
 def extract_report(raw_text: str, uploaded_name: str = "", email_body: Optional[str] = None) -> Dict[str, str]:
     blob = clean_multiline_text(raw_text)
