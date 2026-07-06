@@ -2,6 +2,7 @@
 import io
 import os
 import re
+import textwrap
 import time
 import smtplib
 from datetime import datetime
@@ -348,8 +349,6 @@ MUD_EXPORT_HEADER_SPECS = [
     ("K (HB)", "K (HB)", "lb*s^n'/100ft2"),
     ("Viscometer Sag Shoe Test", "Viscometer Sag Shoe Test", "lbm/gal"),
 ]
-MUD_DENSITY_TEMP_COLS = {54: "D @ 54°C", 45: "D @ 45°C", 44: "D @ 44°C"}
-MUD_FV_TEMP_COLS = {54: "Fv @ 54°C", 45: "Fv @ 45°C", 44: "Fv @ 44°C"}
 
 
 def _normalize_mud_property_name(label: str) -> str | None:
@@ -1009,6 +1008,237 @@ def _parse_mud_csv(df_raw: pd.DataFrame, source_name: str = "") -> list[dict]:
     return _parse_mud_excel_sheet(df_raw, source_name)
 
 
+# Frontera entre la columna de etiqueta y la columna de unidad en el layout
+# WellSight "Reporte Diario de Propiedades del Fluido" (unidad siempre ~x=152).
+_PDF_DAILY_LABEL_MAX_X = 145.0
+
+
+def _pdf_index_row_centers(page) -> tuple[list[float], float | None]:
+    """
+    Ubica la primera fila de índices 1..N bajo 'Propiedades'/'Properties' (o
+    'Propiedades Adicionales') y devuelve (centros x de cada columna, top de esa fila).
+    El top permite descartar el texto de título por encima de la tabla (nombre de
+    pozo/operador/software), que de otro modo se leería como una fila de propiedad.
+    """
+    words = page.extract_words()
+    rows: dict = {}
+    for w in words:
+        rows.setdefault(round(w["top"], 1), []).append(w)
+    for top in sorted(rows):
+        ws = sorted(rows[top], key=lambda w: w["x0"])
+        digit_words = [w for w in ws if re.fullmatch(r"\d", w["text"])]
+        if len(digit_words) >= 2:
+            texts = [w["text"] for w in digit_words]
+            if texts == [str(i + 1) for i in range(len(texts))]:
+                return [(w["x0"] + w["x1"]) / 2 for w in digit_words], top
+    return [], None
+
+
+def _pdf_group_chars_into_rows(page, y_tolerance: float = 3.0) -> list[list[dict]]:
+    """Agrupa los caracteres del PDF en líneas según su posición vertical."""
+    chars = sorted(page.chars, key=lambda c: c["top"])
+    rows: list[list[dict]] = []
+    for c in chars:
+        if rows and abs(c["top"] - rows[-1][0]["top"]) <= y_tolerance:
+            rows[-1].append(c)
+        else:
+            rows.append([c])
+    for r in rows:
+        r.sort(key=lambda c: c["x0"])
+    return rows
+
+
+def _split_row_chars_into_runs(chars: list[dict], big_gap: float = 10.0) -> list[list[dict]]:
+    """
+    Agrupa caracteres consecutivos (ordenados por x0) en 'runs' que representan un
+    único valor de columna. Corta en un espacio real entre columnas (hueco > big_gap)
+    y también cuando WellSight pega dos valores sin separador: ahí el siguiente número
+    arranca con un x0 ligeramente MENOR al x1 del carácter anterior (solape de ~2px por
+    cómo esa plantilla ajusta números demasiado anchos para la celda).
+    """
+    chars_sorted = sorted(chars, key=lambda c: c["x0"])
+    runs: list[list[dict]] = []
+    max_x1 = None
+    for c in chars_sorted:
+        gap = None if max_x1 is None else c["x0"] - max_x1
+        if gap is None or gap < -0.5 or gap > big_gap:
+            runs.append([c])
+        else:
+            runs[-1].append(c)
+        max_x1 = c["x1"] if max_x1 is None else max(max_x1, c["x1"])
+
+    # El mismo solape que separa columnas pegadas a veces dispara dos cortes seguidos
+    # (deja un fragmento suelto de 1-2 caracteres pegado, sin espacio real, al run
+    # siguiente). Ese fragmento es el dígito inicial del número que sigue y se
+    # re-adjunta a él. No aplica si el hueco hacia el run siguiente es un espacio de
+    # columna real (varias decenas de px): ahí un valor corto de 2 caracteres (p.ej.
+    # "18") es un valor de columna legítimo, no un fragmento espurio.
+    merged: list[list[dict]] = []
+    i = 0
+    while i < len(runs):
+        run = runs[i]
+        stripped_len = len("".join(c["text"] for c in run).strip())
+        gap_to_next = runs[i + 1][0]["x0"] - max(c["x1"] for c in run) if i + 1 < len(runs) else None
+        if 0 < stripped_len <= 2 and gap_to_next is not None and gap_to_next < 3:
+            runs[i + 1] = run + runs[i + 1]
+            i += 1
+            continue
+        merged.append(run)
+        i += 1
+    return merged
+
+
+def _bucket_chars_by_column(chars: list[dict], centers: list[float]) -> list[str]:
+    """
+    Reconstruye el texto de cada columna de muestra a partir de caracteres del PDF.
+    Primero agrupa los caracteres en 'runs' contiguos (un run = un valor de columna,
+    con sus espacios internos conservados, p.ej. "85.71 / 14.29"), y luego asigna cada
+    run a la columna cuyo centro esté más cerca. Asignar por centroide de todo el run
+    (en vez de carácter por carácter) tolera el pequeño desalineamiento que WellSight
+    introduce cuando un número ocupa casi todo el ancho de la celda.
+    """
+    if not centers:
+        return []
+    values = ["" for _ in centers]
+    for run in _split_row_chars_into_runs(chars):
+        text = "".join(c["text"] for c in run).strip()
+        if not text:
+            continue
+        run_center = (min(c["x0"] for c in run) + max(c["x1"] for c in run)) / 2
+        idx = min(range(len(centers)), key=lambda i: abs(centers[i] - run_center))
+        values[idx] = f"{values[idx]} {text}".strip() if values[idx] else text
+    return values
+
+
+def _parse_mud_pdf_daily_report_grid(pdf, source_name: str = "") -> list[dict]:
+    """
+    Parser posicional para el layout WellSight 'Fluidos de Perforación - Reporte
+    Diario de Propiedades del Fluido' / 'Daily Fluid Properties Daily Report'.
+    Reconstruye la grilla (etiqueta, unidad, valor por muestra) a partir de las
+    coordenadas del texto del PDF y reutiliza _mud_apply_daily_property para que
+    la bitácora salga idéntica a la que genera _parse_mud_daily_report_sheet con Excel.
+    """
+    full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    if not re.search(
+        r"reporte\s+diario\s+de\s+propiedades\s+del\s+fluido|daily\s+fluid\s+properties",
+        full_text,
+        re.IGNORECASE,
+    ):
+        return []
+
+    report_date = _extract_date_from_text(full_text) or _date_from_filename_or_today(source_name)
+    records: list[dict] | None = None
+    col_centers: list[float] = []
+    label_buffer = ""
+
+    for page in pdf.pages:
+        centers, header_top = _pdf_index_row_centers(page)
+        if centers:
+            col_centers = centers
+        if not col_centers:
+            continue
+        page_header_top = header_top if header_top is not None else -1.0
+
+        unit_boundary = col_centers[0] - (col_centers[1] - col_centers[0]) / 2 if len(col_centers) > 1 else col_centers[0] - 40
+
+        for row_chars in _pdf_group_chars_into_rows(page):
+            # Descarta texto por encima de la tabla (título con nombre de pozo/operador/software):
+            # de otro modo se leería como una fila de propiedad y contaminaría la bitácora.
+            if row_chars[0]["top"] < page_header_top:
+                continue
+
+            label_part = "".join(c["text"] for c in row_chars if c["x0"] < _PDF_DAILY_LABEL_MAX_X).strip()
+            if not label_part and not label_buffer:
+                continue
+            if re.match(r"^(creado|created)\b", label_part, re.IGNORECASE):
+                label_buffer = ""
+                continue
+
+            rest_chars = [c for c in row_chars if c["x0"] >= _PDF_DAILY_LABEL_MAX_X]
+            unit_chars = [c for c in rest_chars if c["x0"] < unit_boundary]
+            value_chars = [c for c in rest_chars if c["x0"] >= unit_boundary]
+            unit = "".join(c["text"] for c in unit_chars).strip()
+
+            label = f"{label_buffer} {label_part}".strip() if label_buffer else label_part
+            low_label = label.lower()
+
+            # Fila de índices (Propiedades / Propiedades Adicionales): ya usada para centrar columnas.
+            rest_text = "".join(c["text"] for c in rest_chars).strip()
+            if re.match(r"^(propiedades|properties)\b", low_label) and re.fullmatch(r"[\d\s]*", rest_text or ""):
+                label_buffer = ""
+                continue
+
+            has_content = bool(unit) or any(c["text"].strip() for c in value_chars)
+            if not has_content:
+                # Un fragmento entre paréntesis (p.ej. "(VSST)") es un sufijo final de la
+                # etiqueta de ARRIBA, no el inicio de la etiqueta de la fila siguiente:
+                # se descarta en vez de encolarlo como prefijo.
+                label_buffer = "" if label_part.startswith("(") else label
+                continue
+            label_buffer = ""
+
+            if low_label in ("set de fluido", "fluid set"):
+                values = _bucket_chars_by_column(value_chars, col_centers)
+                n_active = sum(1 for v in values if v)
+                if n_active:
+                    records = [
+                        {"Date": report_date, "Properties": j + 1, "Additional Properties": j + 1, "Fluid set": values[j], "Source": "", "Time": ""}
+                        for j in range(n_active)
+                    ]
+                continue
+
+            if records is None and low_label in ("tiempo", "time"):
+                values = _bucket_chars_by_column(value_chars, col_centers)
+                n_active = sum(1 for v in values if v)
+                if not n_active:
+                    continue
+                records = [
+                    {"Date": report_date, "Properties": j + 1, "Additional Properties": j + 1, "Fluid set": "", "Source": ""}
+                    for j in range(n_active)
+                ]
+
+            if records is None:
+                continue
+
+            n_active = len(records)
+            values = _bucket_chars_by_column(value_chars, col_centers[:n_active])
+
+            if low_label in ("origen", "source"):
+                for j in range(min(n_active, len(values))):
+                    if values[j]:
+                        records[j]["Source"] = values[j]
+                continue
+
+            if low_label in ("tiempo", "time"):
+                for j in range(min(n_active, len(values))):
+                    time_txt = values[j]
+                    if not time_txt:
+                        continue
+                    records[j]["Time"] = time_txt
+                    ts = _mud_compose_datetime(report_date, time_txt)
+                    records[j]["Date"] = ts if ts is not None else report_date
+                    records[j]["DateTime"] = _mud_isoformat_no_tz(ts if ts is not None else report_date)
+                continue
+
+            for j in range(min(n_active, len(values))):
+                raw_value = values[j]
+                if not raw_value:
+                    continue
+                _mud_apply_daily_property(records[j], label, unit, raw_value)
+
+    if not records:
+        return []
+
+    if not records[0].get("Source"):
+        records[0]["Source"] = source_name
+
+    return [
+        r
+        for r in records
+        if any(k not in MUD_METADATA_COLUMNS and pd.notna(v) and _mud_clean_cell_text(v) not in ("", "/") for k, v in r.items())
+    ]
+
+
 def _parse_mud_pdf(file, source_name: str = "") -> list[dict]:
     """Extrae tablas/texto de PDF y parsea propiedades conocidas."""
     out: list[dict] = []
@@ -1020,6 +1250,10 @@ def _parse_mud_pdf(file, source_name: str = "") -> list[dict]:
     row_record: dict = {"Date": _date_from_filename_or_today(name), "Source": name}
     try:
         with pdfplumber.open(file) as pdf:
+            grid_rows = _parse_mud_pdf_daily_report_grid(pdf, name)
+            if grid_rows:
+                return grid_rows
+
             full_text_parts = []
             for page in pdf.pages:
                 page_text = page.extract_text() or ""
@@ -1169,59 +1403,60 @@ def _mud_numeric_property_columns(bitacora: pd.DataFrame) -> list[str]:
     return cols
 
 
-def _mud_temp_column(value, temp, temp_map: dict[int, str], view: pd.DataFrame, idx) -> str | None:
-    """Devuelve la columna de temperatura donde debe ir el valor."""
-    num = _extract_numeric(value)
-    if num is None:
-        return None
-    temp_num = _extract_numeric(temp)
-    if temp_num is not None:
-        col = temp_map.get(int(round(temp_num)))
-        if col:
-            return col
-    for col in temp_map.values():
-        if col not in view.columns or pd.isna(view.at[idx, col]):
-            return col
-    return None
+def _mud_effective_value_temp(row, value_col: str, temp_col: str, pair_col: str):
+    """Valor y temperatura efectivos de una fila, recurriendo al par 'valor @ temp' si falta el numérico."""
+    val = row.get(value_col)
+    temp = row.get(temp_col)
+    if pd.isna(val) and pd.notna(row.get(pair_col)):
+        nums = _extract_all_numbers(row.get(pair_col))
+        if nums:
+            val = nums[0]
+        if len(nums) >= 2:
+            temp = nums[1]
+    return val, temp
 
 
-def _mud_spread_temp_columns(view: pd.DataFrame) -> pd.DataFrame:
-    """Distribuye densidad, FV y PV en columnas por temperatura (formato parser)."""
-    for col in list(MUD_DENSITY_TEMP_COLS.values()) + list(MUD_FV_TEMP_COLS.values()) + ["PV @ 65°C", "HTHP @ 149°C", "NAP 2"]:
+def _mud_dynamic_temp_spread(view: pd.DataFrame, value_col: str, temp_col: str, pair_col: str, label_prefix: str, max_cols: int = 8) -> list[str]:
+    """
+    Reparte cada fila en una columna '{label_prefix} @ {temp}°C' según SU temperatura
+    real medida (no fuerza a 54/45/44°C, que solo aplican cuando el reporte mide justo
+    a esas tres). El orden de las columnas es el de aparición en la bitácora, así que
+    para un reporte que sí mide a 54/45/44°C el resultado es idéntico al de antes.
+    """
+    col_by_temp: dict[float, str] = {}
+    for _, row in view.iterrows():
+        val, temp = _mud_effective_value_temp(row, value_col, temp_col, pair_col)
+        if pd.isna(val) or pd.isna(temp):
+            continue
+        key = round(float(temp), 1)
+        if key not in col_by_temp and len(col_by_temp) < max_cols:
+            col_by_temp[key] = f"{label_prefix} @ {_mud_num_to_text(key)}°C"
+
+    for col in col_by_temp.values():
         if col not in view.columns:
             view[col] = np.nan
 
     for idx, row in view.iterrows():
-        density_val = row.get("Density")
-        density_temp = row.get("Density Temp")
-        density_pair = row.get("Density @ °C")
-        if pd.isna(density_val) and density_pair:
-            nums = _extract_all_numbers(density_pair)
-            if nums:
-                density_val = nums[0]
-            if len(nums) >= 2:
-                density_temp = nums[1]
-        has_density_col = any(pd.notna(row.get(c)) for c in MUD_DENSITY_TEMP_COLS.values())
-        if not has_density_col:
-            d_col = _mud_temp_column(density_val, density_temp, MUD_DENSITY_TEMP_COLS, view, idx)
-            if d_col:
-                view.at[idx, d_col] = _extract_numeric(density_val)
+        val, temp = _mud_effective_value_temp(row, value_col, temp_col, pair_col)
+        if pd.isna(val) or pd.isna(temp):
+            continue
+        col = col_by_temp.get(round(float(temp), 1))
+        if col:
+            view.at[idx, col] = _extract_numeric(val)
 
-        fv_val = row.get("FV")
-        fv_temp = row.get("FV Temp")
-        fv_pair = row.get("FV @ °C")
-        if pd.isna(fv_val) and fv_pair:
-            nums = _extract_all_numbers(fv_pair)
-            if nums:
-                fv_val = nums[0]
-            if len(nums) >= 2:
-                fv_temp = nums[1]
-        has_fv_col = any(pd.notna(row.get(c)) for c in MUD_FV_TEMP_COLS.values())
-        if not has_fv_col:
-            fv_col = _mud_temp_column(fv_val, fv_temp, MUD_FV_TEMP_COLS, view, idx)
-            if fv_col:
-                view.at[idx, fv_col] = _extract_numeric(fv_val)
+    return list(col_by_temp.values())
 
+
+def _mud_spread_temp_columns(view: pd.DataFrame) -> pd.DataFrame:
+    """Distribuye densidad y FV según la temperatura real de cada muestra, y PV/HTHP en sus columnas fijas (siempre 65°C/149°C por procedimiento)."""
+    _mud_dynamic_temp_spread(view, "Density", "Density Temp", "Density @ °C", "D")
+    _mud_dynamic_temp_spread(view, "FV", "FV Temp", "FV @ °C", "Fv")
+
+    for col in ["PV @ 65°C", "HTHP @ 149°C", "NAP 2"]:
+        if col not in view.columns:
+            view[col] = np.nan
+
+    for idx, row in view.iterrows():
         pv_val = row.get("PV")
         if pd.notna(pv_val):
             view.at[idx, "PV @ 65°C"] = pv_val
@@ -1235,6 +1470,37 @@ def _mud_spread_temp_columns(view: pd.DataFrame) -> pd.DataFrame:
             view.at[idx, "NAP 2"] = nap_ratio
 
     return view
+
+
+_MUD_FIXED_DENSITY_COLS = {"D @ 54°C", "D @ 45°C", "D @ 44°C"}
+_MUD_FIXED_FV_COLS = {"Fv @ 54°C", "Fv @ 45°C", "Fv @ 44°C"}
+
+
+def _mud_export_specs_for(view: pd.DataFrame) -> list[tuple[str, str, str]]:
+    """
+    Mismo orden que MUD_EXPORT_HEADER_SPECS, pero sustituyendo las 3 columnas fijas de
+    densidad/Fv (54/45/44°C) por las columnas D/Fv @ {temp}°C que realmente existan en
+    esta bitácora (según la temperatura real de cada muestra), preservando el orden en
+    que _mud_dynamic_temp_spread las agregó.
+    """
+    density_dynamic = [c for c in view.columns if re.fullmatch(r"D @ [\d.]+°C", c)]
+    fv_dynamic = [c for c in view.columns if re.fullmatch(r"Fv @ [\d.]+°C", c)]
+
+    specs: list[tuple[str, str, str]] = []
+    density_done = fv_done = False
+    for col_name, h1, h2 in MUD_EXPORT_HEADER_SPECS:
+        if col_name in _MUD_FIXED_DENSITY_COLS:
+            if not density_done:
+                specs.extend((c, c, "kg/m³") for c in density_dynamic)
+                density_done = True
+            continue
+        if col_name in _MUD_FIXED_FV_COLS:
+            if not fv_done:
+                specs.extend((c, c, "s/qt") for c in fv_dynamic)
+                fv_done = True
+            continue
+        specs.append((col_name, h1, h2))
+    return specs
 
 
 def _mud_build_view_df(bitacora: pd.DataFrame) -> pd.DataFrame:
@@ -1255,7 +1521,7 @@ def _mud_build_view_df(bitacora: pd.DataFrame) -> pd.DataFrame:
     if "Additional Properties" not in view.columns:
         view["Additional Properties"] = view["Properties"]
     view = _mud_spread_temp_columns(view)
-    export_cols = [c for c, _, _ in MUD_EXPORT_HEADER_SPECS]
+    export_cols = [c for c, _, _ in _mud_export_specs_for(view)]
     for c in export_cols:
         if c not in view.columns:
             view[c] = np.nan
@@ -1274,7 +1540,7 @@ def _export_mud_bitacora_excel(view_df: pd.DataFrame) -> bytes:
     ws = wb.active
     ws.title = "Mud Bitacora Parser"
 
-    headers = list(MUD_EXPORT_HEADER_SPECS)
+    headers = _mud_export_specs_for(view_df)
     last_col = len(headers)
 
     title_date = _mud_bitacora_title_date(view_df)
@@ -1384,13 +1650,13 @@ def _export_mud_bitacora_pdf(view_df: pd.DataFrame) -> bytes:
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-    headers = list(MUD_EXPORT_HEADER_SPECS)
     if view_df is None or view_df.empty:
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
         doc.build([Paragraph("Sin datos para exportar.", getSampleStyleSheet()["Normal"])])
         return buffer.getvalue()
 
+    headers = _mud_export_specs_for(view_df)
     title_date = _mud_bitacora_title_date(view_df)
     title_text = (
         f"Daily Fluid Properties Daily Report — {title_date}"
@@ -1538,20 +1804,20 @@ def render_mud_report() -> None:
     elif _ms == "Subir archivos":
         st.session_state["mud_data_source"] = MUD_SRC_FILES
 
-    st.markdown(
-        f"""
+    title_badges = textwrap.dedent(
+        """
         <div style="margin-bottom: 0.5rem;">
-            <span style="font-size: 1.5rem; font-weight: 600;">{'Mud Report'}</span>
+            <span style="font-size: 1.5rem; font-weight: 600;">Mud Report</span>
             <span style="display: inline-flex; align-items: center; gap: 0.35rem; margin-left: 0.75rem; flex-wrap: wrap;">
                 <span style="background: linear-gradient(135deg, #b91c1c 0%, #ea580c 50%, #f59e0b 100%); color: #fff; font-size: 0.7rem; font-weight: 700; padding: 0.22rem 0.6rem; border-radius: 999px; letter-spacing: 0.03em; box-shadow: 0 1px 3px rgba(234,88,12,0.4);">🔥 Rogii</span>
-                <span style="background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%); color: #fff; font-size: 0.7rem; font-weight: 600; padding: 0.2rem 0.55rem; border-radius: 999px;">{'Bitácora'}</span>
-                <span style="background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%); color: #fff; font-size: 0.7rem; font-weight: 600; padding: 0.2rem 0.55rem; border-radius: 999px;">{'PDF / Excel / CSV'}</span>
-                <span style="background: linear-gradient(135deg, #7c2d12 0%, #ea580c 100%); color: #fff; font-size: 0.7rem; font-weight: 600; padding: 0.2rem 0.55rem; border-radius: 999px;">{'Correo'}</span>
+                <span style="background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%); color: #fff; font-size: 0.7rem; font-weight: 600; padding: 0.2rem 0.55rem; border-radius: 999px;">Bitácora</span>
+                <span style="background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%); color: #fff; font-size: 0.7rem; font-weight: 600; padding: 0.2rem 0.55rem; border-radius: 999px;">PDF / Excel / CSV</span>
+                <span style="background: linear-gradient(135deg, #7c2d12 0%, #ea580c 100%); color: #fff; font-size: 0.7rem; font-weight: 600; padding: 0.2rem 0.55rem; border-radius: 999px;">Correo</span>
             </span>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
+    st.markdown(title_badges, unsafe_allow_html=True)
     st.caption('Carga reportes de lodo en PDF, Excel o CSV (subiendo archivos o desde correo). Se genera una bitácora unificada por día.')
 
     mud_source = st.radio(
@@ -2139,3 +2405,7 @@ def render_mud_report() -> None:
         countdown_placeholder.empty()
         st.session_state["mud_auto_rerun_trigger"] = True
         st.rerun()
+
+
+if __name__ == "__main__":
+    render_mud_report()
