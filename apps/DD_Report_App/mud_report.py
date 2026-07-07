@@ -2136,6 +2136,13 @@ def render_mud_report() -> None:
             f"Descarga: **{csv_name}** · **{xlsx_name}** · **{pdf_name}** · Correo adjunta: **{xlsx_name}**"
         )
 
+        mud_to_email = st.text_input(
+            "Correo destino para 'Enviar bitácora por correo'",
+            value=st.session_state.get("mud_to_email_input", MUD_SMTP_TO),
+            key="mud_to_email_input",
+            help="Puedes editarlo antes de enviar. Por defecto viene de SMTP_TO/MUD_SMTP_TO en secrets.toml.",
+        )
+
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.download_button(
@@ -2163,34 +2170,37 @@ def render_mud_report() -> None:
             )
         with col4:
             if st.button("Enviar bitácora por correo", key="mud_send_email_btn", type="secondary"):
-                date_label = ""
-                try:
-                    if "Date" in bitacora.columns and bitacora["Date"].notna().any():
-                        dmax = pd.to_datetime(bitacora["Date"], errors="coerce").dropna().max()
-                        if pd.notna(dmax):
-                            date_label = dmax.strftime("%Y-%m-%d")
-                except Exception:
-                    date_label = ""
-                subject = f"Mud bitácora {date_label}".strip()
-                body = (
-                    "Hola,\n\n"
-                    "Adjunto la bitácora de propiedades de fluidos generada desde la app.\n\n"
-                    "Saludos."
-                )
-                ok, msg = _send_mud_bitacora_email(
-                    attachment_bytes=xlsx_bytes,
-                    to_email=MUD_SMTP_TO,
-                    subject=subject,
-                    body=body,
-                    filename=xlsx_name,
-                )
-                if ok:
-                    st.success(msg)
+                if not mud_to_email.strip() or "@" not in mud_to_email:
+                    st.error("Completa un correo destino válido antes de enviar.")
                 else:
-                    st.error(f"No se pudo enviar la bitácora por correo: {msg}")
+                    date_label = ""
+                    try:
+                        if "Date" in bitacora.columns and bitacora["Date"].notna().any():
+                            dmax = pd.to_datetime(bitacora["Date"], errors="coerce").dropna().max()
+                            if pd.notna(dmax):
+                                date_label = dmax.strftime("%Y-%m-%d")
+                    except Exception:
+                        date_label = ""
+                    subject = f"Mud bitácora {date_label}".strip()
+                    body = (
+                        "Hola,\n\n"
+                        "Adjunto la bitácora de propiedades de fluidos generada desde la app.\n\n"
+                        "Saludos."
+                    )
+                    ok, msg = _send_mud_bitacora_email(
+                        attachment_bytes=xlsx_bytes,
+                        to_email=mud_to_email.strip(),
+                        subject=subject,
+                        body=body,
+                        filename=xlsx_name,
+                    )
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(f"No se pudo enviar la bitácora por correo: {msg}")
 
         with st.expander("Configuración de envío por correo", expanded=False):
-            st.caption("Estos valores se leen desde `.streamlit/secrets.toml` (SMTP_* / SMTP_TO).")
+            st.caption("Servidor/usuario/clave se leen desde `.streamlit/secrets.toml` (SMTP_*). El destinatario se edita arriba.")
             e1, e2 = st.columns(2)
             with e1:
                 st.text_input("SMTP server", value=MUD_SMTP_SERVER, disabled=True, key="mud_smtp_server_view")
@@ -2198,7 +2208,6 @@ def render_mud_report() -> None:
                 st.text_input("From", value=MUD_SMTP_FROM, disabled=True, key="mud_smtp_from_view")
             with e2:
                 st.text_input("SMTP port", value=str(MUD_SMTP_PORT), disabled=True, key="mud_smtp_port_view")
-                st.text_input("To", value=MUD_SMTP_TO, disabled=True, key="mud_smtp_to_view")
                 st.text_input("SMTP password", value=("********" if MUD_SMTP_PASS else ""), type="password", disabled=True, key="mud_smtp_pass_view")
 
     with tab_graficas:
