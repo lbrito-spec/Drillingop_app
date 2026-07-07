@@ -359,7 +359,9 @@ def _normalize_mud_property_name(label: str) -> str | None:
     key = re.sub(r"\s+", " ", key)
     for canonical, aliases in MUD_PROPERTY_ALIASES.items():
         for a in aliases:
-            if a in key or key in a:
+            # Límite de palabra, no substring suelto: alias cortos como "oil" o "pc"
+            # no deben matchear dentro de texto no relacionado ("GASOIL", "PCN.Nq...").
+            if re.search(rf"\b{re.escape(a)}\b", key) or re.search(rf"\b{re.escape(key)}\b", a):
                 return canonical
     if "gel" in key and "10s" in key:
         return "Gel_10s"
@@ -1008,11 +1010,6 @@ def _parse_mud_csv(df_raw: pd.DataFrame, source_name: str = "") -> list[dict]:
     return _parse_mud_excel_sheet(df_raw, source_name)
 
 
-# Frontera entre la columna de etiqueta y la columna de unidad en el layout
-# WellSight "Reporte Diario de Propiedades del Fluido" (unidad siempre ~x=152).
-_PDF_DAILY_LABEL_MAX_X = 145.0
-
-
 def _pdf_index_row_centers(page) -> tuple[list[float], float | None]:
     """
     Ubica la primera fila de índices 1..N bajo 'Propiedades'/'Properties' (o
@@ -1026,6 +1023,11 @@ def _pdf_index_row_centers(page) -> tuple[list[float], float | None]:
         rows.setdefault(round(w["top"], 1), []).append(w)
     for top in sorted(rows):
         ws = sorted(rows[top], key=lambda w: w["x0"])
+        # Exige que la fila empiece con "Properties"/"Propiedades": reportes combinados
+        # (p.ej. "Daily Drilling Fluid Report") traen otras listas numeradas antes en la
+        # página (Pumps 1 2 3 4 5, etc.) que también matchean 1..N si no se filtra esto.
+        if not ws or not re.match(r"^(propiedades|properties)$", ws[0]["text"], re.IGNORECASE):
+            continue
         digit_words = [w for w in ws if re.fullmatch(r"\d", w["text"])]
         if len(digit_words) >= 2:
             texts = [w["text"] for w in digit_words]
@@ -1088,6 +1090,26 @@ def _split_row_chars_into_runs(chars: list[dict], big_gap: float = 10.0) -> list
     return merged
 
 
+def _split_wide_run_by_nearest_center(run: list[dict], centers: list[float], width: float) -> list[list[dict]]:
+    """
+    Un run más ancho que ~1.4 columnas suele ser texto de varias columnas pegado sin
+    ningún espacio entre ellas (p.ej. "BaraXcel-1 AislaBaraXcel-1 Aisla..." en columnas
+    angostas) — a diferencia del solape de números en columnas anchas, aquí el hueco
+    entre valores es exactamente 0, así que _split_row_chars_into_runs no lo separa.
+    Se subdivide carácter por carácter por cercanía al centro de columna más próximo.
+    """
+    x0 = min(c["x0"] for c in run)
+    x1 = max(c["x1"] for c in run)
+    if (x1 - x0) <= width * 1.4:
+        return [run]
+    groups: dict[int, list[dict]] = {}
+    for c in run:
+        cx = (c["x0"] + c["x1"]) / 2
+        idx = min(range(len(centers)), key=lambda i: abs(centers[i] - cx))
+        groups.setdefault(idx, []).append(c)
+    return [groups[k] for k in sorted(groups)]
+
+
 def _bucket_chars_by_column(chars: list[dict], centers: list[float]) -> list[str]:
     """
     Reconstruye el texto de cada columna de muestra a partir de caracteres del PDF.
@@ -1096,31 +1118,79 @@ def _bucket_chars_by_column(chars: list[dict], centers: list[float]) -> list[str
     run a la columna cuyo centro esté más cerca. Asignar por centroide de todo el run
     (en vez de carácter por carácter) tolera el pequeño desalineamiento que WellSight
     introduce cuando un número ocupa casi todo el ancho de la celda.
+    Un run cuyo centro cae lejos de TODOS los centros (más de un ancho de columna) se
+    descarta: en layouts con columnas angostas, la misma línea de texto puede traer un
+    panel lateral (rango objetivo, comentario de actividad) que no es una muestra real.
     """
     if not centers:
         return []
+    width = (centers[1] - centers[0]) if len(centers) > 1 else 80.0
     values = ["" for _ in centers]
-    for run in _split_row_chars_into_runs(chars):
+    raw_runs = _split_row_chars_into_runs(chars)
+    sub_runs = [sr for run in raw_runs for sr in _split_wide_run_by_nearest_center(run, centers, width)]
+    for run in sub_runs:
         text = "".join(c["text"] for c in run).strip()
         if not text:
             continue
         run_center = (min(c["x0"] for c in run) + max(c["x1"] for c in run)) / 2
         idx = min(range(len(centers)), key=lambda i: abs(centers[i] - run_center))
+        if abs(centers[idx] - run_center) > width:
+            continue
         values[idx] = f"{values[idx]} {text}".strip() if values[idx] else text
     return values
+
+
+def _pdf_extract_label_and_unit(row_chars: list[dict], unit_boundary: float, big_gap: float = 6.0) -> tuple[str, str]:
+    """
+    Separa etiqueta y unidad de la parte de la fila anterior a la columna de muestras,
+    por hueco real entre palabras: el hueco etiqueta→unidad es grande (decenas de px)
+    frente al hueco entre palabras de una misma etiqueta (~1-2px). No depende de una
+    columna de unidad a ancho fijo, porque ese ancho cambia entre plantillas de PDF.
+    """
+    pre_value_chars = [c for c in row_chars if c["x0"] < unit_boundary]
+    pre_runs = _split_row_chars_into_runs(pre_value_chars, big_gap=big_gap)
+    if not pre_runs:
+        return "", ""
+    if len(pre_runs) == 1:
+        return "".join(c["text"] for c in pre_runs[0]).strip(), ""
+    label = " ".join("".join(c["text"] for c in r).strip() for r in pre_runs[:-1]).strip()
+    unit = "".join(c["text"] for c in pre_runs[-1]).strip()
+    return label, unit
+
+
+def _pdf_detect_n_active_from_time_row(page, col_centers: list[float], page_header_top: float, unit_boundary: float) -> int:
+    """
+    Cuenta cuántas columnas de muestra tienen datos reales, usando la fila Time/Tiempo
+    como referencia: sus valores ('04:00') son cortos y siempre quedan bien separados
+    por un hueco real, a diferencia de campos de texto largos (Fluid Set, Source) que
+    en columnas angostas pueden pegarse sin espacio entre una muestra y la siguiente y
+    dar un conteo de columnas poco confiable.
+    """
+    for row_chars in _pdf_group_chars_into_rows(page):
+        if row_chars[0]["top"] < page_header_top:
+            continue
+        label_part, _ = _pdf_extract_label_and_unit(row_chars, unit_boundary)
+        if label_part.lower() in ("tiempo", "time"):
+            value_chars = [c for c in row_chars if c["x0"] >= unit_boundary]
+            values = _bucket_chars_by_column(value_chars, col_centers)
+            n_active = sum(1 for v in values if v)
+            if n_active:
+                return n_active
+    return 0
 
 
 def _parse_mud_pdf_daily_report_grid(pdf, source_name: str = "") -> list[dict]:
     """
     Parser posicional para el layout WellSight 'Fluidos de Perforación - Reporte
-    Diario de Propiedades del Fluido' / 'Daily Fluid Properties Daily Report'.
-    Reconstruye la grilla (etiqueta, unidad, valor por muestra) a partir de las
-    coordenadas del texto del PDF y reutiliza _mud_apply_daily_property para que
-    la bitácora salga idéntica a la que genera _parse_mud_daily_report_sheet con Excel.
+    Diario de Propiedades del Fluido' / 'Daily Fluid Properties Daily Report' /
+    'Daily Drilling Fluid Report'. Reconstruye la grilla (etiqueta, unidad, valor por
+    muestra) a partir de las coordenadas del texto del PDF y reutiliza
+    _mud_apply_daily_property para que la bitácora salga idéntica a la que genera
+    _parse_mud_daily_report_sheet con Excel.
     """
     full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     if not re.search(
-        r"reporte\s+diario\s+de\s+propiedades\s+del\s+fluido|daily\s+fluid\s+properties",
+        r"reporte\s+diario\s+de\s+propiedades\s+del\s+fluido|daily\s+fluid\s+properties|daily\s+drilling\s+fluid\s+report",
         full_text,
         re.IGNORECASE,
     ):
@@ -1128,43 +1198,59 @@ def _parse_mud_pdf_daily_report_grid(pdf, source_name: str = "") -> list[dict]:
 
     report_date = _extract_date_from_text(full_text) or _date_from_filename_or_today(source_name)
     records: list[dict] | None = None
-    col_centers: list[float] = []
     label_buffer = ""
+    # Hueco vertical entre filas dentro de la tabla de propiedades (~8-16px en los
+    # layouts vistos). Un salto mucho mayor señala el fin de la tabla: reportes
+    # combinados siguen con otra sección en la misma página (p.ej. "Fluid Volume
+    # Breakdown" con nombres de producto que pueden matchear un alias de propiedad
+    # por casualidad, como "GASOIL" conteniendo "oil").
+    MAX_ROW_GAP = 40.0
 
     for page in pdf.pages:
-        centers, header_top = _pdf_index_row_centers(page)
-        if centers:
-            col_centers = centers
+        # No se hereda la tabla de una página a la siguiente: reportes combinados
+        # traen después páginas de otro tipo ("Daily Concentration Report", "Daily
+        # Inventory & Tickets") que no tienen encabezado "Properties" propio y
+        # contaminarían la bitácora si se reusaran las posiciones de columna previas.
+        col_centers, header_top = _pdf_index_row_centers(page)
         if not col_centers:
             continue
-        page_header_top = header_top if header_top is not None else -1.0
+        page_header_top = header_top
 
         unit_boundary = col_centers[0] - (col_centers[1] - col_centers[0]) / 2 if len(col_centers) > 1 else col_centers[0] - 40
+        n_active_hint = _pdf_detect_n_active_from_time_row(page, col_centers, page_header_top, unit_boundary)
 
+        last_row_top: float | None = None
         for row_chars in _pdf_group_chars_into_rows(page):
+            top = row_chars[0]["top"]
             # Descarta texto por encima de la tabla (título con nombre de pozo/operador/software):
             # de otro modo se leería como una fila de propiedad y contaminaría la bitácora.
-            if row_chars[0]["top"] < page_header_top:
+            if top < page_header_top:
                 continue
 
-            label_part = "".join(c["text"] for c in row_chars if c["x0"] < _PDF_DAILY_LABEL_MAX_X).strip()
+            label_part, unit = _pdf_extract_label_and_unit(row_chars, unit_boundary)
+            value_chars = [c for c in row_chars if c["x0"] >= unit_boundary]
+
             if not label_part and not label_buffer:
                 continue
+
+            # Una fila de índices ("Propiedades Adicionales 1 2 3...") puede aparecer
+            # tras un hueco grande sin que eso signifique fin de tabla: sigue siendo la
+            # misma tabla de propiedades, solo con una sub-sección más abajo en la
+            # página. El salto se exceptúa únicamente para esa fila puente.
+            is_header_row = bool(re.match(r"^(propiedades|properties)\b", label_part.lower()))
+            if last_row_top is not None and top - last_row_top > MAX_ROW_GAP and not is_header_row:
+                break
+            last_row_top = top
+
             if re.match(r"^(creado|created)\b", label_part, re.IGNORECASE):
                 label_buffer = ""
                 continue
-
-            rest_chars = [c for c in row_chars if c["x0"] >= _PDF_DAILY_LABEL_MAX_X]
-            unit_chars = [c for c in rest_chars if c["x0"] < unit_boundary]
-            value_chars = [c for c in rest_chars if c["x0"] >= unit_boundary]
-            unit = "".join(c["text"] for c in unit_chars).strip()
 
             label = f"{label_buffer} {label_part}".strip() if label_buffer else label_part
             low_label = label.lower()
 
             # Fila de índices (Propiedades / Propiedades Adicionales): ya usada para centrar columnas.
-            rest_text = "".join(c["text"] for c in rest_chars).strip()
-            if re.match(r"^(propiedades|properties)\b", low_label) and re.fullmatch(r"[\d\s]*", rest_text or ""):
+            if is_header_row:
                 label_buffer = ""
                 continue
 
@@ -1177,31 +1263,26 @@ def _parse_mud_pdf_daily_report_grid(pdf, source_name: str = "") -> list[dict]:
                 continue
             label_buffer = ""
 
-            if low_label in ("set de fluido", "fluid set"):
-                values = _bucket_chars_by_column(value_chars, col_centers)
-                n_active = sum(1 for v in values if v)
-                if n_active:
-                    records = [
-                        {"Date": report_date, "Properties": j + 1, "Additional Properties": j + 1, "Fluid set": values[j], "Source": "", "Time": ""}
-                        for j in range(n_active)
-                    ]
-                continue
-
-            if records is None and low_label in ("tiempo", "time"):
-                values = _bucket_chars_by_column(value_chars, col_centers)
-                n_active = sum(1 for v in values if v)
-                if not n_active:
+            if records is None:
+                n_now = n_active_hint
+                if not n_now and low_label in ("set de fluido", "fluid set", "tiempo", "time"):
+                    probe = _bucket_chars_by_column(value_chars, col_centers)
+                    n_now = sum(1 for v in probe if v)
+                if not n_now:
                     continue
                 records = [
                     {"Date": report_date, "Properties": j + 1, "Additional Properties": j + 1, "Fluid set": "", "Source": ""}
-                    for j in range(n_active)
+                    for j in range(n_now)
                 ]
-
-            if records is None:
-                continue
 
             n_active = len(records)
             values = _bucket_chars_by_column(value_chars, col_centers[:n_active])
+
+            if low_label in ("set de fluido", "fluid set"):
+                for j in range(min(n_active, len(values))):
+                    if values[j]:
+                        records[j]["Fluid set"] = values[j]
+                continue
 
             if low_label in ("origen", "source"):
                 for j in range(min(n_active, len(values))):
