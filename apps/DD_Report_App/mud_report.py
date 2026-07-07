@@ -1878,7 +1878,7 @@ def _send_mud_bitacora_email(
         return False, str(e)
 
 
-def render_mud_report() -> None:
+def render_mud_report(to_email: str = "") -> None:
     _ms = st.session_state.get("mud_data_source")
     if _ms == "Correo electrónico":
         st.session_state["mud_data_source"] = MUD_SRC_EMAIL
@@ -2136,12 +2136,10 @@ def render_mud_report() -> None:
             f"Descarga: **{csv_name}** · **{xlsx_name}** · **{pdf_name}** · Correo adjunta: **{xlsx_name}**"
         )
 
-        mud_to_email = st.text_input(
-            "Correo destino para 'Enviar bitácora por correo'",
-            value=st.session_state.get("mud_to_email_input", MUD_SMTP_TO),
-            key="mud_to_email_input",
-            help="Puedes editarlo antes de enviar. Por defecto viene de SMTP_TO/MUD_SMTP_TO en secrets.toml.",
-        )
+        # Mismo destinatario que "To email parsing" en el sidebar (compartido con Daily
+        # Report): un solo campo controla a dónde se envían ambos reportes.
+        mud_to_email = to_email.strip() or MUD_SMTP_TO
+        st.caption(f"Se enviará a: **{mud_to_email}** (editable en «To email parsing», en el panel lateral).")
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -2200,7 +2198,7 @@ def render_mud_report() -> None:
                         st.error(f"No se pudo enviar la bitácora por correo: {msg}")
 
         with st.expander("Configuración de envío por correo", expanded=False):
-            st.caption("Servidor/usuario/clave se leen desde `.streamlit/secrets.toml` (SMTP_*). El destinatario se edita arriba.")
+            st.caption("Servidor/usuario/clave se leen desde `.streamlit/secrets.toml` (SMTP_*). El destinatario es «To email parsing», en el panel lateral.")
             e1, e2 = st.columns(2)
             with e1:
                 st.text_input("SMTP server", value=MUD_SMTP_SERVER, disabled=True, key="mud_smtp_server_view")

@@ -1519,4 +1519,4 @@ with tab_daily:
         st.info("Esperando archivo. También puedes usar el botón para capturar un reporte manualmente.")
 
 with tab_mud:
-    render_mud_report()
+    render_mud_report(to_email=to_email)
