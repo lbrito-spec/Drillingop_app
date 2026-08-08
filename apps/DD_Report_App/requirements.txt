@@ -1,12 +1,18 @@
-streamlit
-pandas
-numpy
-plotly
-Pillow
-reportlab
-openpyxl
-pdfplumber
-pymupdf
-onnxruntime
-opencv-python
-rapidocr-onnxruntime
+# Versiones verificadas en contenedor Debian bookworm + Python 3.12 (2026-08-08):
+# la app arranca sin excepciones, genera el PDF y corre el OCR. Sin pinear, cada
+# rebuild de Streamlit Cloud arrastra los majors nuevos (reportlab 5, opencv 5,
+# pandas 3) y el deploy se vuelve irreproducible.
+streamlit>=1.53,<2
+pandas>=2.2,<4
+numpy>=1.26,<3
+plotly>=5.18,<7
+Pillow>=10.0,<13
+reportlab>=4.0,<6
+openpyxl>=3.1,<4
+pdfplumber>=0.10,<1
+pymupdf>=1.23,<2
+
+# OCR de PDFs escaneados. opencv necesita libgl1 + libglib2.0-0 (ver packages.txt).
+onnxruntime>=1.17,<2
+opencv-python>=4.8,<6
+rapidocr-onnxruntime>=1.4.2,<3

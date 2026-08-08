@@ -17,7 +17,8 @@ google-api-python-client
 kaleido==0.2.1
 requests-oauthlib==2.0.0
 
-# ddr-rogii OCR: ver packages.txt libgl1 + libglib2.0-0t64 (Trixie; no usar libglib2.0-0 sin t64).
+# ddr-rogii OCR: ver packages.txt libgl1 + libglib2.0-0. El nombre t64 solo existe en
+# Trixie; libglib2.0-0 resuelve en Trixie (transicional) y en Bookworm, así que sirve en ambos.
 pdfplumber>=0.10
 pymupdf>=1.23
 onnxruntime>=1.17
