@@ -17,8 +17,10 @@ google-api-python-client
 kaleido==0.2.1
 requests-oauthlib==2.0.0
 
-# ddr-rogii OCR: ver packages.txt libgl1 + libglib2.0-0. El nombre t64 solo existe en
-# Trixie; libglib2.0-0 resuelve en Trixie (transicional) y en Bookworm, así que sirve en ambos.
+# ddr-rogii OCR: ver packages.txt libgl1 + libglib2.0-0t64. Tiene que ser el nombre t64.
+# Streamlit Cloud es Trixie pero arrastra un source de bullseye-security, y con el
+# nombre corto apt elige el libglib2.0-0 de Bullseye (2.66.8-1+deb11u8), que pide
+# libffi7 y libpcre3: no instalables en Trixie y revienta la preparacion del entorno.
 pdfplumber>=0.10
 pymupdf>=1.23
 onnxruntime>=1.17
