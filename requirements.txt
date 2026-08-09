@@ -22,6 +22,11 @@ requests-oauthlib==2.0.0
 pdfplumber>=0.10
 pymupdf>=1.23
 onnxruntime>=1.17
-opencv-python>=4.8,<5
-rapidocr-onnxruntime>=1.4.2,<3
+opencv-python>=4.8,<6
+
+# rapidocr-onnxruntime esta capado a Python <3.13 en todas sus releases. En 3.13 pip
+# no encuentra ninguna version y aborta la instalacion entera del entorno
+# ("Error installing requirements"). rapidocr es el sucesor y si soporta 3.13.
+rapidocr-onnxruntime>=1.4.2,<3; python_version < "3.13"
+rapidocr>=2.0,<4; python_version >= "3.13"
 

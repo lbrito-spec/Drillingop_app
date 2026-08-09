@@ -158,12 +158,29 @@ def dataframe_to_blob_text(sheets: Dict[str, pd.DataFrame]) -> str:
 # OCR fallback para PDFs tipo Baker Hughes escaneados/imagen
 # ============================================================
 
+def _ocr_rows(engine_output):
+    """Normaliza la salida del motor OCR a filas (box, texto, score).
+
+    rapidocr-onnxruntime devuelve (result, elapse) con result como lista de
+    [box, txt, score]; rapidocr >= 2 devuelve un RapidOCROutput con .boxes,
+    .txts y .scores. Soportamos los dos porque rapidocr-onnxruntime está capado
+    a Python < 3.13 y en 3.13 hay que instalar el paquete nuevo.
+    """
+    if hasattr(engine_output, "boxes"):
+        if engine_output.boxes is None:
+            return []
+        return list(zip(engine_output.boxes, engine_output.txts, engine_output.scores))
+
+    result, _ = engine_output
+    return result or []
+
+
 def ocr_pdf_bytes(pdf_bytes: bytes) -> str:
     """
     Fallback OCR para PDFs sin texto embebido.
     Requiere en requirements.txt:
       PyMuPDF
-      rapidocr-onnxruntime
+      rapidocr-onnxruntime (Python < 3.13) o rapidocr (Python >= 3.13)
       pillow
       numpy
     """
@@ -171,13 +188,17 @@ def ocr_pdf_bytes(pdf_bytes: bytes) -> str:
         import fitz  # PyMuPDF
         import numpy as np
         from PIL import Image
-        from rapidocr_onnxruntime import RapidOCR
+
+        try:
+            from rapidocr import RapidOCR
+        except ImportError:
+            from rapidocr_onnxruntime import RapidOCR
     except Exception as exc:
         raise RuntimeError(
             f"OCR import error real: {type(exc).__name__}: {exc}\n\n"
             "El PDF no trae texto seleccionable y se necesita OCR. "
-            "Verifica dependencias: PyMuPDF, rapidocr-onnxruntime, onnxruntime, Pillow, numpy. "
-            "También confirma runtime.txt en la raíz con python-3.11."
+            "Verifica dependencias: PyMuPDF, onnxruntime, Pillow, numpy y "
+            "rapidocr-onnxruntime (Python < 3.13) o rapidocr (Python >= 3.13)."
         ) from exc
 
     engine = RapidOCR()
@@ -188,7 +209,7 @@ def ocr_pdf_bytes(pdf_bytes: bytes) -> str:
         # 2x da mejor lectura de tablas sin hacer el archivo demasiado pesado
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
         img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-        result, _ = engine(np.array(img))
+        result = _ocr_rows(engine(np.array(img)))
 
         if not result:
             pages_text.append("")

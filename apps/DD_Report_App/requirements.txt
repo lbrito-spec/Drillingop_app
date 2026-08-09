@@ -15,4 +15,9 @@ pymupdf>=1.23,<2
 # OCR de PDFs escaneados. opencv necesita libgl1 + libglib2.0-0 (ver packages.txt).
 onnxruntime>=1.17,<2
 opencv-python>=4.8,<6
-rapidocr-onnxruntime>=1.4.2,<3
+
+# rapidocr-onnxruntime esta capado a Python <3.13 en todas sus releases. Streamlit
+# Cloud corre 3.13, pip no encuentra ninguna version y aborta la instalacion entera
+# ("Error installing requirements"). rapidocr es el paquete sucesor y si soporta 3.13.
+rapidocr-onnxruntime>=1.4.2,<3; python_version < "3.13"
+rapidocr>=2.0,<4; python_version >= "3.13"
