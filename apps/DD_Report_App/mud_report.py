@@ -1,4 +1,5 @@
 """Mud Report – bitácora de propiedades de fluidos."""
+import hashlib
 import io
 import os
 import re
@@ -147,6 +148,388 @@ def apply_line_area_fill(fig, line_color: str | None = None, fill_alpha: float =
     return fig
 
 
+# =========================
+# Sistema visual del Mud Report (gráficas HD)
+# =========================
+# Paleta categórica validada (banda de luminosidad, piso de croma, separación CVD
+# adyacente y contraste) contra las superficies reales de Streamlit: #FFFFFF en claro
+# y #0E1117 en oscuro. La columna oscura son los mismos ocho tonos re-escalonados
+# para fondo oscuro, no un volteo automático. El ORDEN es el mecanismo de seguridad
+# CVD: no reordenar ni generar tonos extra más allá del octavo.
+_MUD_CAT_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+_MUD_CAT_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
+MUD_MAX_OVERLAY_SERIES = len(_MUD_CAT_LIGHT)
+_MUD_MAX_PANELS = 12
+# Propiedades que un ingeniero de lodos sigue jornada a jornada.
+MUD_DEFAULT_CHART_PROPS = ["Density", "PV", "YP", "FV"]
+_MUD_EVO_PANELS = "panels"
+_MUD_EVO_NORM = "norm"
+_MUD_EVO_RAW = "raw"
+
+# Estados: fijos, nunca tematizados, nunca reutilizados como color de serie.
+_MUD_STATUS = {"good": "#0ca30c", "warning": "#fab219", "serious": "#ec835a", "critical": "#d03b3b"}
+
+_MUD_TOKENS_LIGHT = {
+    "ink": "#0b0b0b", "secondary": "#52514e", "muted": "#898781",
+    "grid": "#e1e0d9", "axis": "#c3c2b7", "surface": "#FFFFFF",
+    "hover_bg": "rgba(255,255,255,0.97)", "ring": "#FFFFFF", "neutral": "#f0efec",
+}
+_MUD_TOKENS_DARK = {
+    "ink": "#ffffff", "secondary": "#c3c2b7", "muted": "#898781",
+    "grid": "#2c2c2a", "axis": "#383835", "surface": "#0E1117",
+    "hover_bg": "rgba(13,13,13,0.95)", "ring": "#0E1117", "neutral": "#383835",
+}
+
+# Fechas en formato numérico (%d/%m), no %b: plotly.js rotula los meses en inglés salvo
+# que se cargue el bundle de idioma, que Streamlit no incluye.
+_MUD_TIME_TICKS = [
+    dict(dtickrange=[None, 3_600_000], value="%H:%M"),
+    dict(dtickrange=[3_600_000, 43_200_000], value="%d/%m %H:%M"),
+    dict(dtickrange=[43_200_000, None], value="%d/%m"),
+]
+
+
+def _mud_viz_tokens() -> dict:
+    return _MUD_TOKENS_DARK if is_streamlit_dark_mode() else _MUD_TOKENS_LIGHT
+
+
+def _mud_palette() -> list[str]:
+    return _MUD_CAT_DARK if is_streamlit_dark_mode() else _MUD_CAT_LIGHT
+
+
+def _mud_rgba(color: str, alpha: float) -> str:
+    from plotly.colors import hex_to_rgb
+
+    try:
+        r, g, b = hex_to_rgb(color)
+        return f"rgba({int(r)},{int(g)},{int(b)},{alpha})"
+    except Exception:
+        return f"rgba(42,120,214,{alpha})"
+
+
+def _mud_assign_series_slots(selected: list[str]) -> dict[str, int]:
+    """
+    Slot de color estable por propiedad. Al destildar una propiedad, las que siguen
+    en pantalla conservan su color (el color sigue a la entidad, no a su posición en
+    la lista): de otro modo quien aprendió «Densidad = azul» queda desorientado.
+    """
+    store = st.session_state.setdefault("mud_color_slots", {})
+    n = len(_MUD_CAT_LIGHT)
+    out: dict[str, int] = {}
+    used: set[int] = set()
+    for p in selected:
+        s = store.get(p)
+        if s is not None and s not in used:
+            out[p] = s
+            used.add(s)
+    for p in selected:
+        if p in out:
+            continue
+        s = next((k for k in range(n) if k not in used), len(used) % n)
+        out[p] = s
+        used.add(s)
+    store.update(out)
+    return out
+
+
+def _mud_hd_config(name: str, width: int = 1800, height: int = 1000) -> dict:
+    """
+    Config de Plotly con exportación en alta definición: el botón de descarga entrega
+    un PNG a escala 3 (1800x1000 -> 5400x3000 px), suficiente para informe impreso o
+    presentación. Es exportación del lado del navegador, sin dependencias nuevas.
+    """
+    return {
+        "displaylogo": False,
+        "displayModeBar": True,
+        "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"],
+        "toImageButtonOptions": {
+            "format": "png",
+            "filename": _sanitize_filename(name, "mud_chart"),
+            "scale": 3,
+            "width": width,
+            "height": height,
+        },
+        "responsive": True,
+        "scrollZoom": False,
+    }
+
+
+def _mud_hd_theme(fig, h: int = 460, *, title: str = "", legend: bool = True,
+                  hovermode: str = "x unified", spikes: bool = True, y_title: str = "") -> go.Figure:
+    """Tema único de las gráficas del Mud Report: tipografía y rejilla recesivas,
+    hairlines sólidas (nunca punteadas), fondo transparente y hover de cruceta."""
+    t = _mud_viz_tokens()
+    fig.update_layout(
+        template="plotly_dark" if is_streamlit_dark_mode() else "plotly_white",
+        height=h,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        colorway=_mud_palette(),
+        font=dict(family='system-ui, -apple-system, "Segoe UI", sans-serif', size=13, color=t["ink"]),
+        title=dict(text=title or None, x=0.0, xanchor="left", y=0.98, yanchor="top",
+                   font=dict(size=17, color=t["ink"])),
+        margin=dict(l=68, r=26, t=(74 if (title and legend) else 52 if (title or legend) else 24), b=54),
+        hovermode=hovermode,
+        hoverlabel=dict(
+            font=dict(family='system-ui, -apple-system, "Segoe UI", sans-serif', size=12),
+            bgcolor=t["hover_bg"], bordercolor=t["axis"], namelength=-1,
+        ),
+        showlegend=legend,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                    font=dict(size=12), bgcolor="rgba(0,0,0,0)", itemsizing="constant",
+                    itemwidth=30),
+        dragmode="pan",
+    )
+    fig.update_xaxes(
+        showgrid=True, gridcolor=t["grid"], gridwidth=1, zeroline=False,
+        showline=True, linecolor=t["axis"], linewidth=1,
+        ticks="outside", ticklen=5, tickcolor=t["axis"],
+        tickfont=dict(size=11, color=t["muted"]), title_font=dict(size=12, color=t["secondary"]),
+        showspikes=spikes, spikemode="across", spikethickness=1, spikecolor=t["muted"], spikedash="dot",
+    )
+    fig.update_yaxes(
+        showgrid=True, gridcolor=t["grid"], gridwidth=1, zeroline=False, showline=False,
+        ticks="outside", ticklen=5, tickcolor=t["axis"],
+        tickfont=dict(size=11, color=t["muted"]), title_font=dict(size=12, color=t["secondary"]),
+    )
+    if y_title:
+        fig.update_yaxes(title_text=y_title)
+    return fig
+
+
+def _mud_style_time_axis(fig, dates, *, row: str | int | None = None) -> None:
+    """Ticks de tiempo adaptativos y una hairline sólida en cada cambio de día, que es
+    lo que vuelve legible una bitácora acumulada de varias jornadas."""
+    t = _mud_viz_tokens()
+    fig.update_xaxes(tickformatstops=_MUD_TIME_TICKS)
+    days = pd.to_datetime(pd.Series(list(dates)), errors="coerce").dropna().dt.normalize().unique()
+    if not (2 <= len(days) <= 31):
+        return
+    for d in sorted(days)[1:]:
+        fig.add_shape(
+            type="line", xref="x", yref="paper",
+            x0=pd.Timestamp(d), x1=pd.Timestamp(d), y0=0, y1=1,
+            line=dict(color=t["grid"], width=1), layer="below",
+        )
+
+
+def _mud_normalize_0_100(s: pd.Series) -> pd.Series:
+    lo, hi = float(s.min()), float(s.max())
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi == lo:
+        return pd.Series(50.0, index=s.index)
+    return (s - lo) / (hi - lo) * 100.0
+
+
+def _mud_evolution_panels_figure(df: pd.DataFrame, props: list[str]) -> go.Figure:
+    """
+    Small multiples: un panel por propiedad con eje X compartido y eje Y propio. Es la
+    forma correcta cuando las magnitudes no son comparables (Densidad ~1680 kg/m³ vs
+    YP ~10 lb/100ft²): en un solo eje todo lo que no sea la densidad queda plano.
+    Un único color, porque la identidad la lleva el título de cada eje Y.
+    """
+    from plotly.subplots import make_subplots
+
+    t = _mud_viz_tokens()
+    color = _mud_palette()[0]
+    n = len(props)
+    fig = make_subplots(rows=n, cols=1, shared_xaxes=True,
+                        vertical_spacing=min(0.055, 0.75 / max(1, n - 1)) if n > 1 else 0.0)
+    for i, p in enumerate(props, start=1):
+        s = df[["Date", p]].dropna().sort_values("Date")
+        fig.add_trace(
+            go.Scatter(
+                x=s["Date"], y=s[p], mode="lines+markers", name=p,
+                line=dict(width=2, color=color, shape="linear"),
+                marker=dict(size=8, color=color, line=dict(width=2, color=t["ring"])),
+                hovertemplate=f"<b>{p}</b> %{{y}}<extra></extra>",
+                showlegend=False,
+            ),
+            row=i, col=1,
+        )
+        fig.update_yaxes(title_text=p, row=i, col=1, nticks=5)
+    fig = _mud_hd_theme(fig, h=90 + 150 * n, legend=False, title="")
+    fig.update_layout(margin=dict(l=84, r=26, t=26, b=54))
+    fig.update_xaxes(title_text="Fecha / hora", row=n, col=1)
+    _mud_style_time_axis(fig, df["Date"])
+    return fig
+
+
+def _mud_evolution_overlay_figure(df: pd.DataFrame, props: list[str], slots: dict[str, int],
+                                  *, normalize: bool) -> go.Figure:
+    """
+    Series superpuestas en UN solo eje. Con normalize=True cada serie va indexada 0–100
+    sobre su propio min–max, que es la manera honesta de comparar formas entre
+    magnitudes distintas (nunca un segundo eje Y: la alineación entre dos escalas es
+    arbitraria e inventa correlaciones). El tooltip siempre muestra el valor real.
+    """
+    t = _mud_viz_tokens()
+    pal = _mud_palette()
+    fig = go.Figure()
+    for p in props:
+        s = df[["Date", p]].dropna().sort_values("Date")
+        if s.empty:
+            continue
+        color = pal[slots.get(p, 0) % len(pal)]
+        y = _mud_normalize_0_100(s[p]) if normalize else s[p]
+        fig.add_trace(
+            go.Scatter(
+                x=s["Date"], y=y, mode="lines+markers", name=p,
+                line=dict(width=2, color=color),
+                marker=dict(size=8, color=color, line=dict(width=2, color=t["ring"])),
+                customdata=s[p],
+                hovertemplate=f"<b>{p}</b> %{{customdata}}<extra></extra>",
+            )
+        )
+    # Etiqueta directa en el extremo con ≤4 series: así la identidad no depende solo del
+    # color (tres tonos claros de la paleta quedan bajo 3:1 contra fondo blanco).
+    if 1 <= len(fig.data) <= 4:
+        ends = []
+        for tr in fig.data:
+            ys = [v for v in tr.y if v is not None and np.isfinite(v)]
+            if not len(tr.x) or not ys:
+                continue
+            ends.append([float(ys[-1]), pd.Timestamp(tr.x[-1]).to_pydatetime(), tr.name, tr.line.color])
+        all_y = [float(v) for tr in fig.data for v in tr.y if v is not None and np.isfinite(v)]
+        if all_y:
+            span = max(all_y) - min(all_y)
+            gap = (span if span else abs(max(all_y)) or 1.0) * 0.065
+        else:
+            gap = 1.0
+        # Series que terminan en el mismo valor (habitual en normalizado) pisarían su
+        # etiqueta: se separan verticalmente lo mínimo para que ambas se lean.
+        ends.sort(key=lambda e: e[0], reverse=True)
+        for i in range(1, len(ends)):
+            if ends[i - 1][0] - ends[i][0] < gap:
+                ends[i][0] = ends[i - 1][0] - gap
+        for y_lbl, x_lbl, name, color in ends:
+            fig.add_annotation(
+                x=x_lbl, y=y_lbl, text=f" {name}", showarrow=False,
+                xanchor="left", yanchor="middle", font=dict(size=11, color=color),
+            )
+        labelled = bool(ends)
+    else:
+        labelled = False
+    fig = _mud_hd_theme(
+        fig,
+        h=480,
+        legend=len(fig.data) > 1,
+        y_title="Índice 0–100 (min–max de cada propiedad)" if normalize else "Valor",
+    )
+    if labelled:
+        # Después del tema: _mud_hd_theme reescribe el margen completo.
+        fig.update_layout(margin=dict(l=68, r=124, t=52, b=54))
+    fig.update_xaxes(title_text="Fecha / hora")
+    _mud_style_time_axis(fig, df["Date"])
+    return fig
+
+
+def _mud_property_detail_figure(df: pd.DataFrame, prop: str, color: str) -> go.Figure:
+    """Serie única con banda media ±1σ, para ver de un golpe qué tan estable estuvo."""
+    t = _mud_viz_tokens()
+    s = df[["Date", prop]].dropna().sort_values("Date")
+    fig = go.Figure()
+    if len(s) >= 2:
+        mean_v = float(s[prop].mean())
+        std_v = float(s[prop].std() or 0.0)
+        fig.add_trace(go.Scatter(
+            x=list(s["Date"]) + list(s["Date"])[::-1],
+            y=[mean_v + std_v] * len(s) + [mean_v - std_v] * len(s),
+            fill="toself", fillcolor=_mud_rgba(color, 0.10),
+            line=dict(width=0), hoverinfo="skip", name="Media ±1σ",
+        ))
+        fig.add_hline(y=mean_v, line=dict(color=t["secondary"], width=1, dash="dash"),
+                      annotation_text=f"Media {format_num(mean_v)}",
+                      annotation_position="top left",
+                      annotation_font=dict(size=11, color=t["secondary"]))
+    fig.add_trace(go.Scatter(
+        x=s["Date"], y=s[prop], mode="lines+markers", name=prop,
+        line=dict(width=2, color=color),
+        marker=dict(size=9, color=color, line=dict(width=2, color=t["ring"])),
+        hovertemplate=f"<b>{prop}</b> %{{y}}<extra></extra>",
+    ))
+    fig = _mud_hd_theme(fig, h=430, title=f"Evolución — {prop}", y_title=prop)
+    fig.update_xaxes(title_text="Fecha / hora")
+    _mud_style_time_axis(fig, s["Date"])
+    return fig
+
+
+def _mud_distribution_figure(values, prop: str, color: str, nbins: int = 25) -> go.Figure:
+    """Histograma con media y mediana marcadas (línea discontinua = referencia, no rejilla)."""
+    t = _mud_viz_tokens()
+    vals = pd.Series(values).dropna()
+    fig = go.Figure()
+    if vals.empty:
+        return _mud_hd_theme(fig, h=380, title=f"Distribución — {prop}", legend=False)
+    fig.add_trace(go.Histogram(
+        x=vals, nbinsx=nbins, name=prop,
+        marker=dict(color=_mud_rgba(color, 0.75), line=dict(width=1, color=t["ring"])),
+        hovertemplate="%{x}: %{y} muestra(s)<extra></extra>",
+    ))
+    for label, val, dash in (("Media", float(vals.mean()), "dash"), ("Mediana", float(vals.median()), "dot")):
+        fig.add_vline(x=val, line=dict(color=t["secondary"], width=1, dash=dash),
+                      annotation_text=f"{label} {format_num(val)}", annotation_position="top",
+                      annotation_font=dict(size=11, color=t["secondary"]))
+    fig = _mud_hd_theme(fig, h=400, title=f"Distribución — {prop}", legend=False,
+                        hovermode="closest", spikes=False, y_title="Muestras")
+    fig.update_xaxes(title_text=prop)
+    fig.update_layout(bargap=0.06)
+    return fig
+
+
+def _mud_variability_figure(df: pd.DataFrame, props: list[str], top_labels: int = 5) -> go.Figure:
+    """
+    Ranking de estabilidad por coeficiente de variación (σ/|μ| en %), ordenado de mayor a
+    menor. El CV es lo que permite comparar cuánto se movió cada propiedad entre unidades
+    distintas — normalizar min–max no serviría: dejaría a todas ocupando exactamente el
+    mismo rango y borraría la comparación.
+    """
+    t = _mud_viz_tokens()
+    color = _mud_palette()[0]
+    rows = []
+    for p in props:
+        s = pd.to_numeric(df[p], errors="coerce").dropna()
+        if len(s) < 2:
+            continue
+        mean_v = float(s.mean())
+        if not mean_v:
+            continue
+        rows.append((p, float(s.std()) / abs(mean_v) * 100.0, float(s.min()), float(s.max())))
+    fig = go.Figure()
+    if not rows:
+        return _mud_hd_theme(fig, h=320, legend=False, hovermode="closest", spikes=False)
+
+    rows.sort(key=lambda r: r[1])
+    names = [r[0] for r in rows]
+    cvs = [r[1] for r in rows]
+    fig.add_trace(go.Bar(
+        x=cvs, y=names, orientation="h",
+        marker=dict(color=color, line=dict(width=0)),
+        width=0.62,
+        customdata=[[r[2], r[3]] for r in rows],
+        hovertemplate="<b>%{y}</b><br>CV %{x:.1f} %<br>rango %{customdata[0]} – %{customdata[1]}<extra></extra>",
+        showlegend=False,
+    ))
+    # Etiqueta solo en las más inestables: el eje y el tooltip cargan el resto.
+    for name, cv, _lo, _hi in rows[-top_labels:]:
+        fig.add_annotation(x=cv, y=name, text=f" {cv:.1f} %", showarrow=False,
+                           xanchor="left", yanchor="middle",
+                           font=dict(size=11, color=t["secondary"]))
+    fig = _mud_hd_theme(fig, h=max(320, 26 * len(rows) + 96), legend=False,
+                        hovermode="closest", spikes=False)
+    fig.update_xaxes(title_text="Coeficiente de variación (σ / media, %)",
+                     range=[0, max(cvs) * 1.18 if max(cvs) else 1])
+    fig.update_yaxes(ticks="", showgrid=False)
+    fig.update_layout(margin=dict(l=160, r=40, t=26, b=58), bargap=0.3)
+    return fig
+
+
+def _mud_correlation_colorscale() -> list:
+    """Divergente azul↔rojo con gris neutro al centro: el punto medio debe leerse como
+    «nada» y los polos como opuestos (nunca un arcoíris, nunca un tono en el centro)."""
+    t = _mud_viz_tokens()
+    return [[0.0, "#2a78d6"], [0.5, t["neutral"]], [1.0, "#e34948"]]
+
+
 def format_num(val: float | int | None, digits: int = 2) -> str:
     if val is None or pd.isna(val):
         return "—"
@@ -278,7 +661,7 @@ MUD_PROPERTY_ALIASES = {
     "Excess_Cal": ["exceso de cal", "exc.cal", "exc cal"],
 }
 MUD_CANONICAL_ORDER = [
-    "Date", "DateTime", "Properties", "Depth (MD)", "Depth (TVD)", "Fluid set", "Source", "Time", "FL Temp",
+    "Date", "DateTime", "Properties", "Depth (MD)", "Depth (TVD)", "Fluid set", "Source", "Well", "Time", "FL Temp",
     "Density @ °C", "FV", "FV Temp", "FV @ °C", "PV", "PV Temp", "PV @ °C", "YP",
     "Gel_10s", "Gel_10min", "Gel_30min", "tau0",
     "L600", "L300", "L200", "L100", "L6", "L3",
@@ -292,11 +675,14 @@ MUD_CANONICAL_ORDER = [
 ]
 MUD_METADATA_COLUMNS = {
     "Date", "DateTime", "Properties", "Depth (MD)", "Depth (TVD)", "Fluid set", "Source", "Time",
-    "Additional Properties",
+    "Additional Properties", "Well",
 }
 MUD_ANALYTIC_EXCLUDE = {
     "DateTime", "Properties", "Depth (MD)", "Depth (TVD)", "Fluid set", "Source", "Time",
     "Density @ °C", "FV @ °C", "PV @ °C",
+    # 'Additional Properties' es el índice de muestra del día, no una propiedad del lodo:
+    # graficarlo o promediarlo no significa nada.
+    "Additional Properties", "Well",
 }
 MUD_EXPORT_HEADER_SPECS = [
     ("Depth (MD)", "Depth (MD)", "m"),
@@ -1320,6 +1706,370 @@ def _parse_mud_pdf_daily_report_grid(pdf, source_name: str = "") -> list[dict]:
     ]
 
 
+# ============================================================
+# Reporte diario Mi SWACO / Schlumberger ("PROPIEDADES DE LODO")
+# ============================================================
+
+# Etiqueta de fila normalizada -> campo interno. El orden importa: gana la primera
+# expresión que matchea, así que las etiquetas específicas van antes que las genéricas
+# ("solidos corregidos" antes de "solidos", "filtrado hthp" antes de "filtrado api").
+_SWACO_ROW_FIELDS: list[tuple[str, str]] = [
+    (r"^temp\.?\s*(flow\s*line|de\s*salida|salida)", "fl_temp"),
+    (r"^profundidad\s*/\s*tvd", "depth"),
+    (r"^densidad", "density"),
+    (r"^visc\.?\s*embudo", "fv"),
+    (r"^temp\.?\s*reolog", "rheo_temp"),
+    (r"^r?\s*600\s*/\s*r?\s*300$", "l600_l300"),
+    (r"^r?\s*200\s*/\s*r?\s*100$", "l200_l100"),
+    (r"^r?\s*6\s*/\s*r?\s*3$", "l6_l3"),
+    (r"^r\s*600$", "l600"),
+    (r"^r\s*300$", "l300"),
+    (r"^r\s*200$", "l200"),
+    (r"^r\s*100$", "l100"),
+    (r"^r\s*6$", "l6"),
+    (r"^r\s*3$", "l3"),
+    (r"^(vp|pv)$", "pv"),
+    (r"^(pc|yp)$", "yp"),
+    (r"^10\s*s\s*/\s*10\s*m\s*/\s*30\s*m\s*gel", "gel_triple"),
+    (r"^gel\s*10\s*s", "gel_10s"),
+    (r"^gel\s*10\s*m", "gel_10min"),
+    (r"^gel\s*30\s*m", "gel_30min"),
+    (r"^filtrado\s*(hthp|hpht)", "hthp"),
+    (r"^filtrado\s*api", "api_filtrate"),
+    (r"^revoque", "cake"),
+    (r"^solidos\s+corregidos", "corr_solid"),
+    (r"^solidos(\s+retorta)?$", "solids"),
+    (r"^aceite$", "nap"),
+    (r"^agua$", "water"),
+    (r"^(rel\.?\s*)?aceite\s*/\s*agua$", "nap_ratio"),
+    (r"^alcalinidad", "alkalinity"),
+    (r"^cloruros\s+(en\s+)?lodo", "chlorides"),
+    (r"^salinidad", "salinity"),
+    (r"^cloruros\s+fase\s+acuosa", "water_phase_salinity"),
+    (r"^ex(c)?\.?\s*(cal|calcio)", "excess_lime"),
+    (r"^estabilidad\s+el", "electrical_stability"),
+    (r"^arena$", "sand"),
+    (r"^lgs(\s+totales)?$", "lgs_pct"),
+]
+
+# Secciones que arrancan justo debajo de la tabla de propiedades. Se evalúan sobre el
+# texto recortado a la banda de la tabla, así que los paneles laterales del mismo
+# renglón visual ("EQUIPOS DE CONTROL DE SOLIDOS", "PRODUCTOS USADOS") no cortan nada.
+_SWACO_SECTION_STOP = (
+    r"^(comentarios|distribucion|detalle|sumario|analisis|reologia|balance|"
+    r"especificaciones|equipos|productos|volumenes|concentracion|tanque)\b"
+)
+
+_SWACO_LR_PAIRS = {
+    "l600_l300": ("L600", "L300"),
+    "l200_l100": ("L200", "L100"),
+    "l6_l3": ("L6", "L3"),
+}
+_SWACO_SIMPLE_FIELDS = {
+    "fl_temp": "FL Temp",
+    "fv": "FV",
+    "rheo_temp": "PV Temp",
+    "l600": "L600",
+    "l300": "L300",
+    "l200": "L200",
+    "l100": "L100",
+    "l6": "L6",
+    "l3": "L3",
+    "pv": "PV",
+    "yp": "YP",
+    "gel_10s": "Gel_10s",
+    "gel_10min": "Gel_10min",
+    "gel_30min": "Gel_30min",
+    "api_filtrate": "Filtrado",
+    "corr_solid": "Corr Solid",
+    "solids": "Solids",
+    "nap": "NAP",
+    "water": "Water",
+    "alkalinity": "Alkalinity",
+    "chlorides": "Chlorides",
+    "salinity": "Salinity",
+    "water_phase_salinity": "Water Phase Salinity",
+    "excess_lime": "Excess Lime",
+    "electrical_stability": "Electrical_Stability",
+    "sand": "Sand",
+    "lgs_pct": "LGS (%)",
+}
+
+
+def _swaco_normalize_label(text: str) -> str:
+    return re.sub(r"\s+", " ", _mud_clean_cell_text(text)).strip(" :").lower()
+
+
+def _swaco_row_field(label: str) -> str | None:
+    low = _swaco_normalize_label(label)
+    if not low:
+        return None
+    for pattern, field in _SWACO_ROW_FIELDS:
+        if re.match(pattern, low):
+            return field
+    return None
+
+
+def _swaco_group_words_into_rows(page, y_tolerance: float = 3.0) -> list[list[dict]]:
+    words = sorted(page.extract_words(), key=lambda w: (w["top"], w["x0"]))
+    rows: list[list[dict]] = []
+    for w in words:
+        if rows and abs(w["top"] - rows[-1][0]["top"]) <= y_tolerance:
+            rows[-1].append(w)
+        else:
+            rows.append([w])
+    for r in rows:
+        r.sort(key=lambda w: w["x0"])
+    return rows
+
+
+def _swaco_sample_columns(row: list[dict], gap: float = 8.0) -> list[dict]:
+    """
+    Divide la fila 'Muestra / Hora' en columnas de muestra. Cada celda es del tipo
+    'Succion / 20:00' o 'Succion - 12:00'; se exige que contenga una hora para no
+    confundirlas con los encabezados de los paneles vecinos ('Productos', 'Tamaño',
+    'Cantidad'), que están en el mismo renglón visual.
+    """
+    cells: list[list[dict]] = []
+    for w in row:
+        if cells and w["x0"] - cells[-1][-1]["x1"] <= gap:
+            cells[-1].append(w)
+        else:
+            cells.append([w])
+
+    cols: list[dict] = []
+    for cell in cells:
+        text = " ".join(w["text"] for w in cell)
+        m = re.search(r"\d{1,2}:\d{2}", text)
+        if not m:
+            continue
+        cols.append({
+            "x0": min(w["x0"] for w in cell),
+            "x1": max(w["x1"] for w in cell),
+            "source": text[:m.start()].strip(" -/–"),
+            "time": m.group(0),
+        })
+    return sorted(cols, key=lambda c: c["x0"])
+
+
+def _swaco_split_label_unit(words: list[dict], big_gap: float = 12.0) -> tuple[str, str]:
+    """Separa etiqueta y unidad por el hueco horizontal más grande: en esta plantilla
+    la unidad va en su propia columna, muy a la derecha del texto de la etiqueta."""
+    if not words:
+        return "", ""
+    best_i, best_gap = None, 0.0
+    for i in range(1, len(words)):
+        g = words[i]["x0"] - words[i - 1]["x1"]
+        if g > best_gap:
+            best_gap, best_i = g, i
+    if best_i is not None and best_gap >= big_gap:
+        label = " ".join(w["text"] for w in words[:best_i])
+        unit = " ".join(w["text"] for w in words[best_i:])
+    else:
+        label, unit = " ".join(w["text"] for w in words), ""
+    return label.strip(), unit.strip()
+
+
+def _swaco_bucket_values(words: list[dict], centers: list[float]) -> list[str]:
+    buckets: list[list[dict]] = [[] for _ in centers]
+    for w in words:
+        mid = (w["x0"] + w["x1"]) / 2
+        j = min(range(len(centers)), key=lambda k: abs(centers[k] - mid))
+        buckets[j].append(w)
+    return [" ".join(w["text"] for w in sorted(b, key=lambda w: w["x0"])).strip() for b in buckets]
+
+
+def _swaco_apply_field(rec: dict, field: str, raw: str) -> None:
+    nums = _extract_all_numbers(raw)
+    simple = _SWACO_SIMPLE_FIELDS.get(field)
+    if simple:
+        if nums:
+            rec[simple] = nums[0]
+        return
+    if field == "depth":
+        if nums:
+            rec["Depth (MD)"] = nums[0]
+        if len(nums) >= 2:
+            rec["Depth (TVD)"] = nums[1]
+        return
+    if field == "density":
+        if nums:
+            rec["Density"] = nums[0]
+            rec["Density @ °C"] = _mud_pair_string(raw)
+        if len(nums) >= 2:
+            rec["Density Temp"] = nums[1]
+        return
+    if field in _SWACO_LR_PAIRS:
+        hi, lo = _SWACO_LR_PAIRS[field]
+        if nums:
+            rec[hi] = nums[0]
+        if len(nums) >= 2:
+            rec[lo] = nums[1]
+        return
+    if field == "gel_triple":
+        g1, g2, g3 = _parse_gel_triple(raw)
+        if g1 is not None:
+            rec["Gel_10s"] = g1
+        if g2 is not None:
+            rec["Gel_10min"] = g2
+        if g3 is not None:
+            rec["Gel_30min"] = g3
+        return
+    if field == "hthp":
+        if nums:
+            rec["HTHP"] = nums[0]
+        if len(nums) >= 2:
+            rec["HTHP @ °C"] = nums[1]
+        return
+    if field == "cake":
+        # 'Revoque API / HTHP' viene como '/ 1' (API vacío, HTHP = 1) o '1 / 1'.
+        if nums:
+            rec["Cake (HTHP)"] = nums[-1]
+        return
+    if field == "nap_ratio":
+        if nums:
+            rec["NAP Ratio"] = nums[0]
+            rec["NAP 2"] = nums[0]
+        if len(nums) >= 2:
+            rec["Water Ratio"] = nums[1]
+        return
+
+
+# Panel 'ANALISIS DE SOLIDOS': es un cálculo diario único (no por muestra), así que se
+# usa para rellenar lo que la tabla de propiedades no trae, sin pisar el valor propio
+# de cada muestra.
+_SWACO_DAILY_SOLIDS = [
+    ("ASG", r"Average\s+SG\s+Solids\s+([\d.,]+)"),
+    ("HGS (%)", r"High\s+Gravity\s+%\s+([\d.,]+)"),
+    ("LGS (%)", r"Low\s+Gravity\s+%\s+([\d.,]+)"),
+    ("HGS (kg/m³)", r"High\s+Gravity\s+Wt\.?\s+kg/m\S*\s+([\d.,]+)"),
+    ("LGS (kg/m³)", r"Low\s+Gravity\s+Wt\.?\s+kg/m\S*\s+([\d.,]+)"),
+    ("Corr Solid", r"Adjusted\s+Solids\s+%vol\s+([\d.,]+)"),
+]
+
+
+def _parse_mud_pdf_swaco_daily(pdf, source_name: str = "") -> list[dict]:
+    """
+    Parser posicional del reporte diario de fluidos Mi SWACO / Schlumberger
+    ('DRILLING SOLUTIONS', sección 'PROPIEDADES DE LODO'). Soporta tanto la versión
+    con varias muestras en columnas (Succion 20:00 / 14:00 / 4:00) como la de una
+    sola columna, y devuelve un registro por muestra con las claves canónicas de la
+    bitácora, igual que _parse_mud_pdf_daily_report_grid con el layout WellSight.
+    """
+    full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    if not re.search(r"propiedades\s+de\s+lodo", full_text, re.IGNORECASE):
+        return []
+    if not re.search(r"muestra\s*/\s*hora", full_text, re.IGNORECASE):
+        return []
+
+    m_date = re.search(r"Fecha\s*:?\s*(\d{1,2}/\d{1,2}/\d{2,4})", full_text, re.IGNORECASE)
+    report_date = (
+        _extract_date_from_text(m_date.group(1)) if m_date else None
+    ) or _date_from_filename_or_today(source_name)
+
+    m_fluid = re.search(r"Tipo\s+de\s+Lodo\s*:?\s*(\S+)", full_text, re.IGNORECASE)
+    fluid_set = m_fluid.group(1).strip(":") if m_fluid else ""
+
+    # El pozo no va a la bitácora exportada (no es columna del formato), pero identifica
+    # la muestra al acumular varios reportes: evita fusionar dos pozos que coincidan en
+    # fecha, hora y origen.
+    m_well = re.search(r"\bPozo\s*:?\s*(\S+)", full_text, re.IGNORECASE)
+    well = m_well.group(1).strip(":") if m_well else ""
+
+    records: list[dict] = []
+    for page in pdf.pages:
+        rows = _swaco_group_words_into_rows(page)
+        header_idx, cols = None, []
+        for i, row in enumerate(rows):
+            if not re.match(r"muestra\s*/\s*hora", " ".join(w["text"] for w in row), re.IGNORECASE):
+                continue
+            found = _swaco_sample_columns(row)
+            if found:
+                header_idx, cols = i, found
+                break
+        if header_idx is None:
+            continue
+
+        anchor_x0 = rows[header_idx][0]["x0"]
+        centers = [(c["x0"] + c["x1"]) / 2 for c in cols]
+        if len(centers) > 1:
+            half = min(centers[k + 1] - centers[k] for k in range(len(centers) - 1)) / 2
+        else:
+            half = max(20.0, (cols[0]["x1"] - cols[0]["x0"]) / 2 + 5)
+        band_left, band_right = centers[0] - half, centers[-1] + half
+
+        # Las muestras vienen en el orden del reporte (la más reciente primero), pero la
+        # bitácora numera 'Properties' en orden cronológico como el layout WellSight.
+        order = sorted(range(len(cols)), key=lambda j: _mud_parse_time_value(cols[j]["time"]) or datetime.min.time())
+        rank = {j: k + 1 for k, j in enumerate(order)}
+
+        page_records: list[dict] = []
+        for j, c in enumerate(cols):
+            t = _mud_parse_time_value(c["time"])
+            time_txt = t.strftime("%H:%M") if t else c["time"]
+            ts = _mud_compose_datetime(report_date, time_txt) or report_date
+            page_records.append({
+                "Date": ts,
+                "DateTime": _mud_isoformat_no_tz(ts),
+                "Time": time_txt,
+                "Properties": rank[j],
+                "Additional Properties": rank[j],
+                "Fluid set": fluid_set,
+                "Source": c["source"] or source_name,
+                "Well": well,
+            })
+
+        for row in rows[header_idx + 1:]:
+            band_text = " ".join(w["text"] for w in row if w["x1"] <= band_right + 4)
+            if re.match(_SWACO_SECTION_STOP, _swaco_normalize_label(band_text)):
+                break
+            # Toda etiqueta de propiedad arranca en la misma x que 'Muestra'. Filtrarlo
+            # descarta los paneles a la derecha ('ESPECIFICACIONES DE LODO', que repite
+            # Densidad/VP/Filtrado con los valores del cierre del día).
+            if row[0]["x0"] > anchor_x0 + 8:
+                continue
+
+            label, _unit = _swaco_split_label_unit([w for w in row if w["x1"] <= band_left])
+            field = _swaco_row_field(label)
+            if not field:
+                continue
+            values = _swaco_bucket_values(
+                [w for w in row if w["x0"] >= band_left and w["x1"] <= band_right + 4], centers
+            )
+            for j, rec in enumerate(page_records):
+                if j < len(values) and values[j]:
+                    _swaco_apply_field(rec, field, values[j])
+
+        records.extend(page_records)
+
+    if not records:
+        return []
+
+    for key, pattern in _SWACO_DAILY_SOLIDS:
+        m = re.search(pattern, full_text, re.IGNORECASE)
+        val = _extract_numeric(m.group(1)) if m else None
+        if val is None:
+            continue
+        for rec in records:
+            rec.setdefault(key, val)
+
+    for rec in records:
+        # El reporte no da temperatura propia para la viscosidad de embudo: se mide sobre
+        # la misma muestra que la densidad, y así queda 'Fv @ Nº°C' alineada con 'D @ Nº°C'
+        # como en la bitácora del layout WellSight.
+        if "FV" in rec and "FV Temp" not in rec and "Density Temp" in rec:
+            rec["FV Temp"] = rec["Density Temp"]
+
+    return [
+        r
+        for r in records
+        if any(
+            k not in MUD_METADATA_COLUMNS and pd.notna(v) and _mud_clean_cell_text(v) not in ("", "/")
+            for k, v in r.items()
+        )
+    ]
+
+
 def _parse_mud_pdf(file, source_name: str = "") -> list[dict]:
     """Extrae tablas/texto de PDF y parsea propiedades conocidas."""
     out: list[dict] = []
@@ -1334,6 +2084,10 @@ def _parse_mud_pdf(file, source_name: str = "") -> list[dict]:
             grid_rows = _parse_mud_pdf_daily_report_grid(pdf, name)
             if grid_rows:
                 return grid_rows
+
+            swaco_rows = _parse_mud_pdf_swaco_daily(pdf, name)
+            if swaco_rows:
+                return swaco_rows
 
             full_text_parts = []
             for page in pdf.pages:
@@ -1460,9 +2214,77 @@ def _build_mud_bitacora(parsed_rows: list[dict]) -> pd.DataFrame:
     return df
 
 
+def _mud_parse_attachment(name: str, data: bytes) -> list[dict]:
+    """Parsea un reporte (subido o descargado del correo) según su extensión."""
+    low = (name or "").lower()
+    if low.endswith(".pdf"):
+        return _parse_mud_pdf(io.BytesIO(data), source_name=name)
+    if low.endswith((".xlsx", ".xls")):
+        out: list[dict] = []
+        xl = pd.ExcelFile(io.BytesIO(data))
+        for sh in xl.sheet_names[:5]:
+            df_raw = pd.read_excel(xl, sheet_name=sh, header=None)
+            out.extend(_parse_mud_excel_sheet(df_raw, name))
+        return out
+    df_raw = pd.read_csv(io.BytesIO(data), sep=None, engine="python", low_memory=False)
+    return _parse_mud_csv(df_raw, name)
+
+
+def _mud_file_signature(data: bytes) -> str:
+    """Huella del contenido: permite no re-parsear en cada rerun de Streamlit y no
+    duplicar el mismo reporte aunque llegue con otro nombre."""
+    return f"{hashlib.md5(data).hexdigest()}:{len(data)}"
+
+
+def _mud_renumber_properties(df: pd.DataFrame) -> pd.DataFrame:
+    """Renumera 'Properties' por día. En una bitácora acumulada cada jornada vuelve a
+    contar desde 1, que es el significado original de la columna (N° de muestra del día)
+    y deja el resultado idéntico al de antes cuando hay un solo día."""
+    if df.empty or "Date" not in df.columns:
+        return df
+    df = df.copy()
+    seq = (df.groupby(df["Date"].dt.normalize(), sort=False).cumcount() + 1).values
+    df["Properties"] = seq
+    df["Additional Properties"] = seq
+    return df
+
+
+def _mud_merge_bitacora(existing: pd.DataFrame | None, new: pd.DataFrame | None) -> pd.DataFrame:
+    """
+    Funde dos bitácoras en una sola ordenada por fecha y hora. Una muestra queda
+    identificada por fecha/hora + origen + pozo: así el reporte de las 20 h, que repite
+    las muestras de las 04 h y 14 h del mismo día, actualiza esas filas en vez de
+    duplicarlas (gana la última ingestada). Vuelve a numerar 'Properties' por día.
+    """
+    frames = [f for f in (existing, new) if f is not None and not f.empty]
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    if "Date" not in df.columns:
+        return df
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df = df.dropna(subset=["Date"])
+    if df.empty:
+        return df
+
+    def _txt(col: str) -> pd.Series:
+        if col not in df.columns:
+            return pd.Series("", index=df.index)
+        return df[col].astype(str).str.strip().str.lower()
+
+    key = pd.DataFrame({
+        "d": df["Date"].dt.strftime("%Y-%m-%dT%H:%M"),
+        "s": _txt("Source"),
+        "w": _txt("Well"),
+    })
+    df = df[~key.duplicated(keep="last")]
+    df = df.sort_values("Date", kind="stable").reset_index(drop=True)
+    return _mud_renumber_properties(df)
+
+
 def _mud_numeric_property_columns(bitacora: pd.DataFrame) -> list[str]:
     preferred = [
-        "FL Temp", "Density @ °C", "FV", "FV Temp", "PV", "PV Temp", "YP",
+        "Density", "FL Temp", "Density @ °C", "FV", "FV Temp", "PV", "PV Temp", "YP",
         "Gel_10s", "Gel_10min", "Gel_30min", "tau0",
         "L600", "L300", "L200", "L100", "L6", "L3",
         "HTHP", "HTHP @ °C", "Corr Solid", "NAP", "Water", "NAP Ratio", "Water Ratio",
@@ -1609,6 +2431,14 @@ def _mud_build_view_df(bitacora: pd.DataFrame) -> pd.DataFrame:
     for c in export_cols:
         if c in ("DateTime", "Time", "Fluid set", "Source"):
             view[c] = view[c].fillna("")
+            continue
+        # Los huecos llegan como None (propiedad ausente en ese reporte) y en una columna
+        # de tipo object la tabla los pinta como el texto "None". Al acumular reportes de
+        # distinta cobertura eso es la mayoría de la hoja, así que se pasan a numérico —
+        # solo si ningún valor real se pierde en la conversión.
+        num = pd.to_numeric(view[c], errors="coerce")
+        if num.notna().sum() >= view[c].notna().sum():
+            view[c] = num
     return view[export_cols]
 
 
@@ -2017,29 +2847,14 @@ def render_mud_report(to_email: str = "") -> None:
                     st.success('Se descargaron **{n}** adjunto(s). Procesando...'.format(n=len(attachments)))
                     for name, data in attachments:
                         try:
-                            if name.lower().endswith(".pdf"):
-                                buf = io.BytesIO(data)
-                                parsed.extend(_parse_mud_pdf(buf, source_name=name))
-                            elif name.lower().endswith((".xlsx", ".xls")):
-                                xl = pd.ExcelFile(io.BytesIO(data))
-                                for sh in xl.sheet_names[:5]:
-                                    df_raw = pd.read_excel(xl, sheet_name=sh, header=None)
-                                    parsed.extend(_parse_mud_excel_sheet(df_raw, name))
-                            else:
-                                df_raw = pd.read_csv(io.BytesIO(data), sep=None, engine="python", low_memory=False)
-                                parsed.extend(_parse_mud_csv(df_raw, name))
+                            parsed.extend(_mud_parse_attachment(name, data))
                         except Exception as e:
                             st.warning(f"No se pudo procesar **{name}**: {e}")
                     if parsed:
-                        bitacora_new = _build_mud_bitacora(parsed)
-                        existing = st.session_state.get("mud_bitacora")
-                        if existing is not None and not existing.empty:
-                            bitacora_combined = pd.concat([existing, bitacora_new], ignore_index=True)
-                            bitacora_combined["Date"] = pd.to_datetime(bitacora_combined["Date"], errors="coerce")
-                            bitacora_combined = bitacora_combined.dropna(subset=["Date"]).sort_values("Date").drop_duplicates().reset_index(drop=True)
-                            st.session_state["mud_bitacora"] = bitacora_combined
-                        else:
-                            st.session_state["mud_bitacora"] = bitacora_new
+                        merged = _mud_merge_bitacora(
+                            st.session_state.get("mud_bitacora"), _build_mud_bitacora(parsed)
+                        )
+                        st.session_state["mud_bitacora"] = merged
                         st.success(f"Bitácora actualizada con **{len(parsed)}** registro(s) desde correo.")
                         st.rerun()
                     else:
@@ -2047,36 +2862,70 @@ def render_mud_report(to_email: str = "") -> None:
 
     else:
         uploaded = st.file_uploader(
-            'Subir reportes de lodo (PDF, Excel, CSV)',
+            'Subir reportes de lodo (PDF, Excel, CSV) — puedes soltar varios días a la vez',
             type=["pdf", "xlsx", "xls", "csv"],
             accept_multiple_files=True,
             key="mud_upload",
         )
 
+        col_acc, col_clear = st.columns([3, 1])
+        with col_acc:
+            accumulate = st.toggle(
+                'Acumular reportes en una sola bitácora',
+                value=st.session_state.get("mud_accumulate", True),
+                key="mud_accumulate",
+                help='Activado: cada reporte que subas se suma a la bitácora, ordenada por fecha y hora, '
+                     'y las muestras repetidas (misma fecha/hora, origen y pozo) se actualizan en vez de duplicarse. '
+                     'Desactivado: la bitácora refleja solo los archivos que están ahora en el cargador.',
+            )
+        with col_clear:
+            if st.button('🗑️ Limpiar bitácora', key="mud_clear_btn",
+                         help='Vacía la bitácora acumulada. Los archivos del cargador se vuelven a leer.'):
+                for k in ("mud_bitacora", "mud_ingested", "mud_parse_cache"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+
         if uploaded:
+            cache = st.session_state.setdefault("mud_parse_cache", {})
+            ingested = st.session_state.setdefault("mud_ingested", {})
+            current_sigs: list[str] = []
+            new_sigs: list[str] = []
             for f in uploaded:
                 name = getattr(f, "name", "") or ""
                 try:
-                    if name.lower().endswith(".pdf"):
-                        parsed.extend(_parse_mud_pdf(f, source_name=name))
-                    elif name.lower().endswith((".xlsx", ".xls")):
-                        xl = pd.ExcelFile(f)
-                        for sh in xl.sheet_names[:5]:
-                            df_raw = pd.read_excel(xl, sheet_name=sh, header=None)
-                            parsed.extend(_parse_mud_excel_sheet(df_raw, name))
-                    else:
-                        df_raw = pd.read_csv(f, sep=None, engine="python", low_memory=False)
-                        parsed.extend(_parse_mud_csv(df_raw, name))
-                except Exception as e:
-                    st.warning(f"No se pudo procesar **{name}**: {e}")
+                    data = f.getvalue()
+                except Exception:
+                    f.seek(0)
+                    data = f.read()
+                sig = _mud_file_signature(data)
+                current_sigs.append(sig)
+                # El parseo se cachea por contenido: Streamlit reejecuta el script en cada
+                # interacción y el cargador conserva los archivos, así que sin esto cada
+                # clic volvería a leer todos los PDFs.
+                if sig not in cache:
+                    try:
+                        cache[sig] = _mud_parse_attachment(name, data)
+                    except Exception as e:
+                        cache[sig] = []
+                        st.warning(f"No se pudo procesar **{name}**: {e}")
+                    if not cache[sig]:
+                        st.warning(f"No se detectaron propiedades de lodo en **{name}**.")
+                if sig not in ingested:
+                    new_sigs.append(sig)
+                    ingested[sig] = name
 
-            if parsed:
-                bitacora = _build_mud_bitacora(parsed)
-                st.session_state["mud_bitacora"] = bitacora
+            if accumulate:
+                if new_sigs:
+                    fresh = [r for s in new_sigs for r in cache.get(s, [])]
+                    if fresh:
+                        st.session_state["mud_bitacora"] = _mud_merge_bitacora(
+                            st.session_state.get("mud_bitacora"), _build_mud_bitacora(fresh)
+                        )
             else:
-                st.warning("No se detectaron propiedades de lodo en los archivos. Revisa que contengan columnas o celdas como Density, MW, PV, YP, Gels, etc.")
-                if "mud_bitacora" in st.session_state:
-                    del st.session_state["mud_bitacora"]
+                rows = [r for s in current_sigs for r in cache.get(s, [])]
+                st.session_state["mud_bitacora"] = (
+                    _mud_merge_bitacora(None, _build_mud_bitacora(rows)) if rows else pd.DataFrame()
+                )
 
     bitacora = st.session_state.get("mud_bitacora")
     if bitacora is None or bitacora.empty:
@@ -2086,16 +2935,23 @@ def render_mud_report(to_email: str = "") -> None:
 
     # Chips pro Rogii sobre la bitácora
     n_reg = len(bitacora)
+    mud_days = pd.to_datetime(bitacora["Date"], errors="coerce").dt.normalize().dropna()
+    n_days = int(mud_days.nunique())
+    mud_wells = sorted(
+        w for w in bitacora.get("Well", pd.Series(dtype=str)).astype(str).str.strip().unique() if w and w != "nan"
+    )
     bitacora_chips = [
         ("🔥 Rogii", "#b91c1c", "#ea580c"),
-        (f"{n_reg:,} registros", "#0f766e", "#14b8a6"),
-        ("Bitácora", "#1e3a5f", "#2563eb"),
+        (f"{n_reg:,} muestras", "#0f766e", "#14b8a6"),
+        (f"{n_days} día{'s' if n_days != 1 else ''}", "#1e3a5f", "#2563eb"),
     ]
     if bitacora["Date"].notna().any():
         d_min = bitacora["Date"].min()
         d_max = bitacora["Date"].max()
         if hasattr(d_min, "strftime"):
-            bitacora_chips.append((f"{d_min.strftime('%d/%b')} – {d_max.strftime('%d/%b')}", "#334155", "#64748b"))
+            bitacora_chips.append((f"{d_min.strftime('%d/%m')} – {d_max.strftime('%d/%m')}", "#334155", "#64748b"))
+    if len(mud_wells) == 1:
+        bitacora_chips.append((mud_wells[0][:26], "#3f3f46", "#71717a"))
     bitacora_cols = st.columns(len(bitacora_chips))
     for i, (label, c1, c2) in enumerate(bitacora_chips):
         with bitacora_cols[i]:
@@ -2105,7 +2961,33 @@ def render_mud_report(to_email: str = "") -> None:
                 f'padding:0.28rem 0.65rem;border-radius:999px;box-shadow:0 1px 3px rgba(0,0,0,0.15);">{label}</span>',
                 unsafe_allow_html=True,
             )
-    st.success(f"Bitácora: **{n_reg:,}** registros por fecha.")
+    st.success(
+        f"Bitácora: **{n_reg:,}** muestras en **{n_days}** día(s), ordenadas por fecha y hora. "
+        "«Properties» reinicia en 1 cada jornada."
+    )
+    if len(mud_wells) > 1:
+        st.warning(
+            "La bitácora mezcla **{n}** pozos ({lista}). Se conservan por separado, pero el formato "
+            "exportado no tiene columna de pozo: si esperabas uno solo, limpia la bitácora y vuelve a cargar.".format(
+                n=len(mud_wells), lista=", ".join(mud_wells[:4]) + ("…" if len(mud_wells) > 4 else "")
+            )
+        )
+    # Un solo filtro arriba, que escopa gráficas y estadísticas por igual. No toca la
+    # bitácora ni las descargas: esas siempre salen con todo lo acumulado.
+    df_charts = bitacora
+    if n_days > 1:
+        d_lo, d_hi = mud_days.min().date(), mud_days.max().date()
+        sel_lo, sel_hi = st.slider(
+            "Ventana de análisis",
+            min_value=d_lo, max_value=d_hi, value=(d_lo, d_hi),
+            format="DD/MM/YY", key="mud_window",
+            help="Recorta las gráficas y las estadísticas a un rango de días. La bitácora y las descargas no se filtran.",
+        )
+        _dates_only = pd.to_datetime(bitacora["Date"], errors="coerce").dt.date
+        df_charts = bitacora[(_dates_only >= sel_lo) & (_dates_only <= sel_hi)]
+        if len(df_charts) != n_reg:
+            st.caption(f"Ventana activa: **{len(df_charts):,}** de {n_reg:,} muestras.")
+
     tab_bitacora, tab_graficas, tab_stats = st.tabs(["Bitácora", "Gráficas y evolución", "Estadísticas"])
 
     with tab_bitacora:
@@ -2209,133 +3091,175 @@ def render_mud_report(to_email: str = "") -> None:
                 st.text_input("SMTP password", value=("********" if MUD_SMTP_PASS else ""), type="password", disabled=True, key="mud_smtp_pass_view")
 
     with tab_graficas:
-        st.subheader("Evolución de propiedades por día")
+        st.subheader("Evolución de propiedades")
         props = _mud_numeric_property_columns(bitacora)
         if not props:
             st.info("No hay columnas numéricas para graficar.")
         else:
-            st.caption("Selecciona las propiedades a graficar")
-            default_first = min(4, len(props))
-            n_cols = 4
-            n_rows = (len(props) + n_cols - 1) // n_cols
-            checkbox_state = {}
-            for row in range(n_rows):
-                cols = st.columns(n_cols)
-                for col_idx in range(n_cols):
-                    i = row * n_cols + col_idx
-                    if i >= len(props):
-                        break
-                    p = props[i]
-                    default = i < default_first
-                    checkbox_state[p] = st.checkbox(
-                        p,
-                        value=st.session_state.get(f"mud_cb_{p}", default),
-                        key=f"mud_cb_{p}",
-                        label_visibility="visible",
-                    )
-            selected = [p for p in props if checkbox_state.get(p, False)]
-            if selected:
-                df_plot = bitacora[["Date"] + selected].copy()
-                df_plot = df_plot.set_index("Date").sort_index()
-                df_plot = df_plot.reset_index()
-                fig = go.Figure()
-                for p in selected:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=df_plot["Date"],
-                            y=df_plot[p],
-                            mode="lines+markers",
-                            name=p,
-                            line=dict(width=2),
-                            marker=dict(size=8),
+            st.caption(
+                "Todas las gráficas se descargan en PNG de alta definición desde el ícono 📷 "
+                "de la barra de herramientas (5400 × 3000 px)."
+            )
+            evo_mode = st.radio(
+                "Vista",
+                [_MUD_EVO_PANELS, _MUD_EVO_NORM, _MUD_EVO_RAW],
+                horizontal=True,
+                key="mud_evo_mode",
+                format_func=lambda m: {
+                    _MUD_EVO_PANELS: "Paneles (un eje por propiedad)",
+                    _MUD_EVO_NORM: "Superpuesto normalizado 0–100",
+                    _MUD_EVO_RAW: "Superpuesto en valor real",
+                }[m],
+                help="Paneles: cada propiedad con su propia escala, recomendado para varios días. "
+                     "Normalizado: compara formas entre magnitudes distintas. "
+                     "Valor real: útil solo entre propiedades de escala parecida.",
+            )
+
+            with st.expander("Propiedades a graficar", expanded=True):
+                # Marcadas por defecto las que de verdad se siguen día a día, no las
+                # primeras cuatro de la lista (que caían en temperaturas de medición).
+                defaults = [p for p in MUD_DEFAULT_CHART_PROPS if p in props] or props[:4]
+                n_cols = 4
+                n_rows = (len(props) + n_cols - 1) // n_cols
+                checkbox_state = {}
+                for row in range(n_rows):
+                    cols = st.columns(n_cols)
+                    for col_idx in range(n_cols):
+                        i = row * n_cols + col_idx
+                        if i >= len(props):
+                            break
+                        p = props[i]
+                        default = p in defaults
+                        checkbox_state[p] = st.checkbox(
+                            p,
+                            value=st.session_state.get(f"mud_cb_{p}", default),
+                            key=f"mud_cb_{p}",
+                            label_visibility="visible",
                         )
+            selected = [p for p in props if checkbox_state.get(p, False)]
+            selected = [p for p in selected if pd.to_numeric(df_charts.get(p), errors="coerce").notna().any()]
+
+            if not selected:
+                st.info("Marca al menos una propiedad con datos en la ventana seleccionada.")
+            else:
+                limit = _MUD_MAX_PANELS if evo_mode == _MUD_EVO_PANELS else MUD_MAX_OVERLAY_SERIES
+                if len(selected) > limit:
+                    st.info(
+                        f"Se muestran las primeras **{limit}** propiedades de las {len(selected)} marcadas: "
+                        "más allá de ese número la gráfica deja de ser legible."
                     )
-                fig.update_layout(
-                    title="Evolución de propiedades de lodo",
-                    xaxis_title="Fecha",
-                    yaxis_title="Valor",
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    hovermode="x unified",
+                    selected = selected[:limit]
+
+                if evo_mode == _MUD_EVO_PANELS:
+                    fig = _mud_evolution_panels_figure(df_charts, selected)
+                else:
+                    if evo_mode == _MUD_EVO_RAW and len(selected) > 1:
+                        decades = []
+                        for p in selected:
+                            s = pd.to_numeric(df_charts[p], errors="coerce").dropna().abs()
+                            s = s[s > 0]
+                            if len(s):
+                                decades.append(float(np.log10(s.median())))
+                        if decades and (max(decades) - min(decades)) >= 1.5:
+                            st.warning(
+                                "Las propiedades marcadas están en escalas muy distintas (p. ej. densidad ~1680 kg/m³ "
+                                "frente a YP ~10 lb/100ft²): en un solo eje las pequeñas quedan planas. "
+                                "Usa **Paneles** o **Superpuesto normalizado**."
+                            )
+                    fig = _mud_evolution_overlay_figure(
+                        df_charts, selected, _mud_assign_series_slots(selected),
+                        normalize=(evo_mode == _MUD_EVO_NORM),
+                    )
+                st.plotly_chart(
+                    fig, use_container_width=True,
+                    config=_mud_hd_config(f"{_default_mud_bitacora_basename(bitacora)}_evolucion"),
                 )
-                fig = prettify_auto(fig, h=480)
-                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
-                # Chips por propiedad
-                chip_items = []
-                for p in selected:
-                    s = bitacora[p].dropna()
-                    if len(s):
-                        chip_items.append((p, "blue", f"min {format_num(s.min())} · max {format_num(s.max())} · n={len(s):,}"))
-                if chip_items:
-                    nchips = len(chip_items)
-                    cols_chip = st.columns(min(nchips, 4))
-                    for i, (label, color, sub) in enumerate(chip_items):
-                        with cols_chip[i % len(cols_chip)]:
-                            st.caption(f"**{label}** — {sub}")
+                resumen = " · ".join(
+                    f"**{p}** {format_num(pd.to_numeric(df_charts[p], errors='coerce').min())}–"
+                    f"{format_num(pd.to_numeric(df_charts[p], errors='coerce').max())}"
+                    for p in selected[:6]
+                )
+                if resumen:
+                    st.caption(f"Rango en la ventana — {resumen}")
 
             st.markdown("---")
-            st.subheader("Gráfica por propiedad (selección única)")
+            st.subheader("Detalle por propiedad")
             single_prop = st.selectbox("Propiedad", ["(ninguna)"] + props, key="mud_single_prop")
             if single_prop and single_prop != "(ninguna)":
-                s = bitacora[single_prop].dropna()
+                s = pd.to_numeric(df_charts[single_prop], errors="coerce").dropna()
                 if len(s):
-                    fig1 = px.line(bitacora, x="Date", y=single_prop, title=f"Evolución – {single_prop}", markers=True)
-                    fig1.update_traces(line=dict(width=2), marker=dict(size=10))
-                    apply_line_area_fill(fig1, line_color="#2563EB", fill_alpha=0.22)
-                    fig1 = prettify(fig1, h=420)
-                    st.plotly_chart(fig1, use_container_width=True, config=PLOTLY_CONFIG)
-                    _render_chips_row([(single_prop, "blue"), (f"min {format_num(s.min())}", "gray"), (f"max {format_num(s.max())}", "gray"), (f"promedio {format_num(s.mean())}", "green")])
+                    st.plotly_chart(
+                        _mud_property_detail_figure(df_charts, single_prop, _mud_palette()[0]),
+                        use_container_width=True,
+                        config=_mud_hd_config(f"{_sanitize_filename(single_prop)}_evolucion"),
+                    )
+                    _render_chips_row([
+                        (f"n={len(s):,}", "gray"),
+                        (f"min {format_num(s.min())}", "gray"),
+                        (f"max {format_num(s.max())}", "gray"),
+                        (f"promedio {format_num(s.mean())}", "green"),
+                    ])
+                else:
+                    st.info("Esa propiedad no tiene datos en la ventana seleccionada.")
 
             st.markdown("---")
-            st.subheader("🔥 Gráficas adicionales pro")
-            st.caption("Heatmap de correlación, gráfico de control y perfil radar para análisis de fluidos.")
+            st.subheader("Correlación, control y perfil")
 
             # 1) Heatmap de correlación entre propiedades de lodo
-            if len(props) >= 2:
+            corr_props = [p for p in props if pd.to_numeric(df_charts.get(p), errors="coerce").nunique() > 1]
+            if len(corr_props) >= 2 and len(df_charts) >= 3:
                 st.markdown("**Correlación entre propiedades**")
-                corr_mud = bitacora[props].corr()
+                corr_mud = df_charts[corr_props].corr(numeric_only=True)
                 if not corr_mud.isna().all().all():
-                    _mud_hm_stats = heatmap_numeric_stats(bitacora, props)
-                    _mud_chips = stats_df_to_heatmap_chips(_mud_hm_stats, max_chips=10)
-                    if _mud_chips:
-                        st.caption("**Chips — min–max y media por propiedad (base del heatmap)**")
-                        _render_chips_row(_mud_chips)
-                    with st.expander("Min / media / max por propiedad (lodo)", expanded=False):
-                        st.dataframe(_mud_hm_stats, use_container_width=True, hide_index=True)
                     corr_pct = (corr_mud * 100).round(0)
                     text_arr = np.where(
                         np.isnan(corr_pct.values),
                         "",
                         (np.nan_to_num(corr_pct.values, nan=0.0).astype(int)).astype(str) + "%",
                     )
+                    _t = _mud_viz_tokens()
                     fig_corr_mud = px.imshow(
                         corr_mud,
-                        color_continuous_scale="RdBu",
+                        color_continuous_scale=_mud_correlation_colorscale(),
                         zmin=-1,
                         zmax=1,
-                        title="Mud Report – Correlación entre propiedades",
                     )
                     fig_corr_mud.update_traces(
                         text=text_arr,
                         texttemplate="%{text}",
-                        textfont=dict(size=11),
-                        xgap=1,
-                        ygap=1,
+                        textfont=dict(size=10),
+                        xgap=2,
+                        ygap=2,
+                        hovertemplate="%{y} ↔ %{x}: %{z:.2f}<extra></extra>",
                     )
-                    fig_corr_mud.update_layout(coloraxis_colorbar=dict(title="Corr (-1 a 1)"))
-                    fig_corr_mud = prettify_heatmap_auto(fig_corr_mud, h=420)
-                    st.plotly_chart(fig_corr_mud, use_container_width=True, config=PLOTLY_CONFIG)
-                    _sp_mud = build_minmax_mean_spine_figure(
-                        _mud_hm_stats,
-                        title="Perfil min · media · max — propiedades de lodo (normalizado)",
+                    fig_corr_mud.update_layout(
+                        coloraxis_colorbar=dict(
+                            title=dict(text="Correlación", font=dict(size=11, color=_t["secondary"])),
+                            tickvals=[-1, -0.5, 0, 0.5, 1], tickfont=dict(size=10, color=_t["muted"]),
+                            outlinewidth=0, thickness=12, len=0.8,
+                        )
                     )
-                    if _sp_mud is not None:
-                        st.caption("**Curvas pro:** rango observado por variable (● = media en el rango min–max).")
-                        st.plotly_chart(_sp_mud, use_container_width=True, config=PLOTLY_CONFIG)
-                    st.caption("Rojo = correlación positiva, azul = negativa. Valores en % de fuerza lineal.")
+                    fig_corr_mud = _mud_hd_theme(
+                        fig_corr_mud,
+                        h=max(420, 22 * len(corr_props) + 140),
+                        title="Correlación lineal entre propiedades",
+                        legend=False, hovermode="closest", spikes=False,
+                    )
+                    fig_corr_mud.update_xaxes(showgrid=False, tickangle=-45, showline=False)
+                    fig_corr_mud.update_yaxes(showgrid=False)
+                    fig_corr_mud.update_layout(margin=dict(l=150, r=26, t=62, b=140))
+                    st.plotly_chart(
+                        fig_corr_mud, use_container_width=True,
+                        config=_mud_hd_config(f"{_default_mud_bitacora_basename(bitacora)}_correlacion"),
+                    )
+                    st.caption(
+                        "Rojo = suben juntas, azul = una sube cuando la otra baja, gris = sin relación lineal. "
+                        "Los valores exactos están en la celda; la matriz completa se puede descargar en HD."
+                    )
                 else:
                     st.info("No hay suficientes datos para calcular correlaciones.")
             else:
-                st.caption("Se necesitan al menos 2 propiedades numéricas para el heatmap de correlación.")
+                st.caption("Se necesitan al menos 3 muestras y 2 propiedades con variación para la correlación.")
 
             # 2) Gráfico de control (propiedad vs fecha, media ± 2σ)
             st.markdown("**Gráfico de control (media ± 2σ)**")
@@ -2343,110 +3267,145 @@ def render_mud_report(to_email: str = "") -> None:
                 "Propiedad para control",
                 props,
                 key="mud_ctrl_prop",
-                help="Puntos fuera de la banda se marcan en naranja.",
+                help="Los puntos fuera de la banda se marcan con rombo y color de alerta.",
             )
             if ctrl_prop:
-                df_ctrl = bitacora[["Date", ctrl_prop]].dropna()
+                df_ctrl = df_charts[["Date", ctrl_prop]].dropna().sort_values("Date")
                 if len(df_ctrl) >= 2:
+                    _t = _mud_viz_tokens()
+                    base = _mud_palette()[0]
                     mean_val = float(df_ctrl[ctrl_prop].mean())
                     std_val = float(df_ctrl[ctrl_prop].std()) or 1e-6
                     upper = mean_val + 2 * std_val
                     lower = mean_val - 2 * std_val
                     df_ctrl = df_ctrl.copy()
                     df_ctrl["_out"] = (df_ctrl[ctrl_prop] > upper) | (df_ctrl[ctrl_prop] < lower)
-                    fig_ctrl = go.Figure()
                     in_spec = df_ctrl[~df_ctrl["_out"]]
                     out_spec = df_ctrl[df_ctrl["_out"]]
+                    fig_ctrl = go.Figure()
+                    fig_ctrl.add_trace(go.Scatter(
+                        x=list(df_ctrl["Date"]) + list(df_ctrl["Date"])[::-1],
+                        y=[upper] * len(df_ctrl) + [lower] * len(df_ctrl),
+                        fill="toself", fillcolor=_mud_rgba(base, 0.08), line=dict(width=0),
+                        hoverinfo="skip", name="Banda ±2σ",
+                    ))
+                    fig_ctrl.add_trace(go.Scatter(
+                        x=df_ctrl["Date"], y=df_ctrl[ctrl_prop], mode="lines",
+                        line=dict(width=1.5, color=_mud_rgba(base, 0.55)),
+                        hoverinfo="skip", showlegend=False,
+                    ))
                     if not in_spec.empty:
-                        fig_ctrl.add_trace(
-                            go.Scatter(
-                                x=in_spec["Date"],
-                                y=in_spec[ctrl_prop],
-                                mode="markers",
-                                name="Dentro de límites",
-                                marker=dict(size=8, color="#2563EB", opacity=0.85),
-                            )
-                        )
+                        fig_ctrl.add_trace(go.Scatter(
+                            x=in_spec["Date"], y=in_spec[ctrl_prop], mode="markers",
+                            name="Dentro de límites",
+                            marker=dict(size=9, color=base, line=dict(width=2, color=_t["ring"])),
+                            hovertemplate=f"<b>{ctrl_prop}</b> %{{y}}<extra></extra>",
+                        ))
                     if not out_spec.empty:
-                        fig_ctrl.add_trace(
-                            go.Scatter(
-                                x=out_spec["Date"],
-                                y=out_spec[ctrl_prop],
-                                mode="markers",
-                                name="Fuera de límites (±2σ)",
-                                marker=dict(size=10, color="#EA580C", symbol="diamond"),
-                            )
+                        # Color de estado + símbolo + etiqueta en la leyenda: la alerta nunca
+                        # se apoya solo en el color.
+                        fig_ctrl.add_trace(go.Scatter(
+                            x=out_spec["Date"], y=out_spec[ctrl_prop], mode="markers",
+                            name="⚠ Fuera de ±2σ",
+                            marker=dict(size=13, color=_MUD_STATUS["critical"], symbol="diamond",
+                                        line=dict(width=2, color=_t["ring"])),
+                            hovertemplate=f"<b>{ctrl_prop}</b> %{{y}} — fuera de límites<extra></extra>",
+                        ))
+                    for y_val, lbl in ((mean_val, "Media"), (upper, "UCL"), (lower, "LCL")):
+                        fig_ctrl.add_hline(
+                            y=y_val, line=dict(color=_t["secondary"], width=1, dash="dash"),
+                            annotation_text=f"{lbl} {format_num(y_val)}",
+                            annotation_position="right",
+                            annotation_font=dict(size=10, color=_t["secondary"]),
                         )
-                    fig_ctrl.add_hline(y=mean_val, line_dash="dash", line_color="#10B981", annotation_text="Media")
-                    fig_ctrl.add_hline(y=upper, line_dash="dot", line_color="#EF4444", annotation_text="UCL")
-                    fig_ctrl.add_hline(y=lower, line_dash="dot", line_color="#EF4444", annotation_text="LCL")
-                    fig_ctrl.update_layout(
-                        title=f"Control chart – {ctrl_prop}",
-                        xaxis_title="Fecha",
-                        yaxis_title=ctrl_prop,
-                        height=400,
-                        showlegend=True,
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    fig_ctrl = _mud_hd_theme(fig_ctrl, h=430, title=f"Control — {ctrl_prop}",
+                                             y_title=ctrl_prop)
+                    fig_ctrl.update_xaxes(title_text="Fecha / hora")
+                    fig_ctrl.update_layout(margin=dict(r=96))
+                    _mud_style_time_axis(fig_ctrl, df_ctrl["Date"])
+                    st.plotly_chart(
+                        fig_ctrl, use_container_width=True,
+                        config=_mud_hd_config(f"{_sanitize_filename(ctrl_prop)}_control"),
                     )
-                    fig_ctrl = prettify_auto(fig_ctrl, h=400)
-                    st.plotly_chart(fig_ctrl, use_container_width=True, config=PLOTLY_CONFIG)
                     st.caption(f"Media = {format_num(mean_val)}, LCL = {format_num(lower)}, UCL = {format_num(upper)}. Puntos fuera de banda = {len(out_spec)}.")
                 else:
                     st.info("Se necesitan al menos 2 puntos para el gráfico de control.")
 
-            # 3) Radar / perfil del lodo (último registro o por fecha)
+            # 3) Radar / perfil del lodo: compara dos muestras cualesquiera
             st.markdown("**Perfil radar (comparación normalizada)**")
-            radar_props = [p for p in props if bitacora[p].notna().any()]
-            if len(radar_props) >= 3:
-                dates_opt = bitacora["Date"].dropna().unique()
-                if len(dates_opt) > 0:
-                    dates_sorted = sorted(dates_opt, reverse=True)
-                    default_idx = 0
-                    radar_date = st.selectbox(
-                        "Fecha del perfil",
-                        options=dates_sorted,
-                        format_func=lambda x: x.strftime("%Y-%m-%d %H:%M") if hasattr(x, "strftime") else str(x),
-                        index=default_idx,
-                        key="mud_radar_date",
-                        help="Perfil normalizado 0–100% para esa fecha.",
-                    )
-                    row = bitacora[bitacora["Date"] == radar_date].iloc[-1]
-                    r_vals = []
+            radar_props = [p for p in props if pd.to_numeric(df_charts.get(p), errors="coerce").notna().any()]
+            if len(radar_props) > MUD_MAX_OVERLAY_SERIES + 2:
+                radar_props = radar_props[:MUD_MAX_OVERLAY_SERIES + 2]
+            dates_opt = sorted(df_charts["Date"].dropna().unique(), reverse=True)
+            if len(radar_props) >= 3 and len(dates_opt) > 0:
+                def _fmt_dt(x):
+                    return pd.Timestamp(x).strftime("%d/%m %H:%M")
+
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    radar_date = st.selectbox("Muestra", options=dates_opt, format_func=_fmt_dt,
+                                              index=0, key="mud_radar_date")
+                with col_r2:
+                    cmp_opts = ["(sin comparar)"] + [d for d in dates_opt if d != radar_date]
+                    radar_cmp = st.selectbox("Comparar contra", options=cmp_opts,
+                                             format_func=lambda x: x if isinstance(x, str) else _fmt_dt(x),
+                                             index=0, key="mud_radar_cmp")
+
+                def _radar_values(when):
+                    rows_at = df_charts[df_charts["Date"] == when]
+                    if rows_at.empty:
+                        return None, None
+                    row = rows_at.iloc[-1]
+                    out, raw = [], []
                     for p in radar_props:
-                        v = row.get(p)
-                        if pd.isna(v):
-                            r_vals.append(0.0)
+                        v = pd.to_numeric(pd.Series([row.get(p)]), errors="coerce").iloc[0]
+                        col = pd.to_numeric(df_charts[p], errors="coerce").dropna()
+                        if pd.isna(v) or col.empty or col.max() == col.min():
+                            out.append(50.0 if not pd.isna(v) else 0.0)
                         else:
-                            s_col = bitacora[p].dropna()
-                            if len(s_col) and s_col.max() != s_col.min():
-                                norm = (float(v) - float(s_col.min())) / (float(s_col.max()) - float(s_col.min()))
-                            else:
-                                norm = 0.5
-                            r_vals.append(round(norm * 100, 1))
-                    fig_radar = go.Figure()
-                    fig_radar.add_trace(
-                        go.Scatterpolar(
-                            r=r_vals + [r_vals[0]],
-                            theta=radar_props + [radar_props[0]],
-                            fill="toself",
-                            name="Perfil normalizado",
-                            line=dict(color="#EA580C", width=2),
-                            fillcolor="rgba(234,88,12,0.25)",
-                        )
-                    )
-                    fig_radar.update_layout(
-                        polar=dict(radialaxis=dict(visible=True, range=[0, 100], tickfont=dict(size=10))),
-                        title=f"Perfil de lodo – {radar_date.strftime('%Y-%m-%d') if hasattr(radar_date, 'strftime') else radar_date}",
-                        height=460,
-                        showlegend=False,
-                    )
-                    fig_radar = prettify_auto(fig_radar, h=460)
-                    st.plotly_chart(fig_radar, use_container_width=True, config=PLOTLY_CONFIG)
-                    st.caption("Cada eje = propiedad normalizada 0–100% respecto al min/max del histórico. Útil para comparar perfiles por fecha.")
-                else:
-                    st.info("No hay fechas válidas para el radar.")
+                            out.append(round((float(v) - float(col.min())) / (float(col.max()) - float(col.min())) * 100, 1))
+                        raw.append(v)
+                    return out, raw
+
+                pal = _mud_palette()
+                fig_radar = go.Figure()
+                series = [(radar_date, pal[0])]
+                if not isinstance(radar_cmp, str):
+                    series.append((radar_cmp, pal[1]))
+                for when, color in series:
+                    vals, raw = _radar_values(when)
+                    if vals is None:
+                        continue
+                    fig_radar.add_trace(go.Scatterpolar(
+                        r=vals + [vals[0]],
+                        theta=radar_props + [radar_props[0]],
+                        customdata=list(raw) + [raw[0]],
+                        fill="toself", name=_fmt_dt(when),
+                        line=dict(color=color, width=2),
+                        fillcolor=_mud_rgba(color, 0.18),
+                        marker=dict(size=7, color=color),
+                        hovertemplate="%{theta}: %{customdata} (índice %{r})<extra>" + _fmt_dt(when) + "</extra>",
+                    ))
+                _t = _mud_viz_tokens()
+                fig_radar = _mud_hd_theme(fig_radar, h=520, title="Perfil normalizado del lodo",
+                                          legend=len(fig_radar.data) > 1, hovermode="closest", spikes=False)
+                fig_radar.update_layout(polar=dict(
+                    bgcolor="rgba(0,0,0,0)",
+                    radialaxis=dict(visible=True, range=[0, 100], gridcolor=_t["grid"],
+                                    linecolor=_t["axis"], tickfont=dict(size=10, color=_t["muted"])),
+                    angularaxis=dict(gridcolor=_t["grid"], linecolor=_t["axis"],
+                                     tickfont=dict(size=11, color=_t["secondary"])),
+                ))
+                st.plotly_chart(
+                    fig_radar, use_container_width=True,
+                    config=_mud_hd_config(f"{_default_mud_bitacora_basename(bitacora)}_perfil", width=1400, height=1400),
+                )
+                st.caption(
+                    "Cada eje es la propiedad normalizada 0–100 % contra su min/max en la ventana. "
+                    "El tooltip muestra el valor real. Comparar dos muestras deja ver de un golpe qué se movió entre jornadas."
+                )
             else:
-                st.caption("Se necesitan al menos 3 propiedades numéricas para el perfil radar.")
+                st.caption("Se necesitan al menos 3 propiedades con datos para el perfil radar.")
 
     with tab_stats:
         st.subheader("Estadísticas por propiedad")
@@ -2456,28 +3415,76 @@ def render_mud_report(to_email: str = "") -> None:
         else:
             stats_rows = []
             for p in props:
-                s = bitacora[p].dropna()
-                if len(s):
-                    stats_rows.append({
-                        "Propiedad": p,
-                        "N": len(s),
-                        "Min": s.min(),
-                        "Max": s.max(),
-                        "Media": s.mean(),
-                        "Mediana": s.median(),
-                        "Desv. est.": s.std(),
-                    })
+                s = pd.to_numeric(df_charts[p], errors="coerce").dropna()
+                if not len(s):
+                    continue
+                mean_v = float(s.mean())
+                std_v = float(s.std()) if len(s) > 1 else 0.0
+                stats_rows.append({
+                    "Propiedad": p,
+                    "N": int(len(s)),
+                    "Min": float(s.min()),
+                    "P25": float(s.quantile(0.25)),
+                    "Mediana": float(s.median()),
+                    "Media": mean_v,
+                    "P75": float(s.quantile(0.75)),
+                    "Max": float(s.max()),
+                    "Desv. est.": std_v,
+                    # Coeficiente de variación: la manera de comparar estabilidad entre
+                    # propiedades con unidades distintas.
+                    "CV %": (std_v / abs(mean_v) * 100.0) if mean_v else np.nan,
+                })
             if stats_rows:
                 stats_df = pd.DataFrame(stats_rows)
-                st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                st.dataframe(
+                    stats_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        c: st.column_config.NumberColumn(c, format="%.2f")
+                        for c in ("Min", "P25", "Mediana", "Media", "P75", "Max", "Desv. est.", "CV %")
+                    },
+                )
+                st.download_button(
+                    "⬇️ Descargar estadísticas (CSV)",
+                    data=stats_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"{_default_mud_bitacora_basename(bitacora)}_estadisticas.csv",
+                    mime="text/csv",
+                    key="mud_stats_csv",
+                )
+
+                st.markdown("---")
+                st.subheader("Qué se movió y qué se mantuvo estable")
+                st.caption(
+                    "Coeficiente de variación (σ / media) por propiedad, ordenado de mayor a menor. "
+                    "Es la forma de comparar cuánto varió cada propiedad aunque estén en unidades distintas: "
+                    "arriba lo que más se movió en la ventana, abajo lo que se mantuvo plano."
+                )
+                var_props = [r["Propiedad"] for r in stats_rows][:24]
+                fig_var = _mud_variability_figure(df_charts, var_props)
+                if fig_var.data:
+                    st.plotly_chart(
+                        fig_var, use_container_width=True,
+                        config=_mud_hd_config(f"{_default_mud_bitacora_basename(bitacora)}_variabilidad",
+                                              width=1600, height=1400),
+                    )
+                else:
+                    st.info("Se necesitan al menos 2 muestras por propiedad para calcular la variabilidad.")
+
                 st.markdown("---")
                 st.subheader("Distribución (histograma)")
                 prop_hist = st.selectbox("Propiedad para histograma", props, key="mud_hist_prop")
                 if prop_hist:
-                    vals = bitacora[prop_hist].dropna()
-                    fig_hist = build_hist_with_trend(vals, title=f"Distribución – {prop_hist}", x_label=prop_hist, nbins=25)
-                    st.plotly_chart(prettify_hist(fig_hist), use_container_width=True, config=PLOTLY_CONFIG)
-                    st.caption(f"**Resumen:** {series_summary(vals)}.")
+                    vals = pd.to_numeric(df_charts[prop_hist], errors="coerce").dropna()
+                    if len(vals):
+                        st.plotly_chart(
+                            _mud_distribution_figure(vals, prop_hist, _mud_palette()[0]),
+                            use_container_width=True,
+                            config=_mud_hd_config(f"{_sanitize_filename(prop_hist)}_distribucion"),
+                        )
+                        st.caption(f"**Resumen:** {series_summary(vals)}.")
+                    else:
+                        st.info("Esa propiedad no tiene datos en la ventana seleccionada.")
 
     # Auto-refresh correo cada N segundos (solo si fuente = Correo y hay bitácora)
     if (
