@@ -19,7 +19,20 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from mud_report import APP_VERSION, APP_VERSION_NOTA, render_mud_report
+from mud_report import render_mud_report
+
+# Versión de la app, junto al título. SUBIR EN CADA CAMBIO que se despliegue: el número
+# sube y la fecha es la del cambio. Van en una sola constante a propósito, para que no
+# puedan quedar desincronizadas; APP_VERSION_NOTA describe qué trae esta versión y se ve
+# al pasar el cursor por la insignia.
+# Vive aquí y no en mud_report.py: Streamlit Cloud recarga app.py pero puede seguir con un
+# mud_report en caché del build anterior, y un `from mud_report import APP_VERSION` tumba
+# la app entera con ImportError hasta que alguien reinicie a mano.
+APP_VERSION = "1.4.1 · 2026-08-17"
+APP_VERSION_NOTA = (
+    "Reporte Mi SWACO en Excel, encabezados con las etiquetas del propio reporte "
+    "(selector Español/Inglés) y solo las columnas que el reporte trae."
+)
 
 st.set_page_config(page_title="Rogii Reports – Daily & Mud", page_icon="🛢️", layout="wide")
 
