@@ -605,6 +605,40 @@ def build_hist_with_trend(values, title: str, x_label: str, nbins: int = 30) -> 
     return px.histogram(vals, nbins=nbins, title=title, labels={"value": x_label})
 
 
+# Equivalencia columna de la bitácora <-> etiqueta del reporte. Vive aquí para que el
+# origen de cada número sea consultable desde la app y no haya que ir al código.
+# Primera columna: encabezado en español y, entre paréntesis, el del formato inglés, para
+# que la tabla sirva con cualquiera de los dos ajustes de idioma.
+MUD_COLUMN_GLOSSARY: list[tuple[str, str, str]] = [
+    ("Profundidad / TVD  (Depth MD / TVD)", "Profundidad / TVD", ""),
+    ("Densidad @ N°C  (D @ N°C)", "Densidad / Temp.", "N es la temperatura a la que se midió esa muestra"),
+    ("Visc. Embudo @ N°C  (Fv @ N°C)", "Visc. Embudo", "el reporte no da temperatura propia del embudo: se usa la de la densidad"),
+    ("VP @ 65°C  (PV @ 65°C)", "VP", "medido a la Temp. Reología del reporte"),
+    ("PC  (YP)", "PC", ""),
+    ("Gel 10s / 10m / 30m  (GELS)", "10s/10m/30m Gel", ""),
+    ("R600 … R3  (Lectura 600 … 3)", "R600 / R300, R200 / R100, R6 / R3", ""),
+    ("Filtrado HTHP @ 149°C  (HTHP @ 149°C)", "Filtrado HTHP", "149 °C es la condición estándar del ensayo"),
+    ("Revoque HTHP  (Cake (HTHP))", "Revoque API / HTHP", "se toma el valor de HTHP, no el de API"),
+    ("Solidos Corregidos  (Corr Solid)", "Solidos Corregidos", ""),
+    ("Aceite  (NAP)", "Aceite %vol", "NAP = fase no acuosa; en lodo base aceite es el aceite"),
+    ("Agua  (Water)", "Agua %vol", ""),
+    ("Aceite / Agua (Rel. A/A)  (NAP 2 / Water Ratio)", "Aceite / Agua", "las dos partes de la relación: 87 / 13 → 87 y 13"),
+    ("Arena  (Sand)", "Arena", ""),
+    ("Cloruros en Lodo  (Chlorides)", "Cloruros en Lodo", "mg/L"),
+    ("Cloruros Fase Acuosa  (Water Phase Salinity)", "Cloruros Fase Acuosa", "en mg/L, tal como lo da el reporte"),
+    ("Salinidad", "Salinidad", "%wt"),
+    ("Alcalinidad (Pom)", "Alcalinidad (Pom)", ""),
+    ("Exc. Cal  (Excess Lime)", "Exc. Cal", "kg/m³"),
+    ("Estabilidad Elec.  (Elec. Stability)", "Estabilidad Elec.", "volt"),
+    ("LGS TOTALES  (LGS)", "LGS TOTALES", "valor propio de cada muestra"),
+    ("Solidos Alta Gravedad  (HGS)", "panel ANALISIS DE SOLIDOS → High Gravity %", ""),
+    ("Peso Baja / Alta Gravedad  (LGS 2 · HGS 2)", "panel ANALISIS DE SOLIDOS → Low / High Gravity Wt.", "kg/m³"),
+    ("SG Promedio Solidos  (ASG)", "panel ANALISIS DE SOLIDOS → Average SG Solids", ""),
+    ("— los cuatro anteriores —", "panel ANALISIS DE SOLIDOS", "ese panel corresponde solo a la muestra de cierre del reporte, por eso las otras filas van vacías"),
+    ("Calcio · CaCl2 · Tauy · n · k · Ensayo de Asentamiento (VSST)", "—", "el reporte Mi SWACO no los trae; quedan vacías"),
+]
+
+
 def _sanitize_filename(value: str, default: str = "mud_bitacora") -> str:
     value = (value or "").strip()
     if not value:
@@ -722,7 +756,11 @@ MUD_EXPORT_HEADER_SPECS = [
     ("Chlorides", "Chlorides", "mg/L"),
     ("Calcium", "Calcium", "mg/L"),
     ("CaCl2", "CaCl2", "mg/L"),
-    ("Water Phase Salinity", "Water Phase Salinity", "ppm"),
+    # El reporte da los cloruros de la fase acuosa en mg/L, no en ppm: en una salmuera
+    # de ~1,2 g/cm³ no son equivalentes, así que la unidad dice lo que realmente se copió.
+    ("Water Phase Salinity", "Water Phase Salinity", "mg/L"),
+    ("Salinity", "Salinidad", "%wt"),
+    ("Alkalinity", "Alcalinidad (Pom)", "cm³"),
     ("Excess Lime", "Excess Lime", "kg/m³"),
     ("Electrical_Stability", "Elec. Stability", "V"),
     ("LGS (%)", "LGS", "%"),
@@ -735,6 +773,93 @@ MUD_EXPORT_HEADER_SPECS = [
     ("K (HB)", "K (HB)", "lb*s^n'/100ft2"),
     ("Viscometer Sag Shoe Test", "Viscometer Sag Shoe Test", "lbm/gal"),
 ]
+
+
+MUD_LANG_ES = "es"
+MUD_LANG_EN = "en"
+
+# Encabezados en español: la etiqueta y la unidad TAL COMO las escribe el reporte de lodo,
+# no una traducción libre. MUD_EXPORT_HEADER_SPECS viene del formato WellSight, que es un
+# reporte en inglés; con un reporte en español esos nombres (NAP, Corr Solid, Cake, Excess
+# Lime, Elec. Stability…) no aparecen en ninguna parte del original.
+# Nota: las etiquetas del panel de sólidos y del de reología están en inglés en el propio
+# reporte en español (High Gravity, Average SG Solids, Tauy, n, k), así que se dejan así.
+MUD_HEADERS_ES: dict[str, tuple[str, str]] = {
+    "Depth (MD)": ("Profundidad", "m"),
+    "Depth (TVD)": ("TVD", "m"),
+    "Properties": ("Propiedades", "N°"),
+    "Fluid set": ("Tipo de Lodo", "Lodo"),
+    "Source": ("Muestra", "Origen"),
+    "Time": ("Hora", "hora"),
+    "DateTime": ("Fecha y hora", "AAAA-MM-DDTHH:MM:SS"),
+    "FL Temp": ("Temp. Flow Line", "°C"),
+    "PV @ 65°C": ("VP @ 65°C", "cP"),
+    "YP": ("PC", "lbf/100ft²"),
+    "Gel_10s": ("Gel 10s", "lbf/100ft²"),
+    "Gel_10min": ("Gel 10m", "lbf/100ft²"),
+    "Gel_30min": ("Gel 30m", "lbf/100ft²"),
+    "tau0": ("Tauy", "lbf/100ft²"),
+    "L600": ("R600", "lbf/100ft²"),
+    "L300": ("R300", "lbf/100ft²"),
+    "L200": ("R200", "lbf/100ft²"),
+    "L100": ("R100", "lbf/100ft²"),
+    "L6": ("R6", "lbf/100ft²"),
+    "L3": ("R3", "lbf/100ft²"),
+    "HTHP @ 149°C": ("Filtrado HTHP @ 149°C", "cc/30min"),
+    "Corr Solid": ("Solidos Corregidos", "%vol"),
+    "NAP": ("Aceite", "%vol"),
+    "Water": ("Agua", "%vol"),
+    "NAP 2": ("Aceite (Rel. A/A)", "%"),
+    "Water Ratio": ("Agua (Rel. A/A)", "%"),
+    "Sand": ("Arena", "%vol"),
+    "Cake (HTHP)": ("Revoque HTHP", '1/32"'),
+    "Chlorides": ("Cloruros en Lodo", "mg/L"),
+    "Calcium": ("Calcio", "mg/L"),
+    "CaCl2": ("CaCl2", "mg/L"),
+    "Water Phase Salinity": ("Cloruros Fase Acuosa", "mg/L"),
+    "Salinity": ("Salinidad", "%wt"),
+    "Alkalinity": ("Alcalinidad (Pom)", "cm³"),
+    "Excess Lime": ("Exc. Cal", "kg/m³"),
+    "Electrical_Stability": ("Estabilidad Elec.", "volt"),
+    "LGS (%)": ("LGS TOTALES", "%"),
+    # El panel ANALISIS DE SOLIDOS del reporte está rotulado en inglés (High Gravity,
+    # Low Gravity Wt., Average SG Solids) incluso en la versión en español; aquí se
+    # traducen porque la bitácora se lee en español. 'Wt.' es peso/concentración, y así
+    # se distingue el porcentaje de la concentración en kg/m³.
+    "HGS (%)": ("Solidos Alta Gravedad", "%"),
+    "LGS (kg/m³)": ("Peso Baja Gravedad", "kg/m³"),
+    "HGS (kg/m³)": ("Peso Alta Gravedad", "kg/m³"),
+    "ASG": ("SG Promedio Solidos", "SG"),
+    "Additional Properties": ("Propiedades Adicionales", "Propiedades"),
+    "n (HB)": ("n", "dec"),
+    "K (HB)": ("k", "lb*s^n'/100ft2"),
+    "Viscometer Sag Shoe Test": ("Ensayo de Asentamiento (VSST)", "lbm/gal"),
+}
+
+
+def _mud_localize_specs(specs: list[tuple[str, str, str]], lang: str) -> list[tuple[str, str, str]]:
+    """Traduce encabezado y unidad. Las claves de columna son internas y no cambian."""
+    if lang != MUD_LANG_ES:
+        return specs
+    out: list[tuple[str, str, str]] = []
+    for col, h1, h2 in specs:
+        # Densidad y viscosidad de embudo llevan la temperatura medida en el nombre.
+        m = re.fullmatch(r"(D|Fv) @ ([\d.]+)°C", col)
+        if m:
+            es_base, es_unit = ("Densidad", "kg/m³") if m.group(1) == "D" else ("Visc. Embudo", "sec/qt")
+            out.append((col, f"{es_base} @ {m.group(2)}°C", es_unit))
+            continue
+        es = MUD_HEADERS_ES.get(col)
+        out.append((col, es[0], es[1]) if es else (col, h1, h2))
+    return out
+
+
+def _mud_bitacora_title(lang: str, title_date: str) -> str:
+    if lang == MUD_LANG_ES:
+        base = "Reporte Diario de Propiedades del Fluido"
+        return f"{base} — Reporte: {title_date}" if title_date else base
+    base = "Daily Fluid Properties Daily Report"
+    return f"{base} Report: {title_date}" if title_date else base
 
 
 def _normalize_mud_property_name(label: str) -> str | None:
@@ -1935,17 +2060,78 @@ def _swaco_apply_field(rec: dict, field: str, raw: str) -> None:
         return
 
 
-# Panel 'ANALISIS DE SOLIDOS': es un cálculo diario único (no por muestra), así que se
-# usa para rellenar lo que la tabla de propiedades no trae, sin pisar el valor propio
-# de cada muestra.
-_SWACO_DAILY_SOLIDS = [
+# Panel 'ANALISIS DE SOLIDOS'. Las dos ultimas entradas no se exportan: sirven para
+# identificar a que muestra pertenece el panel (ver _swaco_attach_solids_panel).
+_SWACO_SOLIDS_PANEL = [
     ("ASG", r"Average\s+SG\s+Solids\s+([\d.,]+)"),
-    ("HGS (%)", r"High\s+Gravity\s+%\s+([\d.,]+)"),
-    ("LGS (%)", r"Low\s+Gravity\s+%\s+([\d.,]+)"),
     ("HGS (kg/m³)", r"High\s+Gravity\s+Wt\.?\s+kg/m\S*\s+([\d.,]+)"),
     ("LGS (kg/m³)", r"Low\s+Gravity\s+Wt\.?\s+kg/m\S*\s+([\d.,]+)"),
+    ("HGS (%)", r"High\s+Gravity\s+%\s+([\d.,]+)"),
+    ("LGS (%)", r"Low\s+Gravity\s+%\s+([\d.,]+)"),
     ("Corr Solid", r"Adjusted\s+Solids\s+%vol\s+([\d.,]+)"),
+    ("Salinity", r"Salt\s+Wt\s+%wt\s+([\d.,]+)"),
+    ("NAP Ratio", r"Oil/Water\s+Ratio\s+([\d.,]+)"),
 ]
+_SWACO_SOLIDS_EXPORTED = ("ASG", "HGS (kg/m³)", "LGS (kg/m³)", "HGS (%)", "LGS (%)", "Corr Solid")
+
+
+def _swaco_solids_panel(full_text: str) -> dict:
+    """Lee el panel 'ANALISIS DE SOLIDOS' del reporte (mismo texto en PDF y Excel)."""
+    panel: dict = {}
+    for key, pattern in _SWACO_SOLIDS_PANEL:
+        m = re.search(pattern, full_text, re.IGNORECASE)
+        if not m:
+            continue
+        val = _extract_numeric(m.group(1))
+        if val is not None:
+            panel[key] = val
+    return panel
+
+
+def _swaco_attach_solids_panel(records: list[dict], panel: dict) -> None:
+    """
+    El panel describe UNA sola muestra —la del cierre del reporte—, no un promedio del
+    dia. En el N29 'Adjusted Solids' 21,24 y 'Low Gravity %' 0,02 coinciden exactamente
+    con la muestra de las 20:00 y no con las de 14:00 y 04:00 (23,24 y 1,9). Se localiza
+    esa muestra comparando los campos que el panel repite de la tabla de propiedades, y
+    solo ahi se escriben ASG/HGS/LGS: repartirlos a todas las filas sembraba de valores
+    ajenos las demas muestras.
+    """
+    if not records or not panel:
+        return
+    best_idx, best_score = None, 0
+    for i, rec in enumerate(records):
+        score = 0
+        for key in ("Corr Solid", "Salinity", "LGS (%)", "NAP Ratio"):
+            pv, rv = panel.get(key), rec.get(key)
+            if pv is None or rv is None:
+                continue
+            if abs(float(pv) - float(rv)) <= max(0.05, abs(float(pv)) * 0.01):
+                score += 1
+        if score > best_score:
+            best_idx, best_score = i, score
+    # Sin coincidencias, la primera columna del reporte es la del cierre.
+    target = records[best_idx if best_idx is not None else 0]
+    for key in _SWACO_SOLIDS_EXPORTED:
+        if panel.get(key) is not None:
+            target.setdefault(key, panel[key])
+
+
+def _swaco_report_header(full_text: str) -> tuple[pd.Timestamp | None, str, str]:
+    """Fecha, tipo de lodo y pozo del encabezado. Sirve para PDF y para Excel."""
+    report_date = None
+    # 'Fecha :' y no 'Fecha de Incio :'. El Excel trae un datetime real ("2026-08-12
+    # 00:00:00") y el PDF un dd/mm/aaaa; _extract_date_from_text acepta los dos.
+    m = re.search(r"\bFecha\s*:\s*([^\n]{0,40})", full_text, re.IGNORECASE)
+    if m:
+        report_date = _extract_date_from_text(m.group(1))
+    m_fluid = re.search(r"Tipo\s+de\s+Lodo\s*:?\s*(\S+)", full_text, re.IGNORECASE)
+    m_well = re.search(r"\bPozo\s*:?\s*(\S+)", full_text, re.IGNORECASE)
+    return (
+        report_date,
+        m_fluid.group(1).strip(":") if m_fluid else "",
+        m_well.group(1).strip(":") if m_well else "",
+    )
 
 
 def _parse_mud_pdf_swaco_daily(pdf, source_name: str = "") -> list[dict]:
@@ -1962,19 +2148,11 @@ def _parse_mud_pdf_swaco_daily(pdf, source_name: str = "") -> list[dict]:
     if not re.search(r"muestra\s*/\s*hora", full_text, re.IGNORECASE):
         return []
 
-    m_date = re.search(r"Fecha\s*:?\s*(\d{1,2}/\d{1,2}/\d{2,4})", full_text, re.IGNORECASE)
-    report_date = (
-        _extract_date_from_text(m_date.group(1)) if m_date else None
-    ) or _date_from_filename_or_today(source_name)
-
-    m_fluid = re.search(r"Tipo\s+de\s+Lodo\s*:?\s*(\S+)", full_text, re.IGNORECASE)
-    fluid_set = m_fluid.group(1).strip(":") if m_fluid else ""
-
     # El pozo no va a la bitácora exportada (no es columna del formato), pero identifica
     # la muestra al acumular varios reportes: evita fusionar dos pozos que coincidan en
     # fecha, hora y origen.
-    m_well = re.search(r"\bPozo\s*:?\s*(\S+)", full_text, re.IGNORECASE)
-    well = m_well.group(1).strip(":") if m_well else ""
+    report_date, fluid_set, well = _swaco_report_header(full_text)
+    report_date = report_date or _date_from_filename_or_today(source_name)
 
     records: list[dict] = []
     for page in pdf.pages:
@@ -2045,14 +2223,11 @@ def _parse_mud_pdf_swaco_daily(pdf, source_name: str = "") -> list[dict]:
     if not records:
         return []
 
-    for key, pattern in _SWACO_DAILY_SOLIDS:
-        m = re.search(pattern, full_text, re.IGNORECASE)
-        val = _extract_numeric(m.group(1)) if m else None
-        if val is None:
-            continue
-        for rec in records:
-            rec.setdefault(key, val)
+    _swaco_attach_solids_panel(records, _swaco_solids_panel(full_text))
+    return _swaco_finalize_records(records)
 
+
+def _swaco_finalize_records(records: list[dict]) -> list[dict]:
     for rec in records:
         # El reporte no da temperatura propia para la viscosidad de embudo: se mide sobre
         # la misma muestra que la densidad, y así queda 'Fv @ Nº°C' alineada con 'D @ Nº°C'
@@ -2068,6 +2243,89 @@ def _parse_mud_pdf_swaco_daily(pdf, source_name: str = "") -> list[dict]:
             for k, v in r.items()
         )
     ]
+
+
+def _parse_mud_swaco_sheet(df_raw: pd.DataFrame, source_name: str = "") -> list[dict]:
+    """
+    El mismo reporte diario Mi SWACO pero en Excel: la plantilla que genera el PDF.
+    Estructura fija de la hoja 'OBM': columna A etiqueta, columna B unidad y una columna
+    por muestra a partir de la C. Reutiliza el mapa de etiquetas del parser de PDF, así
+    que ambos formatos rinden exactamente la misma bitácora.
+    """
+    if df_raw is None or df_raw.empty or df_raw.shape[0] < 10:
+        return []
+
+    def cell(i: int, j: int) -> str:
+        if i >= df_raw.shape[0] or j >= df_raw.shape[1]:
+            return ""
+        return _mud_clean_cell_text(df_raw.iat[i, j])
+
+    # Texto por filas: reproduce el renglón del PDF, así el encabezado y el panel
+    # 'ANALISIS DE SOLIDOS' se leen con las mismas expresiones que en el PDF.
+    row_text = [
+        " ".join(t for t in (cell(i, j) for j in range(df_raw.shape[1])) if t)
+        for i in range(df_raw.shape[0])
+    ]
+    full_text = "\n".join(row_text)
+    if not re.search(r"propiedades\s+de\s+lodo", full_text, re.IGNORECASE):
+        return []
+
+    hdr = None
+    for i in range(df_raw.shape[0]):
+        if re.match(r"muestra\s*/\s*hora", _swaco_normalize_label(cell(i, 0))):
+            hdr = i
+            break
+    if hdr is None:
+        return []
+
+    sample_cols: list[tuple[int, str, str]] = []
+    for j in range(1, df_raw.shape[1]):
+        txt = cell(hdr, j)
+        m = re.search(r"\d{1,2}:\d{2}", txt)
+        if m:
+            sample_cols.append((j, txt[:m.start()].strip(" -/–"), m.group(0)))
+    if not sample_cols:
+        return []
+
+    report_date, fluid_set, well = _swaco_report_header(full_text)
+    report_date = report_date or _date_from_filename_or_today(source_name)
+
+    order = sorted(range(len(sample_cols)), key=lambda k: _mud_parse_time_value(sample_cols[k][2]) or datetime.min.time())
+    rank = {k: n + 1 for n, k in enumerate(order)}
+
+    records: list[dict] = []
+    for k, (_j, src, time_raw) in enumerate(sample_cols):
+        t = _mud_parse_time_value(time_raw)
+        time_txt = t.strftime("%H:%M") if t else time_raw
+        ts = _mud_compose_datetime(report_date, time_txt) or report_date
+        records.append({
+            "Date": ts,
+            "DateTime": _mud_isoformat_no_tz(ts),
+            "Time": time_txt,
+            "Properties": rank[k],
+            "Additional Properties": rank[k],
+            "Fluid set": fluid_set,
+            "Source": src or source_name,
+            "Well": well,
+        })
+
+    for i in range(hdr + 1, df_raw.shape[0]):
+        label = cell(i, 0)
+        if re.match(_SWACO_SECTION_STOP, _swaco_normalize_label(label)):
+            break
+        field = _swaco_row_field(label)
+        if not field:
+            continue
+        for k, (j, _src, _t) in enumerate(sample_cols):
+            raw = cell(i, j)
+            # La plantilla rellena las muestras vacías con 0 y con espacios; tomarlos
+            # como medición dejaría ceros falsos en la bitácora.
+            if not raw or raw == "0":
+                continue
+            _swaco_apply_field(records[k], field, raw)
+
+    _swaco_attach_solids_panel(records, _swaco_solids_panel(full_text))
+    return _swaco_finalize_records(records)
 
 
 def _parse_mud_pdf(file, source_name: str = "") -> list[dict]:
@@ -2222,8 +2480,15 @@ def _mud_parse_attachment(name: str, data: bytes) -> list[dict]:
     if low.endswith((".xlsx", ".xls")):
         out: list[dict] = []
         xl = pd.ExcelFile(io.BytesIO(data))
-        for sh in xl.sheet_names[:5]:
-            df_raw = pd.read_excel(xl, sheet_name=sh, header=None)
+        sheets = [(sh, pd.read_excel(xl, sheet_name=sh, header=None)) for sh in xl.sheet_names[:5]]
+        # El reporte Mi SWACO en Excel trae otras hojas (volúmenes, inventario) que el
+        # parser genérico leería como propiedades: si una hoja es el reporte, se devuelve
+        # esa y no se sigue.
+        for _sh, df_raw in sheets:
+            swaco_rows = _parse_mud_swaco_sheet(df_raw, name)
+            if swaco_rows:
+                return swaco_rows
+        for _sh, df_raw in sheets:
             out.extend(_parse_mud_excel_sheet(df_raw, name))
         return out
     df_raw = pd.read_csv(io.BytesIO(data), sep=None, engine="python", low_memory=False)
@@ -2402,6 +2667,11 @@ def _mud_export_specs_for(view: pd.DataFrame) -> list[tuple[str, str, str]]:
                 specs.extend((c, c, "s/qt") for c in fv_dynamic)
                 fv_done = True
             continue
+        # Solo las columnas que el reporte realmente trae. Calcio, CaCl2, Tauy, n, k o el
+        # ensayo de asentamiento no existen en el reporte Mi SWACO, y dejarlas en blanco
+        # se lee como «se midió y salió vacío», que no es lo mismo que «no se mide».
+        if col_name not in view.columns:
+            continue
         specs.append((col_name, h1, h2))
     return specs
 
@@ -2439,10 +2709,39 @@ def _mud_build_view_df(bitacora: pd.DataFrame) -> pd.DataFrame:
         num = pd.to_numeric(view[c], errors="coerce")
         if num.notna().sum() >= view[c].notna().sum():
             view[c] = num
-    return view[export_cols]
+
+    # Y fuera también las que existen pero quedaron sin un solo valor: p.ej. 'Revoque
+    # API / HTHP', que es una fila del reporte pero puede venir en blanco. Se conservan
+    # siempre las que dan identidad a la muestra, para que la hoja no pierda el esqueleto.
+    keep_always = {"Properties", "Time", "DateTime"}
+    cols_con_dato = [
+        c for c in export_cols
+        if c in keep_always or view[c].notna().any() and view[c].astype(str).str.strip().ne("").any()
+    ]
+
+    # 'Additional Properties' tampoco existe en el reporte Mi SWACO: es el N° de muestra
+    # repetido. Viene del formato WellSight, que numera dos bloques ('Propiedades' y
+    # 'Propiedades Adicionales'). Si no dice nada distinto de 'Properties', se va.
+    if "Additional Properties" in cols_con_dato and "Properties" in view.columns:
+        if view["Additional Properties"].astype(str).equals(view["Properties"].astype(str)):
+            cols_con_dato.remove("Additional Properties")
+
+    return view[cols_con_dato]
 
 
-def _export_mud_bitacora_excel(view_df: pd.DataFrame) -> bytes:
+def _mud_display_df(view_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Copia solo para mostrar en pantalla: st.dataframe rotula los NaN como el texto
+    "None", y en una bitácora acumulada —donde cada reporte trae distintas propiedades y
+    distintas temperaturas de medición— eso llena la hoja de "None". Los exports siguen
+    usando el DataFrame numérico.
+    """
+    if view_df is None or view_df.empty:
+        return view_df
+    return view_df.astype(object).where(view_df.notna(), "")
+
+
+def _export_mud_bitacora_excel(view_df: pd.DataFrame, lang: str = MUD_LANG_ES) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
@@ -2451,17 +2750,13 @@ def _export_mud_bitacora_excel(view_df: pd.DataFrame) -> bytes:
     ws = wb.active
     ws.title = "Mud Bitacora Parser"
 
-    headers = _mud_export_specs_for(view_df)
+    headers = _mud_localize_specs(_mud_export_specs_for(view_df), lang)
     last_col = len(headers)
 
     title_date = _mud_bitacora_title_date(view_df)
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
     title_cell = ws.cell(1, 1)
-    title_cell.value = (
-        f"Daily Fluid Properties Daily Report Report: {title_date}"
-        if title_date
-        else "Daily Fluid Properties Daily Report"
-    )
+    title_cell.value = _mud_bitacora_title(lang, title_date)
     title_cell.alignment = Alignment(horizontal="left", vertical="center")
     title_cell.font = Font(bold=True)
     title_cell.fill = PatternFill("solid", fgColor="F2F2F2")
@@ -2481,6 +2776,12 @@ def _export_mud_bitacora_excel(view_df: pd.DataFrame) -> bytes:
             cell.border = border
         c2.fill = fill_header
         c3.fill = fill_sub
+
+    # Altura explícita en las dos filas de encabezado: con wrap_text y sin altura, Excel
+    # no siempre reajusta la fila al abrir y recorta el texto que no cabe, así que un
+    # encabezado de dos líneas ('Solidos Alta Gravedad') puede verse en blanco.
+    ws.row_dimensions[2].height = 32
+    ws.row_dimensions[3].height = 18
 
     widths = {
         "Depth (MD)": 13.71, "Depth (TVD)": 14.71, "Properties": 13.71, "Fluid set": 12.71,
@@ -2553,7 +2854,7 @@ def _mud_pdf_format_cell(val) -> str:
     return _mud_clean_cell_text(val)
 
 
-def _export_mud_bitacora_pdf(view_df: pd.DataFrame) -> bytes:
+def _export_mud_bitacora_pdf(view_df: pd.DataFrame, lang: str = MUD_LANG_ES) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER
     from reportlab.lib.pagesizes import landscape, letter
@@ -2567,13 +2868,9 @@ def _export_mud_bitacora_pdf(view_df: pd.DataFrame) -> bytes:
         doc.build([Paragraph("Sin datos para exportar.", getSampleStyleSheet()["Normal"])])
         return buffer.getvalue()
 
-    headers = _mud_export_specs_for(view_df)
+    headers = _mud_localize_specs(_mud_export_specs_for(view_df), lang)
     title_date = _mud_bitacora_title_date(view_df)
-    title_text = (
-        f"Daily Fluid Properties Daily Report — {title_date}"
-        if title_date
-        else "Daily Fluid Properties Daily Report"
-    )
+    title_text = _mud_bitacora_title(lang, title_date)
 
     buffer = io.BytesIO()
     page_size = landscape(letter)
@@ -2992,13 +3289,38 @@ def render_mud_report(to_email: str = "") -> None:
 
     with tab_bitacora:
         st.subheader("Bitácora de propiedades de fluidos")
-        st.dataframe(bitacora_view, use_container_width=True, hide_index=True)
+        mud_lang = st.radio(
+            "Encabezados",
+            [MUD_LANG_ES, MUD_LANG_EN],
+            horizontal=True,
+            key="mud_header_lang",
+            format_func=lambda l: "Español (etiquetas del reporte)" if l == MUD_LANG_ES else "Inglés (formato WellSight)",
+            help="En español los encabezados son los del propio reporte de lodo (Aceite, PC, R600, Exc. Cal…). "
+                 "En inglés son los del formato WellSight original (NAP, YP, Lectura 600, Excess Lime…).",
+        )
+        # Lo que se ve en pantalla es lo que sale en el archivo.
+        mud_specs = _mud_localize_specs(_mud_export_specs_for(bitacora_view), mud_lang)
+        mud_rename = {col: h1 for col, h1, _ in mud_specs}
+        st.dataframe(
+            _mud_display_df(bitacora_view).rename(columns=mud_rename),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        with st.expander("¿De dónde sale cada columna?", expanded=False):
+            st.caption("Equivalencia entre la columna de la bitácora y la etiqueta del reporte de lodo.")
+            # En markdown y no en st.dataframe: la tabla es para leerse, así el texto
+            # ajusta, se puede buscar con Ctrl+F y no queda recortado en un grid.
+            st.markdown(
+                "| Columna de la bitácora | Etiqueta en el reporte | Nota |\n|---|---|---|\n"
+                + "\n".join(f"| {c} | {o} | {n} |" for c, o, n in MUD_COLUMN_GLOSSARY)
+            )
 
         buf_csv = io.BytesIO()
-        bitacora_view.to_csv(buf_csv, index=False, encoding="utf-8-sig")
+        bitacora_view.rename(columns=mud_rename).to_csv(buf_csv, index=False, encoding="utf-8-sig")
         buf_csv.seek(0)
-        xlsx_bytes = _export_mud_bitacora_excel(bitacora_view)
-        pdf_bytes = _export_mud_bitacora_pdf(bitacora_view)
+        xlsx_bytes = _export_mud_bitacora_excel(bitacora_view, lang=mud_lang)
+        pdf_bytes = _export_mud_bitacora_pdf(bitacora_view, lang=mud_lang)
 
         default_base = _default_mud_bitacora_basename(bitacora)
         st.markdown("### 📎 Nombre del archivo de salida")
