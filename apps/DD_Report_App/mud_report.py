@@ -15,6 +15,16 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+# Versión de la app, junto al título. SUBIR EN CADA CAMBIO que se despliegue: el número
+# sube y la fecha es la del cambio. Van en una sola constante a propósito, para que no
+# puedan quedar desincronizadas, y APP_VERSION_NOTA describe qué trae esta versión (se
+# muestra al pasar el cursor por encima).
+APP_VERSION = "1.4 · 2026-08-17"
+APP_VERSION_NOTA = (
+    "Reporte Mi SWACO en Excel, encabezados con las etiquetas del propio reporte "
+    "(selector Español/Inglés) y solo las columnas que el reporte trae."
+)
+
 PLOTLY_CONFIG = {"displayModeBar": False, "displaylogo": False}
 PLOTLY_TEMPLATE = "plotly_white"
 MUD_SRC_FILES = "files"

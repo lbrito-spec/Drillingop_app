@@ -19,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from mud_report import render_mud_report
+from mud_report import APP_VERSION, APP_VERSION_NOTA, render_mud_report
 
 st.set_page_config(page_title="Rogii Reports – Daily & Mud", page_icon="🛢️", layout="wide")
 
@@ -1278,6 +1278,21 @@ st.markdown("""
   margin: 0 0 0.35rem 0;
   flex-wrap: nowrap;
 }
+/* Insignia de versión: currentColor y opacidad, así funciona en tema claro y oscuro
+   sin fijar ningún color propio. */
+.rogii-version {
+  align-self: center;
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0.5;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: help;
+}
 .rogii-title-flame {
   font-size: clamp(2.4rem, 6vw, 3.5rem);
   line-height: 1;
@@ -1365,10 +1380,11 @@ st.markdown(
 )
 
 st.markdown(
-    """
+    f"""
 <div class="rogii-title-row">
   <span class="rogii-title-flame" aria-hidden="true">🔥</span>
   <h1 class="rogii-title-text">Rogii Reports – Daily Report & Mud Report</h1>
+  <span class="rogii-version" title="{APP_VERSION_NOTA}">v{APP_VERSION}</span>
 </div>
 """,
     unsafe_allow_html=True,
