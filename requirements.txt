@@ -17,14 +17,21 @@ google-api-python-client
 kaleido==0.2.1
 requests-oauthlib==2.0.0
 
-# ddr-rogii OCR: ver packages.txt libgl1 + libglib2.0-0t64. Tiene que ser el nombre t64.
-# Streamlit Cloud es Trixie pero arrastra un source de bullseye-security, y con el
-# nombre corto apt elige el libglib2.0-0 de Bullseye (2.66.8-1+deb11u8), que pide
-# libffi7 y libpcre3: no instalables en Trixie y revienta la preparacion del entorno.
+# ddr-rogii OCR SIN packages.txt. La imagen de Streamlit Cloud (Trixie) arrastra un
+# source de bullseye-security y su apt-get update sale con codigo distinto de cero:
+# en cuanto este repo tiene packages.txt, Cloud aborta la preparacion del entorno con
+# "Error installing requirements" y la app entera queda caida. No se arregla desde el
+# repo (las fuentes apt son de la imagen), asi que no hay packages.txt y OpenCV va en
+# rueda headless, que no enlaza libGL ni libgthread y no necesita apt.
+# El despliegue de Dokploy (ddr-reportapp.i.solo.cloud) instala libgl1 y libglib2.0-0
+# en su propio Dockerfile y no depende de nada de esto.
+# Nota: rapidocr declara opencv-python como dependencia, asi que pip bajara tambien la
+# rueda completa y las dos escriben el mismo cv2/. Si el OCR de PDFs escaneados vuelve
+# a fallar por libGL aqui, es por eso; el resto de la app no se ve afectada.
 pdfplumber>=0.10
 pymupdf>=1.23
 onnxruntime>=1.17
-opencv-python>=4.8,<6
+opencv-python-headless>=4.8,<6
 
 # rapidocr-onnxruntime esta capado a Python <3.13 en todas sus releases. En 3.13 pip
 # no encuentra ninguna version y aborta la instalacion entera del entorno

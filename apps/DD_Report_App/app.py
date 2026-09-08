@@ -28,10 +28,10 @@ from mud_report import render_mud_report
 # Vive aquí y no en mud_report.py: Streamlit Cloud recarga app.py pero puede seguir con un
 # mud_report en caché del build anterior, y un `from mud_report import APP_VERSION` tumba
 # la app entera con ImportError hasta que alguien reinicie a mano.
-APP_VERSION = "1.4.1 · 2026-08-17"
+APP_VERSION = "1.4.2 · 2026-09-08"
 APP_VERSION_NOTA = (
-    "Reporte Mi SWACO en Excel, encabezados con las etiquetas del propio reporte "
-    "(selector Español/Inglés) y solo las columnas que el reporte trae."
+    "Arreglo de despliegue: Streamlit Cloud ya no usa packages.txt (su apt está roto) "
+    "y OpenCV va en rueda headless. Sin cambios funcionales respecto a 1.4.1."
 )
 
 st.set_page_config(page_title="Rogii Reports – Daily & Mud", page_icon="🛢️", layout="wide")
